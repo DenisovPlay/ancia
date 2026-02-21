@@ -1,0 +1,308 @@
+import { normalizeModelCardPayload, renderModelCard, sortModels } from "./models.card.js";
+import { createModelParamsController } from "./models.paramsModal.js";
+import { modelsPageTemplate } from "./models.template.js";
+
+const VALID_MODEL_FILTERS = new Set(["all", "installed"]);
+
+export { modelsPageTemplate };
+
+export function createModelsFeature({
+  runtimeConfig,
+  backendClient,
+  applyRuntimeConfig,
+  normalizeModelId,
+  getModelLabelById,
+  pushToast,
+}) {
+  const gridNode = document.querySelector("#models-grid");
+  const emptyStateNode = document.querySelector("#models-empty-state");
+  const installedCountNode = document.querySelector("#models-installed-count");
+  const catalogCountNode = document.querySelector("#models-catalog-count");
+  const runtimeBannerNode = document.querySelector("#models-runtime-banner");
+  const runtimeStatusNode = document.querySelector("#models-runtime-status");
+  const runtimeMetaNode = document.querySelector("#models-runtime-meta");
+  const runtimeBadgeNode = document.querySelector("#models-runtime-badge");
+  const runtimeProgressNode = document.querySelector("#models-runtime-progress");
+  const searchInput = document.querySelector("#model-search-input");
+  const allFilterButtons = [...document.querySelectorAll("[data-model-filter]")];
+  const refreshButton = document.querySelector("[data-models-action='refresh']");
+  const refreshCatalogButton = document.querySelector("[data-models-action='refresh-catalog']");
+
+  let payloadState = null;
+  let loading = false;
+  let pollTimer = 0;
+  let activeFilter = "all";
+  let searchQuery = "";
+
+  function clearPollTimer() {
+    if (!pollTimer) return;
+    window.clearTimeout(pollTimer);
+    pollTimer = 0;
+  }
+
+  function schedulePollIfNeeded() {
+    clearPollTimer();
+    const startupStatus = String(payloadState?.startup?.status || "").trim().toLowerCase();
+    const hasLoadingCard = Array.isArray(payloadState?.models) && payloadState.models.some((model) => model?.loading);
+    if (startupStatus === "loading" || startupStatus === "booting" || hasLoadingCard) {
+      pollTimer = window.setTimeout(() => {
+        void loadModels({ silent: true });
+      }, 900);
+    }
+  }
+
+  function getNormalizedModels() {
+    if (!Array.isArray(payloadState?.models)) return [];
+    return sortModels(
+      payloadState.models
+        .map(normalizeModelCardPayload)
+        .filter((model) => model && model.supportsTools),
+    );
+  }
+
+  function findModelById(modelId) {
+    const needle = String(modelId || "").trim().toLowerCase();
+    return needle ? getNormalizedModels().find((model) => model.id === needle) ?? null : null;
+  }
+
+  function setFilter(filterValue) {
+    if (!VALID_MODEL_FILTERS.has(filterValue)) return;
+    activeFilter = filterValue;
+    allFilterButtons.forEach((button) => {
+      const isActive = button.dataset.modelFilter === filterValue;
+      button.setAttribute("aria-pressed", String(isActive));
+    });
+    applyFilters();
+  }
+
+  function applyFilters() {
+    if (!(gridNode instanceof HTMLElement)) return;
+
+    const cards = [...gridNode.querySelectorAll("[data-model-card]")];
+    const needle = searchQuery.toLowerCase();
+    let visibleCount = 0;
+
+    cards.forEach((card) => {
+      const installed = card.dataset.modelInstalled === "true";
+      const keywords = String(card.dataset.modelKeywords || "");
+      const matchFilter = activeFilter === "all" || (activeFilter === "installed" && installed);
+      const matchSearch = !needle || keywords.includes(needle);
+      const visible = matchFilter && matchSearch;
+      card.classList.toggle("hidden", !visible);
+      if (visible) {
+        visibleCount += 1;
+      }
+    });
+
+    if (emptyStateNode instanceof HTMLElement) {
+      emptyStateNode.classList.toggle("hidden", visibleCount > 0 || cards.length === 0);
+    }
+  }
+
+  function updateRuntimeBanner() {
+    const startup = payloadState?.startup || {};
+    const status = String(startup.status || "idle").trim().toLowerCase();
+    const stage = String(startup.stage || "").trim().toLowerCase();
+    const message = String(startup.message || "").trim();
+    const progress = Math.max(
+      0,
+      Math.min(100, Number(payloadState?.startup_progress_percent ?? startup.details?.progress_percent ?? 0)),
+    );
+
+    const showBanner = status === "loading" || status === "booting";
+    runtimeBannerNode?.classList.toggle("hidden", !showBanner);
+    if (!showBanner) return;
+
+    const stageMessages = {
+      loading_model: "Загружаем выбранную модель…",
+      checking_gpu_memory: "Проверяем память устройства…",
+      environment_check: "Проверяем окружение Python / MLX…",
+      ready: "Модель готова.",
+      unloaded: "Модель пока не загружена.",
+    };
+
+    if (runtimeStatusNode) {
+      runtimeStatusNode.textContent = message || stageMessages[stage] || "Ожидаем статус…";
+    }
+
+    const selected = payloadState?.selected_model || runtimeConfig.modelId || "";
+    const loaded = payloadState?.loaded_model || "";
+    if (runtimeMetaNode) {
+      const selectedLabel = getModelLabelById(selected, selected || "не выбрана");
+      const loadedLabel = loaded ? getModelLabelById(loaded, loaded) : "не загружена";
+      runtimeMetaNode.textContent = `Выбрана: ${selectedLabel} · Загружена: ${loadedLabel}`;
+    }
+
+    if (runtimeBadgeNode) {
+      runtimeBadgeNode.textContent = status;
+    }
+    if (runtimeProgressNode) {
+      runtimeProgressNode.style.width = `${progress}%`;
+    }
+  }
+
+  function render() {
+    const models = getNormalizedModels();
+
+    if (gridNode instanceof HTMLElement) {
+      gridNode.innerHTML = models.map(renderModelCard).join("");
+    }
+
+    const installedModels = models.filter((model) => model.cache.cached || model.loaded || model.loading);
+    if (installedCountNode) {
+      installedCountNode.textContent = String(installedModels.length);
+    }
+    if (catalogCountNode) {
+      catalogCountNode.textContent = `${models.length} в каталоге`;
+    }
+
+    updateRuntimeBanner();
+    applyFilters();
+    schedulePollIfNeeded();
+  }
+
+  async function loadModels({ silent = false } = {}) {
+    if (loading) return false;
+    loading = true;
+
+    try {
+      const payload = await backendClient.listModels();
+      payloadState = payload && typeof payload === "object" ? payload : {};
+
+      const selectedModelId = normalizeModelId(payloadState?.selected_model || runtimeConfig.modelId);
+      const selectedModel = findModelById(selectedModelId);
+      applyRuntimeConfig({
+        modelId: selectedModelId,
+        modelSupportsVision: selectedModel?.supportsVision ?? false,
+      });
+
+      render();
+      return true;
+    } catch (error) {
+      if (!silent) {
+        pushToast(`Не удалось загрузить список моделей: ${error.message}`, { tone: "error", durationMs: 3600 });
+      }
+      return false;
+    } finally {
+      loading = false;
+    }
+  }
+
+  const modelParamsController = createModelParamsController({
+    backendClient,
+    pushToast,
+    onSaved: async () => {
+      await loadModels({ silent: true });
+    },
+  });
+
+  async function handleModelAction(action, modelId) {
+    const model = findModelById(modelId);
+    if (!model) return;
+
+    try {
+      if (action === "select") {
+        await backendClient.selectModel({ model_id: model.id });
+        applyRuntimeConfig({ modelId: model.id, modelSupportsVision: model.supportsVision });
+        await loadModels({ silent: true });
+        pushToast("Модель выбрана.", { tone: "success", durationMs: 2000 });
+        return;
+      }
+
+      if (action === "load") {
+        await backendClient.loadModel({ model_id: model.id });
+        applyRuntimeConfig({ modelId: model.id, modelSupportsVision: model.supportsVision });
+        await loadModels({ silent: true });
+        pushToast(model.cache.cached ? "Запускаем модель…" : "Скачиваем и запускаем модель…", {
+          tone: "neutral",
+          durationMs: 2200,
+        });
+        return;
+      }
+
+      if (action === "unload") {
+        await backendClient.unloadModel();
+        applyRuntimeConfig({ modelSupportsVision: false });
+        await loadModels({ silent: true });
+        pushToast("Модель выгружена.", { tone: "success", durationMs: 2000 });
+        return;
+      }
+
+      if (action === "delete-cache") {
+        await backendClient.deleteModelCache(model.id);
+        pushToast("Кэш модели удалён.", { tone: "success", durationMs: 2200 });
+        await loadModels({ silent: true });
+        return;
+      }
+
+      if (action === "open-params") {
+        modelParamsController.openModelParamsModal(model);
+      }
+    } catch (error) {
+      pushToast(`Ошибка: ${error.message}`, { tone: "error", durationMs: 3600 });
+    }
+  }
+
+  function bindEvents() {
+    modelParamsController.bindEvents();
+
+    refreshButton?.addEventListener("click", () => {
+      void loadModels({ silent: false });
+    });
+
+    refreshCatalogButton?.addEventListener("click", async () => {
+      if (!refreshCatalogButton) return;
+      refreshCatalogButton.disabled = true;
+      try {
+        const result = await backendClient.request("/models/catalog/refresh", { method: "POST" });
+        const added = result?.added ?? 0;
+        pushToast(added > 0 ? `Найдено новых: ${added}` : "Новых моделей не найдено", {
+          tone: "success",
+          durationMs: 3000,
+        });
+        if (result?.models_payload) {
+          payloadState = result.models_payload;
+          render();
+        }
+      } catch (error) {
+        pushToast(`Ошибка обновления: ${error.message}`, { tone: "error", durationMs: 3600 });
+      } finally {
+        refreshCatalogButton.disabled = false;
+      }
+    });
+
+    searchInput?.addEventListener("input", () => {
+      searchQuery = String(searchInput.value || "").trim().toLowerCase();
+      applyFilters();
+    });
+
+    allFilterButtons.forEach((button) => {
+      button.addEventListener("click", () => {
+        const filterValue = String(button.dataset.modelFilter || "");
+        setFilter(filterValue);
+      });
+    });
+
+    gridNode?.addEventListener("click", (event) => {
+      const target = event.target instanceof HTMLElement ? event.target.closest("[data-model-action]") : null;
+      if (!(target instanceof HTMLButtonElement) && !(target instanceof HTMLAnchorElement)) return;
+      const card = target.closest("[data-model-card]");
+      const action = String(target.dataset.modelAction || "").trim();
+      const modelId = card instanceof HTMLElement ? String(card.dataset.modelId || "").trim().toLowerCase() : "";
+      if (!action || !modelId) return;
+      void handleModelAction(action, modelId);
+    });
+
+    setFilter("all");
+  }
+
+  function initialize() {
+    bindEvents();
+    void loadModels({ silent: true });
+  }
+
+  return {
+    initialize,
+    reload: () => loadModels({ silent: false }),
+  };
+}

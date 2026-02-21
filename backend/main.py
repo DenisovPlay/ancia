@@ -29,6 +29,7 @@ try:
     extract_html_links,
     extract_html_title,
     fetch_web_url,
+    get_tool_registry_payload,
     html_to_text,
     normalize_http_url,
     parse_duckduckgo_results,
@@ -41,6 +42,7 @@ except ModuleNotFoundError:
     extract_html_links,
     extract_html_title,
     fetch_web_url,
+    get_tool_registry_payload,
     html_to_text,
     normalize_http_url,
     parse_duckduckgo_results,
@@ -53,9 +55,9 @@ except ModuleNotFoundError:
 
 
 try:
-  from backend.engine import PythonModelEngine, build_system_prompt, normalize_model_tier_key
+  from backend.engine import PythonModelEngine, build_system_prompt
 except ModuleNotFoundError:
-  from engine import PythonModelEngine, build_system_prompt, normalize_model_tier_key  # type: ignore
+  from engine import PythonModelEngine, build_system_prompt  # type: ignore
 
 
 def resolve_now_for_timezone(timezone: str) -> tuple[str, str]:
@@ -168,7 +170,7 @@ def make_app() -> FastAPI:
       limit = int(args.get("limit") or 5)
     except (TypeError, ValueError):
       limit = 5
-    limit = max(1, min(8, limit))
+    limit = max(1, min(10, limit))
 
     search_url = "https://duckduckgo.com/html/?q=" + url_parse.quote_plus(query)
     payload = fetch_web_url(search_url)
@@ -224,54 +226,20 @@ def make_app() -> FastAPI:
       "truncated": bool(payload.get("truncated")) or (len(content) >= max_chars),
     }
 
-  tool_registry.register(
-    name="system.time",
-    description="Возвращает локальное время пользователя по указанному часовому поясу.",
-    input_schema={"type": "object", "properties": {}, "additionalProperties": False},
-    handler=tool_system_time,
-  )
-  tool_registry.register(
-    name="chat.set_mood",
-    description="Устанавливает mood для активного чата.",
-    input_schema={
-      "type": "object",
-      "properties": {
-        "mood": {"type": "string"},
-      },
-      "required": ["mood"],
-      "additionalProperties": False,
-    },
-    handler=tool_set_chat_mood,
-  )
-  tool_registry.register(
-    name="web.search.duckduckgo",
-    description="Выполняет веб-поиск через DuckDuckGo и возвращает список ссылок.",
-    input_schema={
-      "type": "object",
-      "properties": {
-        "query": {"type": "string"},
-        "limit": {"type": "integer", "minimum": 1, "maximum": 8},
-      },
-      "required": ["query"],
-      "additionalProperties": False,
-    },
-    handler=tool_web_search_duckduckgo,
-  )
-  tool_registry.register(
-    name="web.visit.website",
-    description="Открывает URL и извлекает текст, заголовок и ссылки страницы.",
-    input_schema={
-      "type": "object",
-      "properties": {
-        "url": {"type": "string"},
-        "max_chars": {"type": "integer", "minimum": 400, "maximum": 40000},
-        "max_links": {"type": "integer", "minimum": 0, "maximum": 100},
-      },
-      "required": ["url"],
-      "additionalProperties": False,
-    },
-    handler=tool_visit_website,
-  )
+  def register_builtin_tool(name: str, handler: Any) -> None:
+    payload = get_tool_registry_payload(name)
+    tool_registry.register(
+      name=str(payload.get("name") or name),
+      description=str(payload.get("description") or name),
+      input_schema=payload.get("input_schema") if isinstance(payload.get("input_schema"), dict) else {},
+      handler=handler,
+      runtime_meta=payload.get("runtime_meta") if isinstance(payload.get("runtime_meta"), dict) else {},
+    )
+
+  register_builtin_tool("system.time", tool_system_time)
+  register_builtin_tool("chat.set_mood", tool_set_chat_mood)
+  register_builtin_tool("web.search.duckduckgo", tool_web_search_duckduckgo)
+  register_builtin_tool("web.visit.website", tool_visit_website)
 
   plugin_manager = PluginManager(
     storage=storage,
@@ -291,7 +259,6 @@ def make_app() -> FastAPI:
     system_prompt=system_prompt,
     data_dir=str(data_dir),
     build_system_prompt_fn=build_system_prompt,
-    normalize_model_tier_key_fn=normalize_model_tier_key,
   )
 
   return app

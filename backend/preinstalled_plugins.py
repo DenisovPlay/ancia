@@ -2,64 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
+try:
+  from backend.tool_catalog import build_preinstalled_plugin_manifests
+except ModuleNotFoundError:
+  from tool_catalog import build_preinstalled_plugin_manifests  # type: ignore
 
-PREINSTALLED_PLUGIN_MANIFESTS: list[dict[str, Any]] = [
-  {
-    "id": "duckduckgo",
-    "name": "Web Search (DuckDuckGo)",
-    "subtitle": "Веб-поиск по интернету",
-    "description": "Ищет актуальные факты, новости, статьи и ссылки в интернете через DuckDuckGo.",
-    "homepage": "https://lmstudio.ai/danielsig/duckduckgo",
-    "version": "1.0.0",
-    "enabled": True,
-    "category": "web",
-    "keywords": ["web", "search", "duckduckgo", "поиск", "интернет", "новости", "факты"],
-    "locked": False,
-    "allow_update": True,
-    "requires_network": True,
-    "tools": ["web.search.duckduckgo"],
-  },
-  {
-    "id": "visit-website",
-    "name": "Visit Website",
-    "subtitle": "Чтение содержимого страниц",
-    "description": "Открывает URL и извлекает заголовок, текст и ссылки со страницы.",
-    "homepage": "https://lmstudio.ai/danielsig/visit-website",
-    "version": "1.0.0",
-    "enabled": True,
-    "category": "web",
-    "keywords": ["web", "visit", "website", "url", "страница", "сайт", "браузинг"],
-    "locked": False,
-    "allow_update": True,
-    "requires_network": True,
-    "tools": ["web.visit.website"],
-  },
-  {
-    "id": "system-time",
-    "name": "System Time",
-    "subtitle": "Системное время",
-    "description": "Возвращает текущее время и дату с учетом часового пояса пользователя.",
-    "version": "1.0.0",
-    "enabled": True,
-    "category": "system",
-    "keywords": ["system", "time", "clock", "дата", "время", "timezone"],
-    "locked": False,
-    "allow_update": True,
-    "requires_network": False,
-    "tools": ["system.time"],
-  },
-  {
-    "id": "chat-mood",
-    "name": "Chat Mood",
-    "subtitle": "Состояние чата",
-    "description": "Устанавливает визуальное состояние чата: neutral/success/error/thinking и другие.",
-    "version": "1.0.0",
-    "enabled": True,
-    "category": "agent",
-    "keywords": ["chat", "mood", "state", "фон", "настроение", "reaction"],
-    "locked": False,
-    "allow_update": True,
-    "requires_network": False,
-    "tools": ["chat.set_mood"],
-  },
-]
+
+PREINSTALLED_PLUGIN_MANIFESTS: list[dict[str, Any]] = build_preinstalled_plugin_manifests()
+

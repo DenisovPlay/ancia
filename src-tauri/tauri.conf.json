@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Ancia Enterprise",
+  "productName": "Ancia Local",
   "version": "0.1.0",
   "identifier": "com.ancia.localchat",
   "build": {
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Ancia Enterprise (Разработчик - ZeniFlow)",
+        "title": "Ancia Local",
         "width": 1500,
         "height": 960,
         "minWidth": 860,

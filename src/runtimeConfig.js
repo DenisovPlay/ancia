@@ -26,6 +26,7 @@ export const RUNTIME_MODE_LABEL = {
 
 export const MOOD_NAME_LABEL = {
   route_chat: "контекст: чаты",
+  route_models: "контекст: модели",
   route_plugins: "контекст: маркетплейс",
   route_settings: "контекст: настройки",
   neutral: "нейтрально",
@@ -45,54 +46,26 @@ export const MOOD_NAME_LABEL = {
 
 export const ROUTE_BACKGROUND_STATE = {
   chat: "route_chat",
+  models: "route_models",
   plugins: "route_plugins",
   settings: "route_settings",
 };
 
 export const ROUTE_ICON_BY_TARGET = {
   chat: "chat",
+  models: "models",
   plugins: "plugins",
   settings: "settings",
 };
 
 export const ROUTE_LABEL_BY_TARGET = {
   chat: "Чаты",
+  models: "Модели",
   plugins: "Плагины",
   settings: "Настройки",
 };
 
-export const MODEL_TIER_META = {
-  lite: {
-    label: "Lite",
-    description: "Лёгкий режим: минимальная нагрузка и расход памяти.",
-    targetFps: 38,
-    maxPixelRatioCap: 0.96,
-    minPixelRatio: 0.62,
-  },
-  standart: {
-    label: "Standart",
-    description: "Базовый режим: баланс качества и производительности.",
-    targetFps: 46,
-    maxPixelRatioCap: 1.16,
-    minPixelRatio: 0.72,
-  },
-  plus: {
-    label: "Plus",
-    description: "Расширенный режим: выше детализация и нагрузка.",
-    targetFps: 58,
-    maxPixelRatioCap: 1.32,
-    minPixelRatio: 0.82,
-  },
-};
-
-export const MODEL_TIER_ORDER = ["lite", "standart", "plus"];
-const MODEL_TIER_KEYS = new Set(MODEL_TIER_ORDER);
 export const DEFAULT_MODEL_ID = "qwen2.5-0.5b-instruct-mlx-4bit";
-const MODEL_ID_FALLBACK_BY_TIER = {
-  lite: "qwen2.5-0.5b-instruct-mlx-4bit",
-  standart: "qwen3-vl-4b-instruct-mlx-4bit",
-  plus: "qwen3-vl-4b-instruct-mlx-4bit",
-};
 
 export const MODEL_LABEL_BY_ID = {
   "qwen2.5-0.5b-instruct-mlx-4bit": "Qwen2.5 0.5B",
@@ -100,6 +73,7 @@ export const MODEL_LABEL_BY_ID = {
   "qwen2.5-3b-instruct-mlx-4bit": "Qwen2.5 3B",
   "qwen2.5-7b-instruct-mlx-4bit": "Qwen2.5 7B",
   "qwen3-vl-4b-instruct-mlx-4bit": "Qwen3-VL 4B",
+  "ministral-3-3b-instruct-mlx-4bit": "Ministral 3 3B",
 };
 
 export const DEVICE_PRESET_META = {
@@ -107,7 +81,6 @@ export const DEVICE_PRESET_META = {
     label: "Авто",
     description: "Автоподбор по текущему устройству и балансу скорости/качества.",
     config: {
-      modelTier: "lite",
       modelId: "qwen2.5-0.5b-instruct-mlx-4bit",
       modelContextWindow: 3072,
       modelMaxTokens: 256,
@@ -123,7 +96,6 @@ export const DEVICE_PRESET_META = {
     label: "Apple Silicon 8GB",
     description: "MacBook Air/Pro с 8GB unified memory.",
     config: {
-      modelTier: "lite",
       modelId: "qwen2.5-0.5b-instruct-mlx-4bit",
       modelContextWindow: 2048,
       modelMaxTokens: 192,
@@ -139,7 +111,6 @@ export const DEVICE_PRESET_META = {
     label: "Apple Silicon 16GB",
     description: "Универсальный профиль для M1/M2/M3 с 16GB.",
     config: {
-      modelTier: "standart",
       modelId: "qwen2.5-3b-instruct-mlx-4bit",
       modelContextWindow: 4096,
       modelMaxTokens: 320,
@@ -155,7 +126,6 @@ export const DEVICE_PRESET_META = {
     label: "Apple Silicon 24GB+",
     description: "Профиль для устройств с запасом памяти и вычислений.",
     config: {
-      modelTier: "plus",
       modelId: "qwen3-vl-4b-instruct-mlx-4bit",
       modelContextWindow: 6144,
       modelMaxTokens: 420,
@@ -171,7 +141,6 @@ export const DEVICE_PRESET_META = {
     label: "NVIDIA 6GB",
     description: "Профиль для дискретных GPU 6GB VRAM.",
     config: {
-      modelTier: "lite",
       modelId: "qwen2.5-1.5b-instruct-mlx-4bit",
       modelContextWindow: 2048,
       modelMaxTokens: 224,
@@ -187,7 +156,6 @@ export const DEVICE_PRESET_META = {
     label: "NVIDIA 8GB+",
     description: "Профиль для GPU 8GB+ с упором на качество.",
     config: {
-      modelTier: "standart",
       modelId: "qwen2.5-7b-instruct-mlx-4bit",
       modelContextWindow: 4096,
       modelMaxTokens: 360,
@@ -203,7 +171,6 @@ export const DEVICE_PRESET_META = {
     label: "CPU only",
     description: "Стабильность при ограниченных ресурсах.",
     config: {
-      modelTier: "lite",
       modelId: "qwen2.5-0.5b-instruct-mlx-4bit",
       modelContextWindow: 1536,
       modelMaxTokens: 128,
@@ -227,9 +194,7 @@ export const DEFAULT_RUNTIME_CONFIG = {
   backendUrl: "http://127.0.0.1:5055",
   apiKey: "",
   timeoutMs: 12000,
-  modelTier: "lite",
   modelId: DEFAULT_MODEL_ID,
-  modelLabel: MODEL_TIER_META.lite.label,
   devicePreset: "auto",
   modelContextWindow: null,
   modelMaxTokens: null,
@@ -250,34 +215,16 @@ export const DEFAULT_RUNTIME_CONFIG = {
   uiFontFamily: "",
   uiShowInspector: true,
   autonomousMode: false,
+  modelSupportsVision: false,
 };
 
 export function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
 
-export function normalizeModelTier(value) {
+export function normalizeModelId(value) {
   const normalized = String(value || "").trim().toLowerCase();
-  const aliases = {
-    max: "plus",
-    standard: "standart",
-  };
-  const resolved = aliases[normalized] || normalized;
-  if (/^\d+$/.test(normalized)) {
-    const index = Number(normalized);
-    if (index >= 0 && index < MODEL_TIER_ORDER.length) {
-      return MODEL_TIER_ORDER[index];
-    }
-  }
-  return MODEL_TIER_KEYS.has(resolved) ? resolved : "lite";
-}
-
-export function normalizeModelId(value, tier = "lite") {
-  const normalized = String(value || "").trim().toLowerCase();
-  if (!normalized) {
-    return MODEL_ID_FALLBACK_BY_TIER[normalizeModelTier(tier)] || DEFAULT_MODEL_ID;
-  }
-  return normalized;
+  return normalized || DEFAULT_MODEL_ID;
 }
 
 export function getModelLabelById(modelId, fallback = "") {
@@ -301,21 +248,13 @@ export function getDevicePresetMeta(presetId) {
 }
 
 export function applyDevicePreset(baseConfig = {}, presetId = "auto", availableModelIds = []) {
+  void availableModelIds;
   const safePreset = normalizeDevicePreset(presetId);
   const presetMeta = getDevicePresetMeta(safePreset);
   const presetConfig = presetMeta?.config && typeof presetMeta.config === "object"
     ? presetMeta.config
     : {};
-  const availableSet = new Set((availableModelIds || []).map((id) => normalizeModelId(id)));
-  const desiredModelId = normalizeModelId(
-    presetConfig.modelId,
-    presetConfig.modelTier || baseConfig.modelTier || "lite",
-  );
-  const fallbackTier = normalizeModelTier(presetConfig.modelTier || baseConfig.modelTier || "lite");
-  const fallbackModelId = MODEL_ID_FALLBACK_BY_TIER[fallbackTier] || DEFAULT_MODEL_ID;
-  const selectedModelId = availableSet.size > 0
-    ? (availableSet.has(desiredModelId) ? desiredModelId : (availableSet.has(fallbackModelId) ? fallbackModelId : [...availableSet][0]))
-    : desiredModelId;
+  const selectedModelId = normalizeModelId(baseConfig.modelId || DEFAULT_MODEL_ID);
 
   return normalizeRuntimeConfig({
     ...(baseConfig || {}),
@@ -323,17 +262,6 @@ export function applyDevicePreset(baseConfig = {}, presetId = "auto", availableM
     devicePreset: safePreset,
     modelId: selectedModelId,
   });
-}
-
-export function getModelTierMeta(tier) {
-  const normalized = normalizeModelTier(tier);
-  return MODEL_TIER_META[normalized] || MODEL_TIER_META.lite;
-}
-
-export function modelTierToRangeIndex(tier) {
-  const normalized = normalizeModelTier(tier);
-  const index = MODEL_TIER_ORDER.indexOf(normalized);
-  return index >= 0 ? index : 0;
 }
 
 export function normalizeRuntimeConfig(partial = {}) {
@@ -371,9 +299,7 @@ export function normalizeRuntimeConfig(partial = {}) {
   config.backendUrl = String(config.backendUrl || "").trim();
   config.apiKey = String(config.apiKey || "").trim();
   config.timeoutMs = clamp(Number(config.timeoutMs || DEFAULT_RUNTIME_CONFIG.timeoutMs), 500, 120000);
-  config.modelTier = normalizeModelTier(config.modelTier || config.modelLabel);
-  config.modelId = normalizeModelId(config.modelId, config.modelTier);
-  config.modelLabel = getModelTierMeta(config.modelTier).label;
+  config.modelId = normalizeModelId(config.modelId);
   config.devicePreset = normalizeDevicePreset(config.devicePreset);
   config.modelContextWindow = normalizeOptionalInt(config.modelContextWindow, 256, 32768, null);
   config.modelMaxTokens = normalizeOptionalInt(config.modelMaxTokens, 16, 4096, null);
@@ -406,6 +332,7 @@ export function normalizeRuntimeConfig(partial = {}) {
   }
   config.uiShowInspector = Boolean(config.uiShowInspector);
   config.autonomousMode = Boolean(config.autonomousMode);
+  config.modelSupportsVision = Boolean(config.modelSupportsVision);
   return config;
 }
 

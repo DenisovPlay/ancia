@@ -73,6 +73,17 @@ fn backend_status(state: tauri::State<'_, BackendProcessState>) -> String {
     }
 }
 
+#[tauri::command]
+fn open_in_browser(url: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    Command::new("open").arg(&url).spawn().map_err(|e| e.to_string())?;
+    #[cfg(target_os = "windows")]
+    Command::new("cmd").arg("/c").arg("start").arg("").arg(&url).spawn().map_err(|e| e.to_string())?;
+    #[cfg(target_os = "linux")]
+    Command::new("xdg-open").arg(&url).spawn().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 fn backend_addr() -> SocketAddr {
     SocketAddr::from(([127, 0, 0, 1], BACKEND_PORT))
 }
@@ -350,7 +361,7 @@ fn main() {
                 state.stop();
             }
         })
-        .invoke_handler(tauri::generate_handler![backend_status])
+        .invoke_handler(tauri::generate_handler![backend_status, open_in_browser])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

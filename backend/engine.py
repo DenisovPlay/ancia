@@ -1,23 +1,64 @@
 from __future__ import annotations
 
-import ast
 import json
 import logging
 import os
 import platform
 import re
-import shutil
-import subprocess
 import sys
 import threading
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Generator
-from urllib import parse as url_parse
 
 try:
   from backend.common import normalize_mood, utc_now_iso
+  from backend.engine_model_storage import EngineModelStorage
+  from backend.engine_models_mixin import EngineModelsMixin
+  from backend.prompt_builder import build_system_prompt
+  from backend.engine_generation_prep import (
+    build_attachment_context as build_attachment_context_fn,
+    build_generation_attempts as build_generation_attempts_fn,
+    build_messages as build_messages_fn,
+    build_tool_schemas as build_tool_schemas_fn,
+    convert_turns_for_compat as convert_turns_for_compat_fn,
+    normalize_attachment_kind as normalize_attachment_kind_fn,
+    render_prompt as render_prompt_fn,
+  )
+  from backend.text_stream_utils import (
+    chunk_text_for_streaming as chunk_text_for_streaming_fn,
+    compact_repetitions as compact_repetitions_fn,
+    is_repetition_runaway as is_repetition_runaway_fn,
+    normalize_for_dedupe as normalize_for_dedupe_fn,
+    resolve_stream_delta as resolve_stream_delta_fn,
+  )
+  from backend.tool_call_parser import (
+    TOOL_CALL_BLOCK_PATTERN,
+    extract_reply_mood_directive as extract_reply_mood_directive_fn,
+    strip_markdown_fence as strip_markdown_fence_fn,
+    normalize_tool_call_payload as normalize_tool_call_payload_fn,
+    extract_tool_calls_from_json_payload as extract_tool_calls_from_json_payload_fn,
+    extract_tool_calls_from_json_text as extract_tool_calls_from_json_text_fn,
+    build_json_parse_candidates as build_json_parse_candidates_fn,
+    parse_json_like as parse_json_like_fn,
+    extract_balanced_json_prefix as extract_balanced_json_prefix_fn,
+    normalize_tool_call_candidate as normalize_tool_call_candidate_fn,
+    extract_tool_calls_from_candidate_text as extract_tool_calls_from_candidate_text_fn,
+    extract_tool_calls_from_mixed_text as extract_tool_calls_from_mixed_text_fn,
+    extract_tool_calls_from_reply as extract_tool_calls_from_reply_fn,
+    sanitize_stream_preview as sanitize_stream_preview_fn,
+  )
+  from backend.engine_support import (
+    GenerationPlan,
+    ModelResult,
+    ModelStartupState,
+    STARTUP_STAGE_PROGRESS,
+    format_bytes,
+    normalize_model_repo,
+    normalize_model_tier_key,
+    resolve_available_memory_bytes,
+    resolve_total_memory_bytes,
+  )
   from backend.model_catalog import (
     DEFAULT_MODEL_ID_BY_TIER,
     get_model_entry,
@@ -25,11 +66,57 @@ try:
     normalize_model_id,
     resolve_model_id_for_tier,
   )
-  from backend.schemas import MODEL_TIER_ALIASES, MODEL_TIERS, ChatRequest, ModelTier, RuntimeChatContext, ToolEvent
+  from backend.schemas import MODEL_TIERS, ChatRequest, RuntimeChatContext, ToolEvent
   from backend.storage import AppStorage
-  from backend.tooling import TOOL_SCHEMAS, ToolRegistry, apply_enabled_tools_prompt
+  from backend.tooling import TOOL_SCHEMAS, ToolRegistry
 except ModuleNotFoundError:
   from common import normalize_mood, utc_now_iso  # type: ignore
+  from engine_generation_prep import (  # type: ignore
+    build_attachment_context as build_attachment_context_fn,
+    build_generation_attempts as build_generation_attempts_fn,
+    build_messages as build_messages_fn,
+    build_tool_schemas as build_tool_schemas_fn,
+    convert_turns_for_compat as convert_turns_for_compat_fn,
+    normalize_attachment_kind as normalize_attachment_kind_fn,
+    render_prompt as render_prompt_fn,
+  )
+  from engine_model_storage import EngineModelStorage  # type: ignore
+  from engine_models_mixin import EngineModelsMixin  # type: ignore
+  from text_stream_utils import (  # type: ignore
+    chunk_text_for_streaming as chunk_text_for_streaming_fn,
+    compact_repetitions as compact_repetitions_fn,
+    is_repetition_runaway as is_repetition_runaway_fn,
+    normalize_for_dedupe as normalize_for_dedupe_fn,
+    resolve_stream_delta as resolve_stream_delta_fn,
+  )
+  from tool_call_parser import (  # type: ignore
+    TOOL_CALL_BLOCK_PATTERN,
+    extract_reply_mood_directive as extract_reply_mood_directive_fn,
+    strip_markdown_fence as strip_markdown_fence_fn,
+    normalize_tool_call_payload as normalize_tool_call_payload_fn,
+    extract_tool_calls_from_json_payload as extract_tool_calls_from_json_payload_fn,
+    extract_tool_calls_from_json_text as extract_tool_calls_from_json_text_fn,
+    build_json_parse_candidates as build_json_parse_candidates_fn,
+    parse_json_like as parse_json_like_fn,
+    extract_balanced_json_prefix as extract_balanced_json_prefix_fn,
+    normalize_tool_call_candidate as normalize_tool_call_candidate_fn,
+    extract_tool_calls_from_candidate_text as extract_tool_calls_from_candidate_text_fn,
+    extract_tool_calls_from_mixed_text as extract_tool_calls_from_mixed_text_fn,
+    extract_tool_calls_from_reply as extract_tool_calls_from_reply_fn,
+    sanitize_stream_preview as sanitize_stream_preview_fn,
+  )
+  from prompt_builder import build_system_prompt  # type: ignore
+  from engine_support import (  # type: ignore
+    GenerationPlan,
+    ModelResult,
+    ModelStartupState,
+    STARTUP_STAGE_PROGRESS,
+    format_bytes,
+    normalize_model_repo,
+    normalize_model_tier_key,
+    resolve_available_memory_bytes,
+    resolve_total_memory_bytes,
+  )
   from model_catalog import (  # type: ignore
     DEFAULT_MODEL_ID_BY_TIER,
     get_model_entry,
@@ -37,201 +124,16 @@ except ModuleNotFoundError:
     normalize_model_id,
     resolve_model_id_for_tier,
   )
-  from schemas import MODEL_TIER_ALIASES, MODEL_TIERS, ChatRequest, ModelTier, RuntimeChatContext, ToolEvent  # type: ignore
+  from schemas import MODEL_TIERS, ChatRequest, RuntimeChatContext, ToolEvent  # type: ignore
   from storage import AppStorage  # type: ignore
-  from tooling import TOOL_SCHEMAS, ToolRegistry, apply_enabled_tools_prompt  # type: ignore
+  from tooling import TOOL_SCHEMAS, ToolRegistry  # type: ignore
 
-
-CHAT_MOOD_DIRECTIVE_PATTERN = re.compile(r"\[\[\s*mood\s*:\s*([a-zA-Z_]+)\s*\]\]", re.IGNORECASE)
-TOOL_CALL_BLOCK_PATTERN = re.compile(r"<tool_call>\s*([\s\S]*?)\s*</tool_call>", re.IGNORECASE)
-TOOL_CALL_LINE_PREFIX_PATTERN = re.compile(
-  r"^\s*(?:(?:>\s*)+|[-*+\u2022]\s+|[\u2013\u2014]\s+|\(\d{1,3}\)\s+|\d{1,3}[.)]\s+)"
-)
-TOOL_CALL_LABEL_PREFIX_PATTERN = re.compile(
-  r"^\s*(?:tool(?:_call)?|function|json)\s*[:=-]\s*",
-  re.IGNORECASE,
-)
-TOOL_CALL_INVISIBLE_PREFIX_PATTERN = re.compile(r"^[\s\u200b\u200c\u200d\ufeff]+")
-SMART_QUOTES_TRANSLATION = str.maketrans({
-  "\u2018": "'",
-  "\u2019": "'",
-  "\u201c": "\"",
-  "\u201d": "\"",
-  "\u201e": "\"",
-  "\u00ab": "\"",
-  "\u00bb": "\"",
-})
 LOGGER = logging.getLogger("ancia.engine")
-STARTUP_STAGE_PROGRESS = {
-  "backend_boot": 4,
-  "environment_check": 15,
-  "checking_gpu_memory": 30,
-  "loading_model": 72,
-  "ready": 100,
-  "error": 100,
-  "unloaded": 0,
-}
 
 
-def build_chat_mood_prompt() -> str:
-  return (
-    "## Настроение и фон чата\n"
-    "Фон чата зависит от настроения ответа модели.\n"
-    "Ты можешь явно задать настроение маркером: [[mood:<state>]]. Этот маркер не показывается пользователю.\n"
-    "Доступные состояния: neutral, thinking, waiting, success, friendly, warning, error, aggression, creative, "
-    "planning, coding, researching, offline.\n"
-    "Примеры: [[mood:aggression]], [[mood:warning]], [[mood:success]].\n"
-    "Выбирай mood по контексту запроса и тону диалога."
-  )
-
-
-@dataclass
-class ModelResult:
-  reply: str
-  mood: str
-  tool_events: list[ToolEvent]
-  model_name: str
-
-
-@dataclass
-class GenerationPlan:
-  tier: ModelTier
-  user_text: str
-  context_mood: str
-  active_tools: set[str]
-  context_window_override: int | None = None
-  max_tokens_override: int | None = None
-  temperature_override: float | None = None
-  top_p_override: float | None = None
-  top_k_override: int | None = None
-
-
-def format_bytes(value: int | None) -> str:
-  if value is None or value < 0:
-    return "n/a"
-  size = float(value)
-  for unit in ["B", "KB", "MB", "GB", "TB"]:
-    if size < 1024 or unit == "TB":
-      if unit == "B":
-        return f"{int(size)} {unit}"
-      return f"{size:.2f} {unit}"
-    size /= 1024
-  return f"{value} B"
-
-
-def resolve_available_memory_bytes() -> tuple[int | None, str]:
-  try:
-    import psutil  # type: ignore
-
-    available = int(psutil.virtual_memory().available)
-    return max(0, available), "psutil.virtual_memory.available"
-  except Exception:
-    pass
-
-  if hasattr(os, "sysconf"):
-    try:
-      pages = int(os.sysconf("SC_AVPHYS_PAGES"))
-      page_size = int(os.sysconf("SC_PAGE_SIZE"))
-      if pages > 0 and page_size > 0:
-        return pages * page_size, "os.sysconf"
-    except (OSError, TypeError, ValueError):
-      pass
-
-  return None, "unknown"
-
-
-def resolve_total_memory_bytes() -> tuple[int | None, str]:
-  if platform.system() == "Darwin":
-    try:
-      output = subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True).strip()
-      value = int(output)
-      if value > 0:
-        return value, "sysctl hw.memsize"
-    except (OSError, subprocess.SubprocessError, ValueError):
-      pass
-
-  if hasattr(os, "sysconf"):
-    try:
-      pages = int(os.sysconf("SC_PHYS_PAGES"))
-      page_size = int(os.sysconf("SC_PAGE_SIZE"))
-      if pages > 0 and page_size > 0:
-        return pages * page_size, "os.sysconf"
-    except (OSError, TypeError, ValueError):
-      pass
-
-  return None, "unknown"
-
-
-class ModelStartupState:
-  def __init__(self) -> None:
-    self._lock = threading.Lock()
-    self._snapshot: dict[str, Any] = {
-      "status": "booting",
-      "stage": "backend_boot",
-      "message": "Инициализация backend...",
-      "updated_at": utc_now_iso(),
-      "details": {},
-    }
-
-  def set(
-    self,
-    *,
-    status: str,
-    stage: str,
-    message: str,
-    details: dict[str, Any] | None = None,
-  ) -> None:
-    with self._lock:
-      self._snapshot = {
-        "status": str(status or "booting"),
-        "stage": str(stage or "backend_boot"),
-        "message": str(message or ""),
-        "updated_at": utc_now_iso(),
-        "details": dict(details or {}),
-      }
-
-  def get(self) -> dict[str, Any]:
-    with self._lock:
-      return dict(self._snapshot)
-
-
-def normalize_model_tier_key(value: str | None, fallback: str = "lite") -> str:
-  raw = str(value or "").strip().lower()
-  if raw in MODEL_TIER_ALIASES:
-    raw = MODEL_TIER_ALIASES[raw]
-  if raw in MODEL_TIERS:
-    return raw
-  return fallback
-
-
-def normalize_model_repo(value: str | None, fallback: str = "") -> str:
-  aliases = {
-    "qwen/qwen3-vl-4b": "lmstudio-community/Qwen3-VL-4B-Instruct-MLX-4bit",
-  }
-  raw = str(value or "").strip()
-  if not raw:
-    return fallback
-
-  if raw.startswith("http://") or raw.startswith("https://"):
-    try:
-      parsed = url_parse.urlparse(raw)
-      path_parts = [part for part in parsed.path.split("/") if part]
-      if len(path_parts) >= 3 and path_parts[0].lower() == "models":
-        owner = path_parts[1].strip()
-        model = path_parts[2].strip()
-        if owner and model:
-          mapped = aliases.get(f"{owner}/{model}".lower())
-          return mapped or f"{owner}/{model}"
-    except Exception:
-      pass
-
-  normalized = raw.strip("/")
-  mapped = aliases.get(normalized.lower())
-  return mapped or normalized
-
-
-class PythonModelEngine:
+class PythonModelEngine(EngineModelsMixin):
   MODEL_SETTING_PREFIX = "model_id_"
+  MODEL_SELECTED_SETTING_KEY = "selected_model_id"
   MODEL_PARAMS_SETTING_KEY = "model_params_by_id"
   MIN_REQUIRED_UNIFIED_MEMORY_BYTES = 2 * 1024 * 1024 * 1024
   SUPPORTED_PYTHON_MIN = (3, 10)
@@ -245,6 +147,12 @@ class PythonModelEngine:
   def __init__(self, storage: AppStorage, *, base_system_prompt: str) -> None:
     self._storage = storage
     self._base_system_prompt = base_system_prompt
+    _models_dir = (
+      Path(os.getenv("ANCIA_MODELS_DIR", "")).expanduser().resolve()
+      if os.getenv("ANCIA_MODELS_DIR") else
+      Path.home() / ".cache" / "ancia"
+    )
+    os.environ.setdefault("HF_HOME", str(_models_dir))
     self._startup = ModelStartupState()
     self._load_thread: threading.Thread | None = None
     self._state_lock = threading.Lock()
@@ -262,14 +170,19 @@ class PythonModelEngine:
     self._pending_model_id = ""
     self._loaded_tier = ""
     self._loaded_model_id = ""
-    self._model_repo_override_by_tier: dict[str, str] = {
-      "lite": normalize_model_repo(os.getenv("ANCIA_MODEL_LITE_REPO"), ""),
-      "standart": normalize_model_repo(os.getenv("ANCIA_MODEL_STANDART_REPO"), ""),
-      "plus": normalize_model_repo(os.getenv("ANCIA_MODEL_PLUS_REPO"), ""),
-    }
+    self._model_storage = EngineModelStorage(
+      storage=self._storage,
+      model_params_setting_key=self.MODEL_PARAMS_SETTING_KEY,
+      model_tiers=MODEL_TIERS,
+      normalize_model_id_fn=normalize_model_id,
+      get_model_entry_fn=get_model_entry,
+      list_model_catalog_payload_fn=list_model_catalog_payload,
+      format_bytes_fn=format_bytes,
+      get_loaded_model_id_fn=self.get_loaded_model_id,
+    )
 
     selected_tier = self.get_selected_tier()
-    selected_model = self.get_selected_model_id(selected_tier)
+    selected_model = self.get_selected_model_id()
     selected_model_entry = get_model_entry(selected_model)
     self.model_repo = self.get_model_repo_for_tier(selected_tier)
     self.model_name = selected_model_entry.label if selected_model_entry is not None else self.model_repo
@@ -286,10 +199,17 @@ class PythonModelEngine:
     )
 
   def start_background_load(self, tier: str | None = None) -> None:
-    target_tier = normalize_model_tier_key(tier, self.get_selected_tier())
-    target_model_id = self.get_selected_model_id(target_tier)
+    target_model_id = self.get_selected_model_id()
     target_model_entry = get_model_entry(target_model_id)
-    target_repo = self.get_model_repo_for_tier(target_tier)
+    target_tier = normalize_model_tier_key(
+      getattr(target_model_entry, "recommended_tier", "") if target_model_entry is not None else "",
+      normalize_model_tier_key(tier, self.get_selected_tier()),
+    )
+    target_repo = (
+      normalize_model_repo(getattr(target_model_entry, "repo", ""), "")
+      if target_model_entry is not None
+      else self.get_model_repo_for_tier(target_tier)
+    )
     load_thread = threading.Thread(
       target=self._load_model,
       args=(target_tier, target_model_id, target_repo),
@@ -354,223 +274,6 @@ class PythonModelEngine:
       return "friendly"
     return normalize_mood(context_mood, "neutral")
 
-  def get_selected_tier(self) -> str:
-    raw = self._storage.get_setting("model_tier")
-    return normalize_model_tier_key(raw, "lite")
-
-  def get_loaded_tier(self) -> str:
-    with self._state_lock:
-      return self._loaded_tier
-
-  def get_loaded_model_id(self) -> str:
-    with self._state_lock:
-      return self._loaded_model_id
-
-  def get_runtime_snapshot(self) -> dict[str, Any]:
-    with self._state_lock:
-      loading_tier = self._loading_tier
-      pending_tier = self._pending_tier
-      pending_model_id = self._pending_model_id
-      loaded_tier = self._loaded_tier
-      loaded_model_id = self._loaded_model_id
-
-    return {
-      "selected_tier": self.get_selected_tier(),
-      "selected_model_id": self.get_selected_model_id(),
-      "loaded_tier": loaded_tier,
-      "loaded_model_id": loaded_model_id,
-      "loading_tier": loading_tier,
-      "pending_tier": pending_tier,
-      "pending_model_id": pending_model_id,
-      "generation_stop_requested": self._generation_stop_event.is_set(),
-      "startup": self.get_startup_snapshot(),
-      "memory": dict(self._memory_details or {}),
-    }
-
-  @classmethod
-  def _model_setting_key_for_tier(cls, tier: str | None = None) -> str:
-    safe_tier = normalize_model_tier_key(tier, "lite")
-    return f"{cls.MODEL_SETTING_PREFIX}{safe_tier}"
-
-  def get_selected_model_id(self, tier: str | None = None) -> str:
-    safe_tier = normalize_model_tier_key(tier, self.get_selected_tier())
-    stored = self._storage.get_setting(self._model_setting_key_for_tier(safe_tier))
-    return resolve_model_id_for_tier(safe_tier, stored)
-
-  def get_selected_model(self, tier: str | None = None) -> dict[str, Any] | None:
-    model_id = self.get_selected_model_id(tier)
-    entry = get_model_entry(model_id)
-    if entry is None:
-      return None
-    return {
-      "id": entry.id,
-      "label": entry.label,
-      "repo": self.get_model_repo_for_tier(tier),
-      "source": entry.source,
-      "homepage": entry.homepage,
-      "family": entry.family,
-      "size": entry.size,
-      "quantization": entry.quantization,
-      "description": entry.description,
-      "supports_tools": entry.supports_tools,
-      "supports_vision": entry.supports_vision,
-      "supports_documents": entry.supports_documents,
-      "recommended_tier": entry.recommended_tier,
-      "max_context": entry.max_context,
-      "estimated_unified_memory_bytes": entry.estimated_unified_memory_bytes,
-      "estimated_unified_memory_human": format_bytes(entry.estimated_unified_memory_bytes),
-    }
-
-  @classmethod
-  def _default_model_params(cls, tier_key: str) -> dict[str, Any]:
-    tier = MODEL_TIERS.get(tier_key) or MODEL_TIERS["lite"]
-    return {
-      "context_window": int(tier.max_context),
-      "max_tokens": 320 if tier.key == "plus" else 256,
-      "temperature": float(tier.temperature),
-      "top_p": 0.9,
-      "top_k": 40,
-    }
-
-  def _load_model_params_map(self) -> dict[str, Any]:
-    payload = self._storage.get_setting_json(self.MODEL_PARAMS_SETTING_KEY, {})
-    if not isinstance(payload, dict):
-      return {}
-    return payload
-
-  @staticmethod
-  def _normalize_model_params_payload(params: dict[str, Any], tier_key: str) -> dict[str, Any]:
-    defaults = PythonModelEngine._default_model_params(tier_key)
-    out = dict(defaults)
-    if not isinstance(params, dict):
-      return out
-
-    def _int_value(value: Any, minimum: int, maximum: int, fallback: int) -> int:
-      try:
-        parsed = int(value)
-      except (TypeError, ValueError):
-        return fallback
-      return max(minimum, min(maximum, parsed))
-
-    def _float_value(value: Any, minimum: float, maximum: float, fallback: float) -> float:
-      try:
-        parsed = float(value)
-      except (TypeError, ValueError):
-        return fallback
-      return max(minimum, min(maximum, parsed))
-
-    out["context_window"] = _int_value(params.get("context_window"), 256, 32768, defaults["context_window"])
-    out["max_tokens"] = _int_value(params.get("max_tokens"), 16, 4096, defaults["max_tokens"])
-    out["temperature"] = _float_value(params.get("temperature"), 0.0, 2.0, defaults["temperature"])
-    out["top_p"] = _float_value(params.get("top_p"), 0.0, 1.0, defaults["top_p"])
-    out["top_k"] = _int_value(params.get("top_k"), 1, 400, defaults["top_k"])
-    return out
-
-  def get_model_params(self, model_id: str, *, tier_key: str = "lite") -> dict[str, Any]:
-    safe_model_id = normalize_model_id(model_id, "")
-    if not safe_model_id:
-      return self._default_model_params(tier_key)
-    params_map = self._load_model_params_map()
-    raw_model_params = params_map.get(safe_model_id, {})
-    return self._normalize_model_params_payload(raw_model_params, tier_key)
-
-  def set_model_params(self, model_id: str, params: dict[str, Any], *, tier_key: str = "lite") -> dict[str, Any]:
-    safe_model_id = normalize_model_id(model_id, "")
-    if not safe_model_id:
-      raise ValueError("Unsupported model id")
-    params_map = self._load_model_params_map()
-    normalized = self._normalize_model_params_payload(params, tier_key)
-    params_map[safe_model_id] = normalized
-    self._storage.set_setting_json(self.MODEL_PARAMS_SETTING_KEY, params_map)
-    return normalized
-
-  def _resolve_hf_hub_cache_root(self) -> Path:
-    hf_home = str(os.getenv("HF_HOME") or "").strip()
-    if hf_home:
-      return (Path(hf_home).expanduser().resolve() / "hub")
-    xdg_home = str(os.getenv("XDG_CACHE_HOME") or "").strip()
-    if xdg_home:
-      return (Path(xdg_home).expanduser().resolve() / "huggingface" / "hub")
-    return (Path.home() / ".cache" / "huggingface" / "hub").resolve()
-
-  @staticmethod
-  def _repo_to_hf_cache_prefix(repo: str) -> str:
-    owner, _, name = str(repo or "").partition("/")
-    owner = owner.strip()
-    name = name.strip()
-    if not owner or not name:
-      return ""
-    safe_owner = owner.replace("/", "--")
-    safe_name = name.replace("/", "--")
-    return f"models--{safe_owner}--{safe_name}"
-
-  def _resolve_repo_cache_dir(self, repo: str) -> Path | None:
-    prefix = self._repo_to_hf_cache_prefix(repo)
-    if not prefix:
-      return None
-    return (self._resolve_hf_hub_cache_root() / prefix).resolve()
-
-  @staticmethod
-  def _directory_size_bytes(path: Path) -> int:
-    total = 0
-    try:
-      for root, _, files in os.walk(path):
-        for file_name in files:
-          file_path = Path(root) / file_name
-          try:
-            total += file_path.stat().st_size
-          except OSError:
-            continue
-    except OSError:
-      return 0
-    return max(0, total)
-
-  def get_local_cache_map(self) -> dict[str, dict[str, Any]]:
-    cache_map: dict[str, dict[str, Any]] = {}
-    for model_entry in self.list_models_catalog():
-      repo = str(model_entry.get("repo") or "").strip()
-      model_id = str(model_entry.get("id") or "").strip()
-      cache_dir = self._resolve_repo_cache_dir(repo)
-      if not repo or not model_id or cache_dir is None or not cache_dir.exists():
-        continue
-      snapshots_dir = cache_dir / "snapshots"
-      refs_dir = cache_dir / "refs"
-      has_snapshots = snapshots_dir.exists() and any(snapshots_dir.iterdir())
-      if not has_snapshots:
-        continue
-      size_bytes = self._directory_size_bytes(cache_dir)
-      cache_map[model_id] = {
-        "cached": True,
-        "repo": repo,
-        "cache_dir": str(cache_dir),
-        "snapshots_dir": str(snapshots_dir),
-        "refs_dir": str(refs_dir),
-        "size_bytes": size_bytes,
-        "size_human": format_bytes(size_bytes),
-      }
-    return cache_map
-
-  def delete_local_model_cache(self, model_id: str) -> bool:
-    safe_model_id = normalize_model_id(model_id, "")
-    if not safe_model_id:
-      raise ValueError("Unsupported model id")
-    if safe_model_id == self.get_loaded_model_id():
-      raise RuntimeError("Нельзя удалить кэш загруженной модели. Сначала выгрузите модель.")
-
-    entry = get_model_entry(safe_model_id)
-    if entry is None:
-      raise ValueError("Unsupported model id")
-    cache_dir = self._resolve_repo_cache_dir(entry.repo)
-    if cache_dir is None:
-      return False
-    hub_root = self._resolve_hf_hub_cache_root()
-    if not str(cache_dir).startswith(str(hub_root)):
-      raise RuntimeError("Некорректный путь к локальному кэшу модели.")
-    if not cache_dir.exists():
-      return False
-    shutil.rmtree(cache_dir, ignore_errors=False)
-    return True
-
   def unload_model(self) -> bool:
     with self._generation_lock:
       had_model = self._model is not None or self._tokenizer is not None
@@ -598,13 +301,13 @@ class PythonModelEngine:
   def wait_until_ready(
     self,
     *,
-    expected_tier: str,
+    expected_tier: str | None = None,
     expected_model_id: str,
     timeout_seconds: float = 180.0,
     poll_interval_seconds: float = 0.25,
   ) -> tuple[bool, dict[str, Any]]:
     started_at = time.time()
-    expected_tier_key = normalize_model_tier_key(expected_tier, "lite")
+    expected_tier_key = normalize_model_tier_key(expected_tier, "") if expected_tier else ""
     expected_model = normalize_model_id(expected_model_id, "")
     while time.time() - started_at <= max(1.0, float(timeout_seconds)):
       snapshot = self.get_runtime_snapshot()
@@ -612,155 +315,16 @@ class PythonModelEngine:
       status = str((startup or {}).get("status") or "").strip().lower()
       loaded_tier = str(snapshot.get("loaded_tier") or "").strip().lower()
       loaded_model_id = normalize_model_id(str(snapshot.get("loaded_model_id") or "").strip().lower(), "")
-      if status == "ready" and loaded_tier == expected_tier_key and loaded_model_id == expected_model:
+      if (
+        status == "ready"
+        and loaded_model_id == expected_model
+        and (not expected_tier_key or loaded_tier == expected_tier_key)
+      ):
         return True, snapshot
       if status == "error":
         return False, snapshot
       time.sleep(max(0.05, float(poll_interval_seconds)))
     return False, self.get_runtime_snapshot()
-
-  def build_compatibility_payload(self) -> dict[str, dict[str, Any]]:
-    total_memory, total_source = resolve_total_memory_bytes()
-    available_memory, available_source = resolve_available_memory_bytes()
-    payload: dict[str, dict[str, Any]] = {}
-    for model in self.list_models_catalog():
-      model_id = str(model.get("id") or "").strip()
-      required = int(model.get("estimated_unified_memory_bytes") or 0)
-      compatible = True
-      level = "ok"
-      reason = "Совместима с текущей конфигурацией."
-      if required > 0 and total_memory is not None and total_memory < required:
-        compatible = False
-        level = "unsupported"
-        reason = (
-          f"Недостаточно общей памяти устройства: нужно ~{format_bytes(required)}, "
-          f"доступно всего {format_bytes(total_memory)}."
-        )
-      elif required > 0 and available_memory is not None and available_memory < required:
-        level = "warning"
-        reason = (
-          f"Сейчас мало свободной памяти: нужно ~{format_bytes(required)}, "
-          f"свободно {format_bytes(available_memory)}."
-        )
-      payload[model_id] = {
-        "compatible": compatible,
-        "level": level,
-        "reason": reason,
-        "required_unified_memory_bytes": required,
-        "required_unified_memory_human": format_bytes(required),
-        "total_unified_memory_bytes": total_memory,
-        "total_unified_memory_human": format_bytes(total_memory),
-        "available_unified_memory_bytes": available_memory,
-        "available_unified_memory_human": format_bytes(available_memory),
-        "total_source": total_source,
-        "available_source": available_source,
-      }
-    return payload
-
-  def list_models_catalog(self) -> list[dict[str, Any]]:
-    selected_tier = self.get_selected_tier()
-    cache_map = self.get_local_cache_map()
-    compatibility_map = self.build_compatibility_payload()
-    runtime = self.get_runtime_snapshot()
-    selected_model_id = normalize_model_id(self.get_selected_model_id(selected_tier), "")
-    loaded_model_id = normalize_model_id(runtime.get("loaded_model_id"), "")
-    loading_tier = str(runtime.get("loading_tier") or "").strip().lower()
-    startup = runtime.get("startup") if isinstance(runtime, dict) else {}
-    startup_details = startup.get("details") if isinstance(startup, dict) and isinstance(startup.get("details"), dict) else {}
-    startup_model_id = normalize_model_id(startup_details.get("model_id"), "")
-
-    payload: list[dict[str, Any]] = []
-    for model in list_model_catalog_payload():
-      model_id = str(model.get("id") or "").strip()
-      recommended_tier = normalize_model_tier_key(str(model.get("recommended_tier") or ""), "lite")
-      params = self.get_model_params(model_id, tier_key=recommended_tier)
-      model_cache = cache_map.get(model_id, {"cached": False})
-      compatibility = compatibility_map.get(model_id, {
-        "compatible": True,
-        "level": "ok",
-        "reason": "",
-      })
-      payload.append(
-        {
-          **model,
-          "params": params,
-          "cache": model_cache,
-          "compatibility": compatibility,
-          "selected": model_id == selected_model_id,
-          "loaded": model_id == loaded_model_id and self.is_ready(),
-          "loading": (
-            loading_tier == recommended_tier
-            and model_id == startup_model_id
-            and str(startup.get("status") or "").strip().lower() == "loading"
-          ),
-        }
-      )
-    return payload
-
-  def get_model_repo_for_tier(self, tier: str | None = None) -> str:
-    key = normalize_model_tier_key(tier, "lite")
-    selected_model_id = self.get_selected_model_id(key)
-    selected_model = get_model_entry(selected_model_id)
-    fallback_model = get_model_entry(DEFAULT_MODEL_ID_BY_TIER.get(key, DEFAULT_MODEL_ID_BY_TIER["lite"]))
-    fallback_repo = fallback_model.repo if fallback_model is not None else ""
-    selected_repo = selected_model.repo if selected_model is not None else fallback_repo
-    override_repo = self._model_repo_override_by_tier.get(key, "")
-    return override_repo or normalize_model_repo(selected_repo, fallback_repo)
-
-  def set_selected_tier(self, tier: str, *, auto_load: bool = False) -> str:
-    requested = str(tier or "").strip().lower()
-    key = normalize_model_tier_key(requested, "")
-    if not key:
-      raise ValueError("Unsupported model tier")
-    current = self.get_selected_tier()
-    if key != current:
-      self._storage.set_setting("model_tier", key)
-    target_repo = self.get_model_repo_for_tier(key)
-    if auto_load and (self.model_repo != target_repo or not self.is_ready()):
-      self.start_background_load(key)
-    return key
-
-  def set_selected_model(self, model_id: str, *, tier: str | None = None, auto_load: bool = False) -> str:
-    safe_tier = normalize_model_tier_key(tier, self.get_selected_tier())
-    normalized_model_id = normalize_model_id(model_id, "")
-    if not normalized_model_id:
-      raise ValueError("Unsupported model id")
-    self._storage.set_setting(self._model_setting_key_for_tier(safe_tier), normalized_model_id)
-
-    active_tier = self.get_selected_tier()
-    if auto_load and safe_tier == active_tier:
-      target_repo = self.get_model_repo_for_tier(safe_tier)
-      if self.model_repo != target_repo or not self.is_ready():
-        self.start_background_load(safe_tier)
-    return normalized_model_id
-
-  def list_tiers(self) -> list[dict[str, Any]]:
-    active_tier = self.get_selected_tier()
-    loaded_tier = self.get_loaded_tier()
-    loaded_model_id = self.get_loaded_model_id()
-    result: list[dict[str, Any]] = []
-    for key in ["lite", "standart", "plus"]:
-      tier = MODEL_TIERS[key]
-      model_id = self.get_selected_model_id(key)
-      model_entry = get_model_entry(model_id)
-      result.append(
-        {
-          "key": tier.key,
-          "label": tier.label,
-          "max_context": tier.max_context,
-          "temperature": tier.temperature,
-          "active": tier.key == active_tier,
-          "loaded": tier.key == loaded_tier,
-          "model_id": model_id,
-          "model_label": model_entry.label if model_entry is not None else model_id,
-          "model_loaded": tier.key == loaded_tier and model_id == loaded_model_id,
-          "supports_tools": bool(model_entry and model_entry.supports_tools),
-          "supports_vision": bool(model_entry and model_entry.supports_vision),
-          "supports_documents": bool(model_entry and model_entry.supports_documents),
-          "repo": self.get_model_repo_for_tier(tier.key),
-        }
-      )
-    return result
 
   def _validate_environment(self) -> None:
     if platform.system() != "Darwin" or platform.machine() not in {"arm64", "aarch64"}:
@@ -829,7 +393,7 @@ class PythonModelEngine:
   def _set_error(self, message: str, details: dict[str, Any] | None = None) -> None:
     payload = dict(details or {})
     payload.setdefault("model_tier", self.get_selected_tier())
-    payload.setdefault("model_id", self.get_selected_model_id(payload.get("model_tier")))
+    payload.setdefault("model_id", self.get_selected_model_id())
     payload.setdefault("loaded_tier", self.get_loaded_tier())
     payload.setdefault("loaded_model_id", self.get_loaded_model_id())
     payload.setdefault("model_repo", self.model_repo)
@@ -1017,28 +581,11 @@ class PythonModelEngine:
 
   @staticmethod
   def _build_tool_schemas(active_tools: set[str]) -> list[dict[str, Any]]:
-    return [TOOL_SCHEMAS[name] for name in active_tools if name in TOOL_SCHEMAS]
+    return build_tool_schemas_fn(active_tools, TOOL_SCHEMAS)
 
   @staticmethod
   def _convert_turns_for_compat(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Конвертирует tool/assistant-with-tool_calls сообщения в совместимый формат для токенизаторов без поддержки tool role."""
-    result: list[dict[str, Any]] = []
-    for msg in messages:
-      role = msg.get("role", "user")
-      if role == "tool":
-        content = str(msg.get("content") or "")
-        result.append({"role": "user", "content": f"[Результат инструмента]\n{content}"})
-      elif role == "assistant" and msg.get("tool_calls"):
-        calls_text = "\n".join(
-          f'<tool_call>{json.dumps({"name": tc["function"]["name"], "args": json.loads(tc["function"].get("arguments", "{}"))}, ensure_ascii=False)}</tool_call>'
-          for tc in (msg.get("tool_calls") or [])
-          if isinstance(tc, dict) and isinstance(tc.get("function"), dict)
-        )
-        content = str(msg.get("content") or "").strip()
-        result.append({"role": "assistant", "content": f"{content}\n{calls_text}".strip()})
-      else:
-        result.append(msg)
-    return result
+    return convert_turns_for_compat_fn(messages)
 
   @staticmethod
   def _execute_tool_event(
@@ -1062,64 +609,16 @@ class PythonModelEngine:
 
   @staticmethod
   def _normalize_attachment_kind(kind: str) -> str:
-    normalized = str(kind or "").strip().lower()
-    if normalized in {"image", "document", "text", "audio", "video"}:
-      return normalized
-    return "file"
+    return normalize_attachment_kind_fn(kind)
 
   @classmethod
   def _build_attachment_context(cls, request: ChatRequest) -> str:
-    attachments = list(request.attachments or [])
-    if not attachments:
-      return ""
-
-    lines: list[str] = ["Вложения пользователя:"]
-    total_text_budget = 9000
-    used_budget = 0
-    selected_model = get_model_entry(resolve_model_id_for_tier(
-      normalize_model_tier_key(getattr(request.context.ui, "modelTier", ""), "lite"),
-      getattr(request.context.ui, "modelId", ""),
-    ))
-    supports_vision = bool(selected_model and selected_model.supports_vision)
-
-    for index, attachment in enumerate(attachments[:10], start=1):
-      item = attachment.model_dump() if hasattr(attachment, "model_dump") else dict(attachment)
-      name = str(item.get("name") or f"file-{index}").strip()
-      kind = cls._normalize_attachment_kind(str(item.get("kind") or "file"))
-      mime_type = str(item.get("mimeType") or "").strip()
-      size = max(0, int(item.get("size") or 0))
-      size_label = f"{size} bytes" if size > 0 else "unknown size"
-      suffix_parts = [kind]
-      if mime_type:
-        suffix_parts.append(mime_type)
-      suffix_parts.append(size_label)
-      lines.append(f"{index}. {name} ({', '.join(suffix_parts)})")
-
-      text_content = str(item.get("textContent") or "").strip()
-      if text_content and used_budget < total_text_budget:
-        remaining = max(0, total_text_budget - used_budget)
-        excerpt = cls._truncate_text(text_content, max(600, min(3500, remaining)))
-        used_budget += len(excerpt)
-        lines.append("```text")
-        lines.append(excerpt)
-        lines.append("```")
-        continue
-
-      if kind == "image":
-        data_url = str(item.get("dataUrl") or "").strip()
-        if supports_vision:
-          lines.append("Изображение приложено. Модель vision-capable: можно использовать визуальный анализ.")
-          if data_url and used_budget < total_text_budget:
-            remaining = max(0, total_text_budget - used_budget)
-            excerpt = cls._truncate_text(data_url, max(420, min(1800, remaining)))
-            used_budget += len(excerpt)
-            lines.append("```text")
-            lines.append(f"image_data_url={excerpt}")
-            lines.append("```")
-        else:
-          lines.append("Изображение приложено. Текущая модель text-only, требуется описание изображения текстом.")
-
-    return "\n".join(lines).strip()
+    return build_attachment_context_fn(
+      request,
+      truncate_text_fn=cls._truncate_text,
+      get_model_entry_fn=get_model_entry,
+      normalize_model_id_fn=normalize_model_id,
+    )
 
   def _build_messages(
     self,
@@ -1127,165 +626,37 @@ class PythonModelEngine:
     turns: list[dict[str, Any]] | None = None,
     active_tools: set[str] | None = None,
   ) -> list[dict[str, Any]]:
-    messages: list[dict[str, Any]] = []
-    system_prompt = build_system_prompt(
-      self._base_system_prompt,
+    return build_messages_fn(
       request,
+      base_system_prompt=self._base_system_prompt,
       active_tools=active_tools or set(),
+      turns=turns,
+      build_system_prompt_fn=build_system_prompt,
+      truncate_text_fn=self._truncate_text,
+      build_attachment_context_fn=self._build_attachment_context,
+      max_history_messages=self.MAX_HISTORY_MESSAGES,
+      max_history_total_chars=self.MAX_HISTORY_TOTAL_CHARS,
+      max_history_entry_chars=self.MAX_HISTORY_ENTRY_CHARS,
     )
-    if system_prompt.strip():
-      messages.append({"role": "system", "content": system_prompt.strip()})
-
-    selected_history: list[dict[str, Any]] = []
-    total_chars = 0
-    for entry in reversed(request.context.history or []):
-      role = str(entry.role or "").strip().lower()
-      if role not in {"user", "assistant", "system"}:
-        continue
-      text = self._truncate_text(str(entry.text or "").strip(), self.MAX_HISTORY_ENTRY_CHARS)
-      if not text:
-        continue
-      projected_total = total_chars + len(text)
-      if projected_total > self.MAX_HISTORY_TOTAL_CHARS and selected_history:
-        break
-      total_chars = projected_total
-      selected_history.append({"role": role, "content": text})
-      if len(selected_history) >= self.MAX_HISTORY_MESSAGES:
-        break
-
-    selected_history.reverse()
-    messages.extend(selected_history)
-
-    # Текущий запрос пользователя
-    user_text = request.message.strip()
-    attachment_context = self._build_attachment_context(request)
-    if attachment_context:
-      user_text = f"{user_text}\n\n{attachment_context}".strip()
-    messages.append({"role": "user", "content": user_text})
-
-    # Туры предыдущих раундов (assistant tool_calls + tool results)
-    if turns:
-      messages.extend(turns)
-
-    return messages
 
   def _render_prompt(
     self,
     messages: list[dict[str, Any]],
     active_tools: set[str] | None = None,
   ) -> str:
-    tokenizer = self._tokenizer
-    if tokenizer is not None and hasattr(tokenizer, "apply_chat_template"):
-      tools_schema = self._build_tool_schemas(active_tools or set())
-      # Пробуем с JSON-схемами инструментов (Qwen2.5, Llama3.1 и др.)
-      if tools_schema:
-        try:
-          return tokenizer.apply_chat_template(
-            messages,
-            tools=tools_schema,
-            tokenize=False,
-            add_generation_prompt=True,
-          )
-        except Exception:
-          pass
-      # Пробуем без схем (раунды с результатами инструментов)
-      try:
-        return tokenizer.apply_chat_template(
-          messages,
-          tokenize=False,
-          add_generation_prompt=True,
-        )
-      except Exception:
-        # Конвертируем tool role → user для несовместимых токенизаторов
-        compat = self._convert_turns_for_compat(messages)
-        try:
-          return tokenizer.apply_chat_template(
-            compat,
-            tokenize=False,
-            add_generation_prompt=True,
-          )
-        except Exception:
-          pass
-
-    blocks: list[str] = []
-    for message in messages:
-      role = message.get("role", "user")
-      content = message.get("content") or ""
-      blocks.append(f"[{role}]\n{content}")
-    blocks.append("[assistant]")
-    return "\n\n".join(blocks)
+    return render_prompt_fn(
+      messages,
+      tokenizer=self._tokenizer,
+      active_tools=active_tools or set(),
+      tool_schemas=TOOL_SCHEMAS,
+    )
 
   def _build_generation_attempts(self, prompt: str, plan: GenerationPlan) -> list[dict[str, Any]]:
-    tier = plan.tier
-    effective_context_window = int(plan.context_window_override or tier.max_context)
-    effective_context_window = max(256, min(32768, effective_context_window))
-    context_cap = max(96, min(2048, effective_context_window // 8))
-    default_cap_by_tier = {
-      "lite": 220,
-      "standart": 320,
-      "plus": 420,
-    }
-    default_cap = default_cap_by_tier.get(tier.key, 320)
-    env_cap_raw = os.getenv("ANCIA_MODEL_MAX_TOKENS", "").strip()
-    if env_cap_raw:
-      try:
-        default_cap = max(64, min(1024, int(env_cap_raw)))
-      except ValueError:
-        pass
-    max_tokens = max(64, min(context_cap, default_cap))
-    if plan.max_tokens_override is not None:
-      max_tokens = max(16, min(context_cap, int(plan.max_tokens_override)))
-
-    temperature = float(plan.temperature_override if plan.temperature_override is not None else tier.temperature)
-    temperature = max(0.0, min(2.0, temperature))
-    top_p = float(plan.top_p_override if plan.top_p_override is not None else 0.9)
-    top_p = max(0.0, min(1.0, top_p))
-    top_k = int(plan.top_k_override if plan.top_k_override is not None else 40)
-    top_k = max(1, min(400, top_k))
-    attempts: list[dict[str, Any]] = []
-
-    sampler = None
-    if self._make_sampler_fn is not None:
-      sampler_attempts = [
-        {"temp": temperature, "top_p": top_p, "top_k": top_k},
-        {"temperature": temperature, "top_p": top_p, "top_k": top_k},
-        {"temp": temperature},
-        {"temperature": temperature},
-      ]
-      for sampler_kwargs in sampler_attempts:
-        try:
-          sampler = self._make_sampler_fn(**sampler_kwargs)
-          if sampler is not None:
-            break
-        except Exception:
-          continue
-
-    if sampler is not None:
-      attempts.append(
-        {
-          "prompt": prompt,
-          "max_tokens": max_tokens,
-          "sampler": sampler,
-        }
-      )
-
-    attempts.append(
-      {
-        "prompt": prompt,
-        "max_tokens": max_tokens,
-        "temperature": temperature,
-        "top_p": top_p,
-        "top_k": top_k,
-      }
+    return build_generation_attempts_fn(
+      prompt,
+      plan,
+      make_sampler_fn=self._make_sampler_fn,
     )
-    attempts.append(
-      {
-        "prompt": prompt,
-        "max_tokens": max_tokens,
-      }
-    )
-
-    return attempts
 
   def request_stop_generation(self) -> bool:
     self._generation_stop_event.set()
@@ -1322,489 +693,78 @@ class PythonModelEngine:
 
   @staticmethod
   def _normalize_for_dedupe(value: str) -> str:
-    return re.sub(r"\s+", " ", str(value or "").strip()).lower()
+    return normalize_for_dedupe_fn(value)
 
   @classmethod
   def _is_repetition_runaway(cls, text: str) -> bool:
-    normalized = cls._normalize_for_dedupe(text)
-    if len(normalized) < 180:
-      return False
-
-    if re.search(r"(.{24,120}?)(?:\s+\1){2,}", normalized):
-      return True
-
-    tokens = [token for token in normalized.split(" ") if token]
-    for width in (8, 12, 16):
-      if len(tokens) < width * 3:
-        continue
-      if tokens[-width:] == tokens[-2 * width: -width] == tokens[-3 * width: -2 * width]:
-        return True
-
-    sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", normalized) if part.strip()]
-    if len(sentences) >= 3:
-      last = sentences[-1]
-      if len(last) >= 24 and last == sentences[-2] == sentences[-3]:
-        return True
-
-    return False
+    return is_repetition_runaway_fn(text)
 
   @classmethod
   def _compact_repetitions(cls, text: str) -> str:
-    raw = str(text or "").strip()
-    if not raw:
-      return ""
-
-    # Инлайн-повторы: «X — это X — это X» → «X»
-    raw = re.sub(r"(.{3,80})\s*(?:[—–-]\s+(?:\w+\s+)*\1){2,}", r"\1", raw, flags=re.IGNORECASE)
-    # Прямые повторы: «phrase phrase phrase» → «phrase»
-    raw = re.sub(r"(.{4,120})(?:\s+\1){2,}", r"\1", raw, flags=re.IGNORECASE)
-
-    paragraphs = [part.strip() for part in re.split(r"\n{2,}", raw) if part.strip()]
-    if not paragraphs:
-      return raw
-
-    unique_paragraphs: list[str] = []
-    seen: set[str] = set()
-    for paragraph in paragraphs:
-      key = cls._normalize_for_dedupe(paragraph)
-      if not key:
-        continue
-      if key in seen:
-        continue
-      seen.add(key)
-
-      sentences = re.split(r"(?<=[.!?])\s+", paragraph)
-      filtered_sentences: list[str] = []
-      prev_key = ""
-      for sentence in sentences:
-        sentence_text = sentence.strip()
-        if not sentence_text:
-          continue
-        sentence_key = cls._normalize_for_dedupe(sentence_text)
-        if sentence_key and sentence_key == prev_key:
-          continue
-        filtered_sentences.append(sentence_text)
-        prev_key = sentence_key
-
-      compact_paragraph = " ".join(filtered_sentences).strip() or paragraph
-      unique_paragraphs.append(compact_paragraph)
-
-    return "\n\n".join(unique_paragraphs).strip() or raw
+    return compact_repetitions_fn(text)
 
   @staticmethod
   def _extract_reply_mood_directive(text: str) -> tuple[str, str]:
-    raw = str(text or "")
-    requested_mood = ""
-    for match in CHAT_MOOD_DIRECTIVE_PATTERN.finditer(raw):
-      requested_mood = normalize_mood(match.group(1), requested_mood)
-    cleaned = CHAT_MOOD_DIRECTIVE_PATTERN.sub("", raw).strip()
-    cleaned = re.sub(r"</?tool_call>", "", cleaned, flags=re.IGNORECASE).strip()
-    return requested_mood, cleaned
+    return extract_reply_mood_directive_fn(text, normalize_mood)
 
   @staticmethod
   def _strip_markdown_fence(value: str) -> str:
-    raw = str(value or "").strip()
-    if not raw.startswith("```"):
-      return raw
-    lines = raw.splitlines()
-    if not lines:
-      return raw
-    if lines[-1].strip() == "```":
-      lines = lines[1:-1]
-    else:
-      lines = lines[1:]
-    return "\n".join(lines).strip()
+    return strip_markdown_fence_fn(value)
 
   @staticmethod
   def _normalize_tool_call_payload(payload: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
-    function_payload = payload.get("function")
-    function_payload = function_payload if isinstance(function_payload, dict) else {}
-    name = str(
-      payload.get("name")
-      or payload.get("tool")
-      or payload.get("tool_name")
-      or payload.get("function_name")
-      or function_payload.get("name")
-      or ""
-    ).strip().lower()
-    if not name:
-      return None
-
-    args_candidate = payload.get("args")
-    if args_candidate is None:
-      args_candidate = payload.get("arguments")
-    if args_candidate is None:
-      args_candidate = payload.get("parameters")
-    if args_candidate is None:
-      args_candidate = payload.get("input")
-    if args_candidate is None and function_payload:
-      args_candidate = (
-        function_payload.get("arguments")
-        if "arguments" in function_payload
-        else function_payload.get("args")
-      )
-
-    if args_candidate is None:
-      args: dict[str, Any] = {}
-    elif isinstance(args_candidate, dict):
-      args = dict(args_candidate)
-    elif isinstance(args_candidate, str):
-      raw_args = args_candidate.strip()
-      if not raw_args:
-        args = {}
-      else:
-        try:
-          parsed_args = json.loads(raw_args)
-        except json.JSONDecodeError:
-          return None
-        if isinstance(parsed_args, dict):
-          args = dict(parsed_args)
-        else:
-          return None
-    else:
-      return None
-
-    return name, args
+    return normalize_tool_call_payload_fn(payload)
 
   @classmethod
   def _extract_tool_calls_from_json_payload(cls, payload: Any) -> list[tuple[str, dict[str, Any]]]:
-    calls: list[tuple[str, dict[str, Any]]] = []
-    seen: set[tuple[str, str]] = set()
-    queue: list[Any] = [payload]
-
-    def _append(call_items: list[tuple[str, dict[str, Any]]]) -> None:
-      for call_name, call_args in call_items:
-        signature = (call_name, json.dumps(call_args, ensure_ascii=False, sort_keys=True))
-        if signature in seen:
-          continue
-        seen.add(signature)
-        calls.append((call_name, call_args))
-
-    while queue:
-      current = queue.pop(0)
-      if isinstance(current, list):
-        queue.extend(current)
-        continue
-      if not isinstance(current, dict):
-        continue
-
-      normalized = cls._normalize_tool_call_payload(current)
-      if normalized is not None:
-        _append([normalized])
-
-      function_payload = current.get("function")
-      if isinstance(function_payload, dict):
-        normalized_function = cls._normalize_tool_call_payload(
-          {
-            "name": function_payload.get("name"),
-            "arguments": function_payload.get("arguments"),
-          }
-        )
-        if normalized_function is not None:
-          _append([normalized_function])
-
-      for key in ("tool_calls", "calls", "actions", "tools"):
-        nested = current.get(key)
-        if isinstance(nested, list):
-          queue.extend(nested)
-
-    return calls
+    return extract_tool_calls_from_json_payload_fn(payload)
 
   @classmethod
   def _extract_tool_calls_from_json_text(cls, raw_text: str) -> list[tuple[str, dict[str, Any]]]:
-    payload_text = cls._strip_markdown_fence(raw_text)
-    if not payload_text:
-      return []
-    for candidate in cls._build_json_parse_candidates(payload_text):
-      parsed = cls._parse_json_like(candidate)
-      if parsed is None:
-        continue
-      calls = cls._extract_tool_calls_from_json_payload(parsed)
-      if calls:
-        return calls
-    return []
+    return extract_tool_calls_from_json_text_fn(raw_text)
 
   @staticmethod
   def _build_json_parse_candidates(payload_text: str) -> list[str]:
-    text = str(payload_text or "").strip()
-    if not text:
-      return []
-
-    candidates: list[str] = [text]
-    balanced_prefix = PythonModelEngine._extract_balanced_json_prefix(text)
-    if balanced_prefix and balanced_prefix not in candidates:
-      candidates.insert(0, balanced_prefix)
-
-    translated = text.translate(SMART_QUOTES_TRANSLATION).strip()
-    if translated and translated not in candidates:
-      candidates.append(translated)
-      translated_prefix = PythonModelEngine._extract_balanced_json_prefix(translated)
-      if translated_prefix and translated_prefix not in candidates:
-        candidates.insert(1, translated_prefix)
-
-    return candidates
+    return build_json_parse_candidates_fn(payload_text)
 
   @staticmethod
   def _parse_json_like(payload_text: str) -> Any | None:
-    text = str(payload_text or "").strip()
-    if not text:
-      return None
-    try:
-      return json.loads(text)
-    except json.JSONDecodeError:
-      pass
-
-    try:
-      parsed_literal = ast.literal_eval(text)
-    except (SyntaxError, ValueError):
-      return None
-    return parsed_literal if isinstance(parsed_literal, (dict, list)) else None
+    return parse_json_like_fn(payload_text)
 
   @staticmethod
   def _extract_balanced_json_prefix(payload_text: str) -> str:
-    text = str(payload_text or "").strip()
-    if not text or text[0] not in "{[":
-      return ""
-
-    stack: list[str] = []
-    in_string = False
-    escaped = False
-    quote_char = ""
-
-    for index, char in enumerate(text):
-      if in_string:
-        if escaped:
-          escaped = False
-        elif char == "\\":
-          escaped = True
-        elif char == quote_char:
-          in_string = False
-          quote_char = ""
-        continue
-
-      if char in ("\"", "'"):
-        in_string = True
-        quote_char = char
-        continue
-
-      if char == "{":
-        stack.append("}")
-        continue
-      if char == "[":
-        stack.append("]")
-        continue
-      if char in ("}", "]"):
-        if not stack or char != stack[-1]:
-          return ""
-        stack.pop()
-        if not stack:
-          return text[:index + 1]
-
-    return ""
+    return extract_balanced_json_prefix_fn(payload_text)
 
   @classmethod
   def _normalize_tool_call_candidate(cls, raw_text: str) -> str:
-    candidate = cls._strip_markdown_fence(raw_text).strip()
-    if not candidate:
-      return ""
-
-    candidate = TOOL_CALL_INVISIBLE_PREFIX_PATTERN.sub("", candidate)
-    if not candidate:
-      return ""
-
-    while len(candidate) >= 2 and candidate.startswith("`") and candidate.endswith("`"):
-      candidate = candidate[1:-1].strip()
-      if not candidate:
-        return ""
-
-    previous = None
-    while candidate and candidate != previous:
-      previous = candidate
-      candidate = TOOL_CALL_LINE_PREFIX_PATTERN.sub("", candidate).strip()
-    candidate = TOOL_CALL_LABEL_PREFIX_PATTERN.sub("", candidate).strip()
-
-    while len(candidate) >= 2 and candidate.startswith("`") and candidate.endswith("`"):
-      candidate = candidate[1:-1].strip()
-      if not candidate:
-        return ""
-
-    return candidate
+    return normalize_tool_call_candidate_fn(raw_text)
 
   @classmethod
   def _extract_tool_calls_from_candidate_text(cls, raw_text: str) -> list[tuple[str, dict[str, Any]]]:
-    candidate = cls._normalize_tool_call_candidate(raw_text)
-    if not candidate:
-      return []
-
-    if candidate[0] not in "{[":
-      first_object = candidate.find("{")
-      first_array = candidate.find("[")
-      first_indices = [idx for idx in (first_object, first_array) if idx >= 0]
-      if not first_indices:
-        return []
-      candidate = candidate[min(first_indices):].strip()
-      if not candidate:
-        return []
-
-    return cls._extract_tool_calls_from_json_text(candidate)
+    return extract_tool_calls_from_candidate_text_fn(raw_text)
 
   @classmethod
   def _extract_tool_calls_from_mixed_text(cls, raw_text: str) -> list[tuple[str, dict[str, Any]]]:
-    direct_calls = cls._extract_tool_calls_from_json_text(raw_text)
-    if direct_calls:
-      return direct_calls
-
-    calls: list[tuple[str, dict[str, Any]]] = []
-    seen: set[tuple[str, str]] = set()
-    for line in str(raw_text or "").splitlines():
-      for call_name, call_args in cls._extract_tool_calls_from_candidate_text(line):
-        signature = (call_name, json.dumps(call_args, ensure_ascii=False, sort_keys=True))
-        if signature in seen:
-          continue
-        seen.add(signature)
-        calls.append((call_name, call_args))
-    return calls
+    return extract_tool_calls_from_mixed_text_fn(raw_text)
 
   @classmethod
   def _extract_tool_calls_from_reply(cls, text: str) -> tuple[str, list[tuple[str, dict[str, Any]]]]:
-    raw = str(text or "")
-    calls: list[tuple[str, dict[str, Any]]] = []
-    seen_calls: set[tuple[str, str]] = set()
-
-    def _append_calls(found_calls: list[tuple[str, dict[str, Any]]]) -> None:
-      for call_name, call_args in found_calls:
-        signature = (call_name, json.dumps(call_args, ensure_ascii=False, sort_keys=True))
-        if signature in seen_calls:
-          continue
-        seen_calls.add(signature)
-        calls.append((call_name, call_args))
-
-    def _replace(match: re.Match[str]) -> str:
-      found_calls = cls._extract_tool_calls_from_mixed_text(match.group(1))
-      _append_calls(found_calls)
-      return ""
-
-    cleaned_text = TOOL_CALL_BLOCK_PATTERN.sub(_replace, raw)
-
-    code_block_pattern = re.compile(r"```(?:json|tool_call)?\s*([\s\S]*?)```", flags=re.IGNORECASE)
-
-    def _replace_code_block(match: re.Match[str]) -> str:
-      block_inner = str(match.group(1) or "")
-      found_calls = cls._extract_tool_calls_from_mixed_text(block_inner)
-      if found_calls:
-        _append_calls(found_calls)
-        return ""
-      return match.group(0)
-
-    cleaned_text = code_block_pattern.sub(_replace_code_block, cleaned_text)
-
-    kept_lines: list[str] = []
-    for line in cleaned_text.splitlines():
-      stripped_line = line.strip()
-      found_calls = cls._extract_tool_calls_from_candidate_text(stripped_line)
-      if found_calls:
-        _append_calls(found_calls)
-        continue
-      kept_lines.append(line)
-    cleaned_text = "\n".join(kept_lines)
-
-    trimmed_text = cleaned_text.strip()
-    found_calls = cls._extract_tool_calls_from_candidate_text(trimmed_text)
-    if found_calls:
-      _append_calls(found_calls)
-      cleaned_text = ""
-
-    cleaned_text = cls._compact_repetitions(cleaned_text).strip()
-    return cleaned_text, calls
+    return extract_tool_calls_from_reply_fn(
+      text,
+      compact_repetitions_fn=cls._compact_repetitions,
+    )
 
   @classmethod
   def _sanitize_stream_preview(cls, text: str, *, final: bool) -> str:
-    cleaned = str(text or "")
-    cleaned = CHAT_MOOD_DIRECTIVE_PATTERN.sub("", cleaned)
-    cleaned = TOOL_CALL_BLOCK_PATTERN.sub("", cleaned)
-
-    lowered = cleaned.lower()
-    tool_block_start = lowered.find("<tool_call>")
-    if tool_block_start >= 0:
-      cleaned = cleaned[:tool_block_start]
-
-    mood_block_start = lowered.find("[[mood:")
-    if mood_block_start >= 0 and "]]" not in lowered[mood_block_start:]:
-      cleaned = cleaned[:mood_block_start]
-
-    lines = cleaned.splitlines(keepends=True)
-    trailing = ""
-    if lines and not cleaned.endswith(("\n", "\r")):
-      trailing = lines.pop()
-
-    filtered_lines: list[str] = []
-    for line in lines:
-      stripped_line = line.strip()
-      found_calls = cls._extract_tool_calls_from_candidate_text(stripped_line)
-      if found_calls:
-        continue
-      filtered_lines.append(line)
-
-    if trailing:
-      stripped_trailing = trailing.strip()
-      trailing_calls = cls._extract_tool_calls_from_candidate_text(stripped_trailing)
-      if trailing_calls:
-        trailing = ""
-      elif not final:
-        trailing_lower = stripped_trailing.lower()
-        normalized_trailing = cls._normalize_tool_call_candidate(stripped_trailing).lower()
-        looks_like_control_prefix = (
-          "<tool_call" in trailing_lower
-          or trailing_lower.startswith("{")
-          or trailing_lower.startswith("[[mood:")
-          or normalized_trailing.startswith("{")
-          or normalized_trailing.startswith("[")
-        )
-        if looks_like_control_prefix:
-          trailing = ""
-
-    return "".join(filtered_lines) + trailing
+    return sanitize_stream_preview_fn(text, final=final)
 
   @staticmethod
   def _chunk_text_for_streaming(text: str, max_chunk_size: int = 42) -> Generator[str, None, None]:
-    tokens = re.findall(r"\S+\s*|\s+", text)
-    if not tokens:
-      return
-    buffer = ""
-    for token in tokens:
-      candidate = buffer + token
-      if buffer and len(candidate) > max_chunk_size:
-        yield buffer
-        buffer = token
-      else:
-        buffer = candidate
-    if buffer:
-      yield buffer
+    yield from chunk_text_for_streaming_fn(text, max_chunk_size=max_chunk_size)
 
   @staticmethod
   def _resolve_stream_delta(payload_text: str, emitted_text: str) -> str:
-    current = str(payload_text or "")
-    if not current:
-      return ""
-    emitted = str(emitted_text or "")
-    if not emitted:
-      return current
-
-    # Cumulative mode: payload содержит весь текст ответа на текущем шаге.
-    if current.startswith(emitted):
-      return current[len(emitted):]
-
-    # Уже полученный дубликат/ретрай без новых токенов.
-    if emitted.endswith(current) or current in emitted:
-      return ""
-
-    # Partial overlap mode: payload возвращает кусок с пересечением хвоста.
-    max_overlap = min(len(current), len(emitted))
-    for overlap in range(max_overlap, 0, -1):
-      if emitted.endswith(current[:overlap]):
-        return current[overlap:]
-
-    return current
+    return resolve_stream_delta_fn(payload_text, emitted_text)
 
   def _iter_generation_chunks(self, prompt: str, plan: GenerationPlan) -> Generator[str, None, None]:
     with self._generation_lock:
@@ -1913,13 +873,37 @@ class PythonModelEngine:
       title = title[:max_chars].rstrip(" ,.;:-")
     return title or "Новая сессия"
 
+  def _resolve_weakest_model_id(self) -> str:
+    weakest_id = ""
+    weakest_score: tuple[int, int, str] | None = None
+    for item in list_model_catalog_payload():
+      model_id = normalize_model_id(item.get("id"), "")
+      if not model_id:
+        continue
+      raw_required = int(item.get("estimated_unified_memory_bytes") or 0)
+      required_memory = raw_required if raw_required > 0 else 2**62
+      max_context = int(item.get("max_context") or 0)
+      score = (required_memory, max_context if max_context > 0 else 2**30, model_id)
+      if weakest_score is None or score < weakest_score:
+        weakest_score = score
+        weakest_id = model_id
+    return weakest_id or self.get_selected_model_id()
+
   def suggest_chat_title(self, user_text: str, max_chars: int = 72) -> str:
     source = re.sub(r"\s+", " ", str(user_text or "").strip())
     if not source:
       return "Новая сессия"
 
-    if not self.is_ready():
+    weakest_model_id = self._resolve_weakest_model_id()
+    loaded_model_id = normalize_model_id(self.get_loaded_model_id(), "")
+    if not self.is_ready() or loaded_model_id != weakest_model_id:
       return self._fallback_chat_title(source, max_chars=max_chars)
+
+    weakest_model_entry = get_model_entry(weakest_model_id)
+    weakest_tier_key = normalize_model_tier_key(
+      getattr(weakest_model_entry, "recommended_tier", "") if weakest_model_entry is not None else "",
+      "compact",
+    )
 
     prompt = (
       "Ты придумываешь короткое название диалога.\n"
@@ -1931,7 +915,7 @@ class PythonModelEngine:
       "Название:"
     )
     title_plan = GenerationPlan(
-      tier=MODEL_TIERS["lite"],
+      tier=MODEL_TIERS[weakest_tier_key],
       user_text=source,
       context_mood="neutral",
       active_tools=set(),
@@ -1990,9 +974,13 @@ class PythonModelEngine:
         return None
       return parsed
 
-    tier_key = self.get_selected_tier()
+    selected_model_id = self.get_selected_model_id()
+    selected_model_entry = get_model_entry(selected_model_id)
+    tier_key = normalize_model_tier_key(
+      getattr(selected_model_entry, "recommended_tier", "") if selected_model_entry is not None else "",
+      self.get_selected_tier(),
+    )
     tier = MODEL_TIERS[tier_key]
-    selected_model_id = self.get_selected_model_id(tier_key)
     model_params = self.get_model_params(selected_model_id, tier_key=tier_key)
     user_text = request.message.strip()
     context_mood = normalize_mood(str(request.context.mood or ""), "neutral")
@@ -2050,6 +1038,7 @@ class PythonModelEngine:
     self,
     *,
     name: str,
+    display_name: str,
     args: dict[str, Any],
     round_index: int,
     call_index: int,
@@ -2066,6 +1055,7 @@ class PythonModelEngine:
       "round": round_index + 1,
       "index": call_index + 1,
       "name": name,
+      "display_name": display_name,
       "args": args or {},
       "status": "running",
       "text": text,
@@ -2076,6 +1066,7 @@ class PythonModelEngine:
     self,
     *,
     event: ToolEvent,
+    display_name: str,
     args: dict[str, Any],
     round_index: int,
     call_index: int,
@@ -2089,6 +1080,7 @@ class PythonModelEngine:
       "round": round_index + 1,
       "index": call_index + 1,
       "name": event.name,
+      "display_name": display_name,
       "args": args or {},
       "status": status,
       "output": event.output,
@@ -2116,12 +1108,29 @@ class PythonModelEngine:
       generation_active_tools = active_tools if tools_are_allowed else set()
       messages = self._build_messages(request, turns or None, generation_active_tools)
       prompt = self._render_prompt(messages, generation_active_tools)
-      should_stream_this_round = stream_final_reply and (not generation_active_tools or round_index == 0)
+      should_stream_this_round = stream_final_reply and not generation_active_tools
+      round_plan = plan
+      if tools_are_allowed:
+        base_max_tokens = int(plan.max_tokens_override or 256)
+        constrained_max_tokens = max(48, min(160, base_max_tokens))
+        base_temperature = float(plan.temperature_override if plan.temperature_override is not None else plan.tier.temperature)
+        constrained_temperature = max(0.0, min(0.35, base_temperature))
+        round_plan = GenerationPlan(
+          tier=plan.tier,
+          user_text=plan.user_text,
+          context_mood=plan.context_mood,
+          active_tools=plan.active_tools,
+          context_window_override=plan.context_window_override,
+          max_tokens_override=constrained_max_tokens,
+          temperature_override=constrained_temperature,
+          top_p_override=plan.top_p_override,
+          top_k_override=plan.top_k_override,
+        )
 
       if should_stream_this_round:
         streamed_preview = ""
         raw_reply = ""
-        for chunk in self._iter_generation_chunks(prompt, plan):
+        for chunk in self._iter_generation_chunks(prompt, round_plan):
           raw_reply += chunk
           preview = self._sanitize_stream_preview(raw_reply, final=False)
           if len(preview) > len(streamed_preview):
@@ -2136,7 +1145,7 @@ class PythonModelEngine:
           if tail_delta:
             yield tail_delta
       else:
-        reply = self._run_generation(prompt, plan)
+        reply = self._run_generation(prompt, round_plan)
 
       requested_mood, reply_no_mood = self._extract_reply_mood_directive(reply)
       if requested_mood:
@@ -2173,14 +1182,25 @@ class PythonModelEngine:
       turns.append({"role": "assistant", "content": clean_reply or "", "tool_calls": tool_calls_payload})
 
       for ci, (cid, name, args) in enumerate(call_entries):
+        tool_meta = tool_registry.get_tool_meta(name) if hasattr(tool_registry, "get_tool_meta") else {}
+        display_name = str(tool_meta.get("display_name") or name or "Инструмент").strip() or "Инструмент"
         yield {"kind": "tool_start", "payload": self._build_tool_start_payload(
-          name=name, args=args, round_index=round_index, call_index=ci,
+          name=name, display_name=display_name, args=args, round_index=round_index, call_index=ci,
         )}
-        ev = (
-          self._execute_tool_event(tool_registry, runtime, name=name, args=args)
-          if name in active_tools and tool_registry.has_tool(name)
-          else ToolEvent(name=name or "unknown", status="error", output={"error": f"Инструмент '{name}' недоступен."})
-        )
+        if name in active_tools and tool_registry.has_tool(name):
+          ev = self._execute_tool_event(tool_registry, runtime, name=name, args=args)
+        elif tool_registry.has_tool(name):
+          ev = ToolEvent(
+            name=name or "unknown",
+            status="error",
+            output={"error": f"Инструмент '{name}' отключен в настройках плагинов или недоступен в автономном режиме."},
+          )
+        else:
+          ev = ToolEvent(
+            name=name or "unknown",
+            status="error",
+            output={"error": f"Инструмент '{name}' не зарегистрирован в backend."},
+          )
         LOGGER.info(
           "Tool call completed round=%s chat=%s name=%s status=%s",
           round_index + 1,
@@ -2190,7 +1210,7 @@ class PythonModelEngine:
         )
         tool_events.append(ev)
         yield {"kind": "tool_result", "payload": self._build_tool_result_payload(
-          event=ev, args=args, round_index=round_index, call_index=ci,
+          event=ev, display_name=display_name, args=args, round_index=round_index, call_index=ci,
         )}
         turns.append({"role": "tool", "tool_call_id": cid, "name": name, "content": self._summarize_tool_event(ev)})
       # После хотя бы одного раунда tool-calling следующая генерация должна дать финальный ответ.
@@ -2292,36 +1312,3 @@ class PythonModelEngine:
           continue
         yield delta
     return result
-
-
-def build_system_prompt(
-  base_prompt: str,
-  request: ChatRequest,
-  *,
-  active_tools: set[str] | None = None,
-) -> str:
-  safe_active_tools = active_tools or set()
-  prompt_with_tools = apply_enabled_tools_prompt(base_prompt, safe_active_tools)
-  blocks = [prompt_with_tools] if prompt_with_tools else []
-  blocks.append(build_chat_mood_prompt())
-
-  user = request.context.user
-  if user.name.strip() or user.context.strip():
-    blocks.append(
-      "Профиль пользователя: "
-      + ", ".join(
-        part
-        for part in [
-          f"имя={user.name.strip()}" if user.name.strip() else "",
-          f"контекст={user.context.strip()}" if user.context.strip() else "",
-          f"язык={user.language.strip() or 'ru'}",
-          f"часовой_пояс={user.timezone.strip() or 'UTC'}",
-        ]
-        if part
-      )
-    )
-
-  if request.context.system_prompt.strip():
-    blocks.append("Дополнительный системный промпт: " + request.context.system_prompt.strip())
-
-  return "\n\n".join(block for block in blocks if block)

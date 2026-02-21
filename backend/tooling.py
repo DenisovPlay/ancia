@@ -13,9 +13,23 @@ from urllib import request as url_request
 from pydantic import BaseModel, Field
 
 try:
-  from backend.preinstalled_plugins import PREINSTALLED_PLUGIN_MANIFESTS
+  from backend.tool_catalog import (
+    build_preinstalled_plugin_manifests,
+    build_tool_alias_map,
+    build_tool_schemas,
+    get_tool_input_schema,
+    get_tool_spec,
+  )
+  from backend.tool_prompt_builder import apply_enabled_tools_prompt
 except ModuleNotFoundError:
-  from preinstalled_plugins import PREINSTALLED_PLUGIN_MANIFESTS  # type: ignore
+  from tool_catalog import (  # type: ignore
+    build_preinstalled_plugin_manifests,
+    build_tool_alias_map,
+    build_tool_schemas,
+    get_tool_input_schema,
+    get_tool_spec,
+  )
+  from tool_prompt_builder import apply_enabled_tools_prompt  # type: ignore
 
 
 ToolHandler = Callable[[dict[str, Any], Any], dict[str, Any]]
@@ -33,17 +47,29 @@ class ToolRegistry:
     description: str,
     input_schema: dict[str, Any],
     handler: ToolHandler,
+    runtime_meta: dict[str, Any] | None = None,
   ) -> None:
     normalized_name = name.strip().lower()
     self._handlers[normalized_name] = handler
-    self._meta[normalized_name] = {
+    meta = {
       "name": normalized_name,
       "description": description,
       "input_schema": input_schema,
     }
+    if isinstance(runtime_meta, dict):
+      for key, value in runtime_meta.items():
+        if key in {"name", "description", "input_schema"}:
+          continue
+        meta[key] = value
+    self._meta[normalized_name] = meta
 
   def has_tool(self, name: str) -> bool:
     return name.strip().lower() in self._handlers
+
+  def get_tool_meta(self, name: str) -> dict[str, Any]:
+    normalized_name = name.strip().lower()
+    payload = self._meta.get(normalized_name)
+    return dict(payload) if isinstance(payload, dict) else {}
 
   def execute(self, name: str, args: dict[str, Any], runtime: Any) -> dict[str, Any]:
     normalized_name = name.strip().lower()
@@ -72,7 +98,55 @@ class PluginDescriptor(BaseModel):
   requires_network: bool = False
 
 
-HARDCODED_PLUGIN_MANIFESTS: list[dict[str, Any]] = list(PREINSTALLED_PLUGIN_MANIFESTS)
+TOOL_SCHEMAS: dict[str, dict[str, Any]] = build_tool_schemas()
+TOOL_NAME_ALIASES: dict[str, str] = build_tool_alias_map()
+HARDCODED_PLUGIN_MANIFESTS: list[dict[str, Any]] = build_preinstalled_plugin_manifests()
+
+
+def resolve_tool_name_alias(raw_name: str) -> str:
+  safe_raw = str(raw_name or "").strip().lower()
+  if not safe_raw:
+    return ""
+  return TOOL_NAME_ALIASES.get(safe_raw, safe_raw)
+
+
+def get_tool_runtime_meta(name: str) -> dict[str, Any]:
+  safe_name = str(name or "").strip().lower()
+  spec = get_tool_spec(safe_name)
+  if not isinstance(spec, dict):
+    return {}
+  return {
+    "title": str(spec.get("title") or safe_name),
+    "subtitle": str(spec.get("subtitle") or ""),
+    "description": str(spec.get("description") or ""),
+    "category": str(spec.get("category") or "system"),
+    "keywords": list(spec.get("keywords") or []),
+    "requires_network": bool(spec.get("requires_network", False)),
+  }
+
+
+def get_tool_registry_payload(name: str) -> dict[str, Any]:
+  safe_name = str(name or "").strip().lower()
+  spec = get_tool_spec(safe_name)
+  runtime_meta = get_tool_runtime_meta(safe_name)
+  description = (
+    str(spec.get("description") or safe_name)
+    if isinstance(spec, dict)
+    else safe_name
+  )
+  input_schema = get_tool_input_schema(safe_name)
+  return {
+    "name": safe_name,
+    "description": description,
+    "input_schema": input_schema,
+    "runtime_meta": {
+      "display_name": str(runtime_meta.get("title") or safe_name),
+      "subtitle": str(runtime_meta.get("subtitle") or ""),
+      "category": str(runtime_meta.get("category") or "system"),
+      "keywords": list(runtime_meta.get("keywords") or []),
+      "requires_network": bool(runtime_meta.get("requires_network", False)),
+    },
+  }
 
 
 class PluginManager:
@@ -207,145 +281,6 @@ class PluginManager:
         continue
       active.update(plugin.tools)
     return active
-
-
-WEB_TOOLS_SECTION_HEADING = "## Веб-инструменты (Web Search + Visit Website)"
-WEB_TOOLS_SECTION_PATTERN = re.compile(
-  r"\n?## Веб-инструменты \(Web Search \+ Visit Website\).*?(?=\n## |\Z)",
-  re.DOTALL,
-)
-WEB_TOOLS_DECLARATION_PATTERN = re.compile(
-  r"## Веб-инструменты \(Web Search \+ Visit Website\).*?(?=\n### Когда использовать инструменты|\Z)",
-  re.DOTALL,
-)
-
-TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
-  "web.search.duckduckgo": {
-    "type": "function",
-    "function": {
-      "name": "web.search.duckduckgo",
-      "description": "Веб-поиск через DuckDuckGo. Используй для актуальных фактов, новостей, информации о людях, событиях, курсах и любых данных из интернета.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "query": {"type": "string", "description": "Поисковый запрос"},
-          "limit": {"type": "integer", "description": "Максимум результатов (1–10)", "default": 5},
-        },
-        "required": ["query"],
-      },
-    },
-  },
-  "web.visit.website": {
-    "type": "function",
-    "function": {
-      "name": "web.visit.website",
-      "description": "Открывает URL и извлекает содержимое страницы.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "url": {"type": "string", "description": "URL страницы"},
-          "max_chars": {"type": "integer", "description": "Лимит символов контента", "default": 6000},
-          "max_links": {"type": "integer", "description": "Лимит ссылок", "default": 20},
-        },
-        "required": ["url"],
-      },
-    },
-  },
-  "system.time": {
-    "type": "function",
-    "function": {
-      "name": "system.time",
-      "description": "Возвращает текущее время и дату.",
-      "parameters": {"type": "object", "properties": {}, "required": []},
-    },
-  },
-  "chat.set_mood": {
-    "type": "function",
-    "function": {
-      "name": "chat.set_mood",
-      "description": "Устанавливает визуальное состояние (mood) чата.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "mood": {
-            "type": "string",
-            "description": "Состояние: neutral, success, error, warning, thinking, planning, coding, researching, creative, friendly, waiting, offline",
-          },
-        },
-        "required": ["mood"],
-      },
-    },
-  },
-}
-
-
-def build_enabled_tools_prompt(active_tools: set[str]) -> str:
-  has_web_search = "web.search.duckduckgo" in active_tools
-  has_web_visit = "web.visit.website" in active_tools
-  has_set_mood = "chat.set_mood" in active_tools
-
-  parts = []
-
-  if has_set_mood:
-    parts.append("\n".join([
-      "## Инструмент смены состояния чата",
-      "Управляй визуальным состоянием (фоном) активного чата через `chat.set_mood`.",
-      "Допустимые значения: neutral, success, error, warning, thinking, planning, coding, researching, creative, friendly, waiting, offline.",
-      "Правила:",
-      "- Вызывай в начале ответа, если тема/настроение явно соответствует состоянию.",
-      "- Можешь использовать это для выражения своих эмоций, если пользователь тебя оскорбляет, благодарит или делает другие действия, которые могут вызвать эмоции у человека.",
-      "  Код/отладка → `coding`; ошибка/проблема → `error`; поиск информации → `researching`; задача выполнена → `success`; риск → `warning`; ожидание → `thinking`.",
-      "- При нейтральном разговоре не вызывай (оставляй текущее состояние).",
-      "- Не более одного вызова за ответ.",
-      "- Синтаксис: <tool_call>{\"name\":\"chat.set_mood\",\"args\":{\"mood\":\"ЗНАЧЕНИЕ\"}}</tool_call>",
-    ]))
-
-  if has_web_search or has_web_visit:
-    web_lines = [
-      WEB_TOOLS_SECTION_HEADING,
-      "У тебя есть доступ к инструментам веб-поиска и чтения сайтов:",
-    ]
-    if has_web_search:
-      web_lines.append("- Web Search (DuckDuckGo): ищет информацию по всему интернету (без ограничений по доменам).")
-    if has_web_visit:
-      web_lines.append("- Visit Website: открывает конкретный URL и извлекает содержимое страницы (текст/заголовки/ссылки).")
-    web_lines.extend(
-      [
-        "",
-        "### Как использовать инструменты",
-        "- Используй их только по необходимости: для актуальных фактов, ссылок, новостей, курсов, проверок источников.",
-        "- Если инструменты не нужны, отвечай без обращений к ним.",
-        "- Если нужен вызов, верни ТОЛЬКО вызов инструмента (без лишнего текста):",
-        "  <tool_call>{\"name\":\"tool.name\",\"args\":{...}}</tool_call>",
-        "- Альтернатива (тоже допустимо): чистый JSON-объект `{\"name\":\"tool.name\",\"arguments\":{...}}` на отдельной строке.",
-        "- Можно вызывать несколько инструментов (несколько блоков/объектов подряд).",
-        "- Результаты инструментов приходят отдельными сообщениями роли tool.",
-        "- При наличии результатов сначала опирайся на них, потом формулируй итог.",
-        "- Для временно-зависимых данных (курсы валют, цены, новости, «сегодня/сейчас») не выдавай точные числа без результатов инструментов.",
-        "- После выполнения инструментов дай финальный ответ обычным текстом, без новых <tool_call>, если данных уже достаточно.",
-        "- Не добавляй нерелевантные заявления про Ancia/Anci, если пользователь явно не спрашивал про продукт.",
-        "- Ничего не выдумывай. Если инструмент вернул ошибку/пусто, так и напиши.",
-      ]
-    )
-    parts.append("\n".join(web_lines))
-
-  return "\n\n".join(parts)
-
-
-def apply_enabled_tools_prompt(base_prompt: str, active_tools: set[str]) -> str:
-  raw = str(base_prompt or "").strip()
-  dynamic_block = build_enabled_tools_prompt(active_tools)
-
-  if not dynamic_block:
-    return WEB_TOOLS_SECTION_PATTERN.sub("\n", raw).strip()
-
-  if WEB_TOOLS_DECLARATION_PATTERN.search(raw):
-    return WEB_TOOLS_DECLARATION_PATTERN.sub(dynamic_block + "\n\n", raw).strip()
-
-  if not raw:
-    return dynamic_block
-  return f"{raw}\n\n{dynamic_block}".strip()
-
 
 def normalize_http_url(url_like: str) -> str:
   raw = str(url_like or "").strip()

@@ -1,133 +1,173 @@
 const ICONS = {
   chat: `
-    <path d="M5 6a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H10l-4 3v-3H7a2 2 0 0 1-2-2z"/>
+    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
   `,
-  plugins: `
-    <rect x="4.5" y="4.5" width="6" height="6" rx="1.2"/>
-    <rect x="13.5" y="4.5" width="6" height="6" rx="1.2"/>
-    <rect x="4.5" y="13.5" width="6" height="6" rx="1.2"/>
-    <rect x="13.5" y="13.5" width="6" height="6" rx="1.2"/>
-  `,
-  settings: `
-    <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
-    <circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.6"/>
-  `,
-  menu: `
-    <path d="M4 7h16M4 12h16M4 17h16"/>
-  `,
-  sessions: `
-    <circle cx="12" cy="12" r="8"/>
-    <path d="M12 8v4l2.5 2.5"/>
-  `,
-  inspector: `
-    <path d="M4 7h6M12 7h8M4 12h2M10 12h10M4 17h10M18 17h2"/>
-    <circle cx="10" cy="7" r="2"/>
-    <circle cx="8" cy="12" r="2"/>
-    <circle cx="16" cy="17" r="2"/>
-  `,
-  filter: `
-    <path d="M4 6h16l-6.5 7.2v4.8l-3-1.6v-3.2z"/>
-  `,
-  eye: `
-    <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6z"/>
-    <circle cx="12" cy="12" r="2.8"/>
-  `,
-  attach: `
-    <path d="M8.5 12.5l5.3-5.3a3.1 3.1 0 1 1 4.4 4.4l-7.1 7.1a4.1 4.1 0 1 1-5.8-5.8l6.6-6.6"/>
-  `,
-  send: `
-    <path d="M3.5 11.8 20.8 3.8l-5.7 16.4-3.7-6.2-7.9-2.2z"/>
-    <path d="M11.4 14 20.8 3.8"/>
-  `,
-  stop: `
-    <rect x="6.5" y="6.5" width="11" height="11" rx="2"/>
-  `,
-  publish: `
-    <path d="M12 15V5"/>
-    <path d="m8 9 4-4 4 4"/>
-    <path d="M4 15.5v2A1.5 1.5 0 0 0 5.5 19h13a1.5 1.5 0 0 0 1.5-1.5v-2"/>
-  `,
-  refresh: `
-    <path d="M20 11a8 8 0 1 1-2.34-5.66"/>
-    <path d="M20 4v7h-7"/>
-  `,
-  save: `
-    <path d="M5 4h11l3 3v13H5z"/>
-    <path d="M8 4v5h7V4"/>
-    <rect x="8" y="14" width="8" height="4" rx="1"/>
-  `,
-  categories: `
-    <path d="M6 6h14M6 12h14M6 18h14"/>
-    <circle cx="3.5" cy="6" r="1"/>
-    <circle cx="3.5" cy="12" r="1"/>
-    <circle cx="3.5" cy="18" r="1"/>
-  `,
-  personalization: `
-    <circle cx="12" cy="8" r="3"/>
-    <path d="M5 19a7 7 0 0 1 14 0"/>
-  `,
-  interface: `
-    <rect x="4" y="5" width="16" height="12" rx="2"/>
-    <path d="M8 20h8"/>
-  `,
-  developer: `
-    <path d="m7 8-4 4 4 4M17 8l4 4-4 4M14 4l-4 16"/>
-  `,
-  info: `
-    <circle cx="12" cy="12" r="9"/>
-    <path d="M12 11v5M12 8h.01"/>
-  `,
-  plus: `
-    <path d="M12 5v14M5 12h14"/>
+  "chat-plus": `
+    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+    <line x1="9" y1="10" x2="15" y2="10"/>
+    <line x1="12" y1="7" x2="12" y2="13"/>
   `,
   trash: `
-    <path d="M4 7h16"/>
-    <path d="M9 7V5h6v2"/>
-    <path d="M7 7l1 12h8l1-12"/>
-    <path d="M10 11v5M14 11v5"/>
+    <polyline points="3 6 5 6 21 6"/>
+    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+    <line x1="10" y1="11" x2="10" y2="17"/>
+    <line x1="14" y1="11" x2="14" y2="17"/>
   `,
-  check: `
-    <path d="m5 12 5 5 9-9"/>
+  plugins: `
+    <rect x="3" y="3" width="7" height="7" rx="1.5"/>
+    <rect x="14" y="3" width="7" height="7" rx="1.5"/>
+    <rect x="14" y="14" width="7" height="7" rx="1.5"/>
+    <rect x="3" y="14" width="7" height="7" rx="1.5"/>
   `,
-  "x-mark": `
-    <path d="m18 6-12 12M6 6l12 12"/>
+  "plugins-installed": `
+    <rect x="3" y="3" width="7" height="7" rx="1.5"/>
+    <rect x="14" y="3" width="7" height="7" rx="1.5"/>
+    <rect x="3" y="14" width="7" height="7" rx="1.5"/>
+    <polyline points="14 17 16 19 21 14"/>
   `,
-  globe: `
-    <circle cx="12" cy="12" r="9"/>
-    <path d="M12 3a15 15 0 0 1 0 18"/>
-    <path d="M3 12h18"/>
+  models: `
+    <rect x="4" y="4" width="16" height="16" rx="2" ry="2"/>
+    <rect x="9" y="9" width="6" height="6"/>
+    <path d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 14h3M1 9h3M1 14h3"/>
+  `,
+  "models-installed": `
+    <rect x="4" y="4" width="16" height="16" rx="2" ry="2"/>
+    <polyline points="9 12 11 14 15 10"/>
+    <path d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 14h3M1 9h3M1 14h3"/>
+  `,
+  tools: `
+    <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+  `,
+  browsing: `
+    <circle cx="12" cy="12" r="10"/>
+    <polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/>
+  `,
+  integrations: `
+    <path d="M12 22v-5"/>
+    <path d="M9 8V2"/>
+    <path d="M15 8V2"/>
+    <path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8z"/>
+  `,
+  developers: `
+    <polyline points="4 17 10 11 4 5"/>
+    <line x1="12" y1="19" x2="20" y2="19"/>
+  `,
+  huggingface: `
+    <circle cx="12" cy="11" r="8"/>
+    <path d="M8 13s1.5 2 4 2 4-2 4-2"/>
+    <line x1="9" y1="8" x2="9.01" y2="8"/>
+    <line x1="15" y1="8" x2="15.01" y2="8"/>
+    <circle cx="6" cy="16" r="3"/>
+    <circle cx="18" cy="16" r="3"/>
+  `,
+  settings: `
+    <circle cx="12" cy="12" r="3"/>
+    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+  `,
+  menu: `
+    <line x1="3" y1="12" x2="21" y2="12"/>
+    <line x1="3" y1="6" x2="21" y2="6"/>
+    <line x1="3" y1="18" x2="21" y2="18"/>
+  `,
+  sessions: `
+    <polygon points="12 2 2 7 12 12 22 7 12 2"/>
+    <polyline points="2 12 12 17 22 12"/>
+    <polyline points="2 17 12 22 22 17"/>
+  `,
+  inspector: `
+    <path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3"/>
+    <path d="M1 14h6M9 8h6M17 16h6"/>
+  `,
+  filter: `
+    <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>
+  `,
+  eye: `
+    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+    <circle cx="12" cy="12" r="3"/>
+  `,
+  attach: `
+    <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+  `,
+  send: `
+    <line x1="22" y1="2" x2="11" y2="13"/>
+    <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+  `,
+  stop: `
+    <rect x="4" y="4" width="16" height="16" rx="2" ry="2"/>
+  `,
+  play: `
+    <polygon points="5 3 19 12 5 21 5 3"/>
+  `,
+  publish: `
+    <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/>
+    <polyline points="16 6 12 2 8 6"/>
+    <line x1="12" y1="2" x2="12" y2="15"/>
+  `,
+  refresh: `
+    <polyline points="23 4 23 10 17 10"/>
+    <polyline points="1 20 1 14 7 14"/>
+    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+  `,
+  save: `
+    <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+    <polyline points="17 21 17 13 7 13 7 21"/>
+    <polyline points="7 3 7 8 15 8"/>
+  `,
+  categories: `
+    <path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>
+  `,
+  personalization: `
+    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+    <circle cx="12" cy="7" r="4"/>
+  `,
+  interface: `
+    <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+    <line x1="3" y1="9" x2="21" y2="9"/>
+    <line x1="9" y1="21" x2="9" y2="9"/>
   `,
   clock: `
-    <circle cx="12" cy="12" r="9"/>
-    <path d="M12 7v5l3 3"/>
+    <circle cx="12" cy="12" r="10"/>
+    <polyline points="12 6 12 12 16 14"/>
   `,
   "search-web": `
-    <circle cx="11" cy="11" r="7"/>
-    <path d="m21 21-4.35-4.35"/>
+    <circle cx="12" cy="12" r="10"/>
+    <line x1="2" y1="12" x2="22" y2="12"/>
+    <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
   `,
   mood: `
-    <circle cx="12" cy="12" r="9"/>
-    <path d="M9 13.5s1 1.5 3 1.5 3-1.5 3-1.5"/>
-    <path d="M9.5 9.5h.01M14.5 9.5h.01"/>
+    <circle cx="12" cy="12" r="10"/>
+    <path d="M8 14s1.5 2 4 2 4-2 4-2"/>
+    <line x1="9" y1="9" x2="9.01" y2="9"/>
+    <line x1="15" y1="9" x2="15.01" y2="9"/>
   `,
   "chevron-down": `
-    <path d="m6 9 6 6 6-6"/>
+    <polyline points="6 9 12 15 18 9"/>
   `,
+  info: `
+    <circle cx="12" cy="12" r="10"/>
+    <line x1="12" y1="16" x2="12" y2="12"/>
+    <line x1="12" y1="8" x2="12.01" y2="8"/>
+  `
 };
 
 export function icon(name, className = "") {
   const body = ICONS[name] || ICONS.info;
   const cssClass = ["ui-icon", className].filter(Boolean).join(" ");
+  
   return `
     <svg
       class="${cssClass}"
       viewBox="0 0 24 24"
       fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
       xmlns="http://www.w3.org/2000/svg"
       aria-hidden="true"
       focusable="false"
     >
       ${body}
     </svg>
-  `;
+  `.trim();
 }

@@ -16,7 +16,6 @@ class UserContext(BaseModel):
 class UiContext(BaseModel):
   density: str = "comfortable"
   animations: bool = True
-  modelTier: str = "lite"
   modelId: str = ""
   contextWindow: int | None = None
   maxTokens: int | None = None
@@ -73,7 +72,6 @@ class ChatResponse(BaseModel):
 
 
 class ModelSelectRequest(BaseModel):
-  tier: str = ""
   model_id: str = ""
   load: bool = False
 
@@ -115,21 +113,21 @@ class ModelTier:
 
 
 MODEL_TIERS: dict[str, ModelTier] = {
-  "lite": ModelTier(
-    key="lite",
-    label="Lite",
+  "compact": ModelTier(
+    key="compact",
+    label="Компактный",
     max_context=3072,
     temperature=0.25,
   ),
-  "standart": ModelTier(
-    key="standart",
-    label="Standart",
+  "balanced": ModelTier(
+    key="balanced",
+    label="Сбалансированный",
     max_context=4096,
     temperature=0.2,
   ),
-  "plus": ModelTier(
-    key="plus",
-    label="Plus",
+  "performance": ModelTier(
+    key="performance",
+    label="Производительный",
     max_context=8192,
     temperature=0.15,
   ),
@@ -137,8 +135,11 @@ MODEL_TIERS: dict[str, ModelTier] = {
 
 
 MODEL_TIER_ALIASES: dict[str, str] = {
-  "max": "plus",
-  "standard": "standart",
+  "compact": "compact",
+  "balanced": "balanced",
+  "performance": "performance",
+  "standard": "balanced",
+  "max": "performance",
 }
 
 

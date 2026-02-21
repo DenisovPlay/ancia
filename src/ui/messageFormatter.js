@@ -2,6 +2,9 @@ const BLOCK_TOKEN_PATTERN = /@@BLOCK_(\d+)@@/g;
 const INLINE_TOKEN_PATTERN = /@@INLINE_(\d+)@@/g;
 
 let katexLoaderPromise = null;
+let katexRender = null;
+const KATEX_CSS_MODULE = "katex/dist/katex.min.css";
+const KATEX_JS_MODULE = "katex";
 
 function escapeHtml(value) {
   return String(value || "")
@@ -20,8 +23,30 @@ function normalizeTextInput(value) {
   return String(value ?? "").replace(/\r\n?/g, "\n");
 }
 
+function countChar(value, char) {
+  const match = String(value || "").match(new RegExp(`\\${char}`, "g"));
+  return match ? match.length : 0;
+}
+
+function stripUrlTrailingPunctuation(rawUrl) {
+  let value = String(rawUrl || "").trim();
+  if (!value) {
+    return "";
+  }
+  while (/[.,!?;:]+$/.test(value)) {
+    value = value.slice(0, -1);
+  }
+  let openParens = countChar(value, "(");
+  let closeParens = countChar(value, ")");
+  while (closeParens > openParens && value.endsWith(")")) {
+    value = value.slice(0, -1);
+    closeParens -= 1;
+  }
+  return value;
+}
+
 function sanitizeUrl(rawUrl) {
-  const raw = String(rawUrl || "").trim();
+  const raw = stripUrlTrailingPunctuation(rawUrl);
   if (!raw) {
     return "";
   }
@@ -41,17 +66,36 @@ function createToken(type, payload, tokens) {
   return `@@INLINE_${id}@@`;
 }
 
+function normalizeBrokenMarkdownLinks(input) {
+  const source = normalizeTextInput(input);
+  return source.replace(
+    /\[([\s\S]{1,800}?)\]\((https?:\/\/[^\s<>"']+)\)/g,
+    (full, label, url) => {
+      const compactLabel = String(label || "").replace(/\s+/g, " ").trim();
+      const compactUrl = String(url || "").replace(/\s+/g, "").trim();
+      if (!compactLabel || !compactUrl) {
+        return full;
+      }
+      return `[${compactLabel}](${compactUrl})`;
+    },
+  );
+}
+
 function tokenizeInline(input) {
   const tokens = [];
   let text = String(input || "");
 
-  text = text.replace(/\[([^\]\n]{1,300})\]\((https?:\/\/[^\s)]+)\)/g, (_full, label, url) => {
-    return createToken("link", { label, url }, tokens);
+  text = text.replace(/\[([^\]]{1,800})\]\((https?:\/\/[^\s<>"']+)\)/g, (_full, label, url) => {
+    const compactLabel = String(label || "").replace(/\s+/g, " ").trim();
+    return createToken("link", { label: compactLabel || "Ссылка", url }, tokens);
   });
 
   text = text.replace(/`([^`\n]+)`/g, (_full, code) => createToken("code", { code }, tokens));
   text = text.replace(/\\\((.+?)\\\)/g, (_full, expr) => createToken("math_inline", { expr }, tokens));
   text = text.replace(/\$([^\n$]+?)\$/g, (_full, expr) => createToken("math_inline", { expr }, tokens));
+  text = text.replace(/(^|[\s(])(https?:\/\/[^\s<>"']+)/g, (_full, prefix, url) => {
+    return `${prefix}${createToken("link", { label: url, url }, tokens)}`;
+  });
 
   return { text, tokens };
 }
@@ -197,7 +241,17 @@ function normalizeInlineListSyntax(input) {
       return safeLine;
     }
 
-    let next = safeLine;
+    const protectedLinks = [];
+    const protectLine = safeLine.replace(
+      /\[[^\]]{1,800}\]\((https?:\/\/[^\s<>"']+)\)/g,
+      (full) => {
+        const token = `@@MDLINK_${protectedLinks.length}@@`;
+        protectedLinks.push(full);
+        return token;
+      },
+    );
+
+    let next = protectLine;
 
     // Частый кейс от моделей: ".... . - Пункт - Пункт"
     // Нормализуем в реальные markdown-списки.
@@ -219,6 +273,11 @@ function normalizeInlineListSyntax(input) {
       "\n$1 ",
     );
 
+    next = next.replace(/@@MDLINK_(\d+)@@/g, (_full, indexRaw) => {
+      const index = Number(indexRaw);
+      return Number.isInteger(index) && protectedLinks[index] ? protectedLinks[index] : "";
+    });
+
     return next;
   });
   return normalizedLines.join("\n");
@@ -234,7 +293,7 @@ function renderParagraph(lines) {
 
 function renderMarkdown(input) {
   const { text, tokens } = tokenizeBlocks(input);
-  const normalizedText = normalizeInlineListSyntax(text);
+  const normalizedText = normalizeInlineListSyntax(normalizeBrokenMarkdownLinks(text));
   const lines = normalizeTextInput(normalizedText).split("\n");
   const htmlBlocks = [];
 
@@ -321,42 +380,42 @@ function renderMarkdown(input) {
 }
 
 function ensureKatexLoaded() {
+  if (typeof katexRender === "function") {
+    return Promise.resolve(true);
+  }
   if (window.katex?.render) {
+    katexRender = window.katex.render.bind(window.katex);
     return Promise.resolve(true);
   }
   if (katexLoaderPromise) {
     return katexLoaderPromise;
   }
 
-  katexLoaderPromise = new Promise((resolve) => {
-    const head = document.head || document.querySelector("head");
-    if (!head) {
-      resolve(false);
-      return;
+  katexLoaderPromise = (async () => {
+    try {
+      await import(/* @vite-ignore */ KATEX_CSS_MODULE);
+    } catch (error) {
+      // CSS optional: rendering can still proceed without stylesheet.
     }
 
-    const existingScript = document.querySelector('script[data-katex-loader="true"]');
-    if (existingScript) {
-      resolve(Boolean(window.katex?.render));
-      return;
+    try {
+      const katexModule = await import(/* @vite-ignore */ KATEX_JS_MODULE);
+      const katexApi = katexModule?.default && typeof katexModule.default.render === "function"
+        ? katexModule.default
+        : katexModule;
+      if (katexApi && typeof katexApi.render === "function") {
+        katexRender = katexApi.render.bind(katexApi);
+        if (!window.katex) {
+          window.katex = katexApi;
+        }
+        return true;
+      }
+    } catch (error) {
+      return false;
     }
 
-    const stylesheet = document.createElement("link");
-    stylesheet.rel = "stylesheet";
-    stylesheet.href = "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css";
-    stylesheet.setAttribute("data-katex-loader", "true");
-    head.appendChild(stylesheet);
-
-    const script = document.createElement("script");
-    script.src = "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js";
-    script.defer = true;
-    script.setAttribute("data-katex-loader", "true");
-    script.onload = () => resolve(Boolean(window.katex?.render));
-    script.onerror = () => resolve(false);
-    head.appendChild(script);
-
-    window.setTimeout(() => resolve(Boolean(window.katex?.render)), 5000);
-  });
+    return false;
+  })();
 
   return katexLoaderPromise;
 }
@@ -375,7 +434,10 @@ export async function typesetMathInElement(container) {
   }
 
   const ready = await ensureKatexLoaded();
-  if (!ready || !window.katex?.render) {
+  const renderer = typeof katexRender === "function"
+    ? katexRender
+    : (window.katex?.render ? window.katex.render.bind(window.katex) : null);
+  if (!ready || typeof renderer !== "function") {
     return;
   }
 
@@ -386,7 +448,7 @@ export async function typesetMathInElement(container) {
     }
     const displayMode = node.getAttribute("data-math-display") === "true";
     try {
-      window.katex.render(expr, node, {
+      renderer(expr, node, {
         throwOnError: false,
         displayMode,
         strict: "ignore",

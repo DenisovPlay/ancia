@@ -1,7 +1,7 @@
 [package]
 name = "Ancia"
 version = "0.1.0"
-description = "Ancia Enterprise desktop shell"
+description = "Ancia desktop shell"
 authors = ["Andrey"]
 edition = "2021"
 

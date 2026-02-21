@@ -1,9 +1,14 @@
 import * as THREE from "three";
-import { clamp, getModelTierMeta } from "./runtimeConfig.js";
+import { clamp } from "./runtimeConfig.js";
 
 const COLOR_SLOTS = 4;
 const DEFAULT_TRANSITION_MS = 2600;
 const TARGET_FPS = 50;
+const DEFAULT_PERFORMANCE_PROFILE = {
+  targetFps: TARGET_FPS,
+  maxPixelRatioCap: 1.16,
+  minPixelRatio: 0.72,
+};
 
 const BOT_MOODS = {
   route_chat: {
@@ -15,6 +20,16 @@ const BOT_MOODS = {
     warp: 0.56,
     pulse: 0.52,
     grain: 0.15,
+  },
+  route_models: {
+    label: "Контекст: Модели",
+    description: "Управление каталогом и состоянием LLM",
+    palette: ["#09121d", "#14314b", "#225576", "#3e7ca8"],
+    speed: 0.24,
+    energy: 0.31,
+    warp: 0.33,
+    pulse: 0.36,
+    grain: 0.11,
   },
   route_plugins: {
     label: "Контекст: Маркетплейс",
@@ -488,16 +503,16 @@ export class StatefulLiquidBackground {
     }
   }
 
-  setPerformanceProfile(modelTier) {
-    const tierMeta = getModelTierMeta(modelTier);
-    this.targetFps = clamp(Number(tierMeta.targetFps || TARGET_FPS), 24, 60);
+  setPerformanceProfile(profile = DEFAULT_PERFORMANCE_PROFILE) {
+    const safeProfile = profile && typeof profile === "object" ? profile : DEFAULT_PERFORMANCE_PROFILE;
+    this.targetFps = clamp(Number(safeProfile.targetFps || TARGET_FPS), 24, 60);
     this.maxPixelRatio = clamp(
-      Math.min(this.baseMaxPixelRatio, Number(tierMeta.maxPixelRatioCap || this.baseMaxPixelRatio)),
+      Math.min(this.baseMaxPixelRatio, Number(safeProfile.maxPixelRatioCap || this.baseMaxPixelRatio)),
       this.baseMinPixelRatio,
       this.baseMaxPixelRatio,
     );
     this.minPixelRatio = clamp(
-      Number(tierMeta.minPixelRatio || 0.75),
+      Number(safeProfile.minPixelRatio || 0.75),
       this.baseMinPixelRatio,
       this.maxPixelRatio,
     );

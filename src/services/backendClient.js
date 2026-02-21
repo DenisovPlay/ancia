@@ -173,12 +173,16 @@ export class BackendClient {
     return this.request("/models", { method: "GET" });
   }
 
+  async listTools() {
+    return this.request("/tools", { method: "GET" });
+  }
+
   async selectModel(selection = {}) {
     const payload = typeof selection === "string"
-      ? { tier: String(selection || "").trim() }
+      ? { model_id: String(selection || "").trim() }
       : {
-        tier: String(selection?.tier || "").trim(),
         model_id: String(selection?.model_id || selection?.modelId || "").trim(),
+        load: Boolean(selection?.load),
       };
     return this.request("/models/select", {
       method: "POST",
@@ -186,8 +190,38 @@ export class BackendClient {
     });
   }
 
-  async selectModelTier(tier) {
-    return this.selectModel({ tier });
+  async loadModel(selection = {}) {
+    const payload = typeof selection === "string"
+      ? { model_id: String(selection || "").trim() }
+      : {
+        model_id: String(selection?.model_id || selection?.modelId || "").trim(),
+      };
+    return this.request("/models/load", {
+      method: "POST",
+      body: payload,
+    });
+  }
+
+  async unloadModel() {
+    return this.request("/models/unload", {
+      method: "POST",
+      body: {},
+    });
+  }
+
+  async deleteModelCache(modelId) {
+    const safeModelId = encodePathSegment(modelId);
+    return this.request(`/models/${safeModelId}/cache`, {
+      method: "DELETE",
+    });
+  }
+
+  async updateModelParams(modelId, payload = {}) {
+    const safeModelId = encodePathSegment(modelId);
+    return this.request(`/models/${safeModelId}/params`, {
+      method: "PATCH",
+      body: payload || {},
+    });
   }
 
   async listPlugins() {
@@ -270,6 +304,17 @@ export class BackendClient {
 
   async getAppState() {
     return this.request("/app/state", { method: "GET" });
+  }
+
+  async inspectLink(url) {
+    const safeUrl = String(url || "").trim();
+    if (!safeUrl) {
+      throw new Error("URL для проверки не указан.");
+    }
+    return this.request(`/links/inspect?url=${encodeURIComponent(safeUrl)}`, {
+      method: "GET",
+      timeoutMs: 10000,
+    });
   }
 
   async sendMessageStream(
