@@ -17,6 +17,8 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
+    "highlight.js": "^11.11.1",
+    "katex": "^0.16.30",
     "three": "^0.160.1"
   },
   "devDependencies": {

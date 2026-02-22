@@ -18,29 +18,32 @@ export const settingsPageTemplate = `
     />
     <p id="settings-section-search-empty" class="mt-3 hidden text-xs text-zinc-500">Разделы не найдены</p>
 
-    <nav class="mt-3 space-y-1" aria-label="Пункты настроек">
+    <nav class="mt-3 space-y-1.5" aria-label="Пункты настроек">
       <button type="button" data-settings-section-target="personalization" data-active="true"
-        class="route-pill flex items-center gap-2.5 p-2 active:scale-95 w-full rounded-lg border border-zinc-800 text-left text-sm transition">
+        class="route-pill flex items-center gap-2.5 p-2.5 active:scale-95 w-full rounded-lg border border-zinc-800 text-left text-sm transition">
         <span class="icon-button justify-start">${icon("personalization", "ui-icon-lg")}<span>Персонализация</span></span>
       </button>
       <button type="button" data-settings-section-target="interface" data-active="false"
-        class="route-pill flex items-center gap-2.5 p-2 active:scale-95 w-full rounded-lg border border-zinc-800 text-left text-sm transition">
+        class="route-pill flex items-center gap-2.5 p-2.5 active:scale-95 w-full rounded-lg border border-zinc-800 text-left text-sm transition">
         <span class="icon-button justify-start">${icon("interface", "ui-icon-lg")}<span>Интерфейс</span></span>
       </button>
       <button type="button" data-settings-section-target="developer" data-active="false"
-        class="route-pill flex items-center gap-2.5 p-2 active:scale-95 w-full rounded-lg border border-zinc-800 text-left text-sm transition">
+        class="route-pill flex items-center gap-2.5 p-2.5 active:scale-95 w-full rounded-lg border border-zinc-800 text-left text-sm transition">
         <span class="icon-button justify-start">${icon("developers", "ui-icon-lg")}<span>Разработчик</span></span>
       </button>
       <button type="button" data-settings-section-target="about" data-active="false"
-        class="route-pill flex items-center gap-2.5 p-2 active:scale-95 w-full rounded-lg border border-zinc-800 text-left text-sm transition">
+        class="route-pill flex items-center gap-2.5 p-2.5 active:scale-95 w-full rounded-lg border border-zinc-800 text-left text-sm transition">
         <span class="icon-button justify-start">${icon("info", "ui-icon-lg")}<span>О приложении</span></span>
       </button>
     </nav>
   </aside>
 
-  <main class="page-main bg-zinc-950/60 backdrop-blur-sm relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden p-3 sm:p-4">
-    <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
-      <h1 id="settings-section-title" class="text-base font-semibold text-zinc-200 sm:text-lg">Персонализация</h1>
+  <main class="page-main bg-zinc-950/60 backdrop-blur-sm relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden px-3">
+    <div class="mb-2 flex flex-wrap items-center justify-between gap-2 pt-3">
+      <div>
+        <p class="text-[10px] uppercase tracking-[0.14em] text-zinc-500">Настройки</p>
+        <h1 id="settings-section-title" class="text-base font-semibold text-zinc-200 sm:text-lg">Персонализация</h1>
+      </div>
       <div class="flex flex-wrap items-center gap-2">
         <span id="settings-dirty-badge" class="hidden rounded-md border border-amber-900/40 bg-amber-950/40 px-2 py-0.5 text-[10px] uppercase tracking-wide text-amber-400">
           Есть изменения
@@ -57,7 +60,7 @@ export const settingsPageTemplate = `
       </div>
     </div>
 
-    <section class="chat-scroll min-h-0 flex-1 overflow-auto pb-3 pr-1 space-y-3">
+    <section class="chat-scroll min-h-0 flex-1 overflow-auto pb-3">
 
       <article data-settings-section="personalization" class="settings-section rounded-xl border border-zinc-800/60 divide-y divide-zinc-800/60">
         <div class="${rowCls} px-3.5">

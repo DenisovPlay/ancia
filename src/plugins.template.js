@@ -5,7 +5,7 @@ export const pluginsPageTemplate = `
     id="plugin-aside"
     class="page-aside bg-zinc-950/60 backdrop-blur-sm fixed inset-y-0 left-0 z-10 flex w-[80vw] max-w-[260px] -translate-x-[112%] flex-col p-3 pt-10 opacity-0 pointer-events-none transition-transform duration-200 xl:relative xl:z-10 xl:h-full xl:min-h-0 xl:w-full xl:max-w-full xl:translate-x-0 xl:opacity-100 xl:pointer-events-auto xl:pt-3"
   >
-    <div class="space-y-1">
+    <div class="space-y-1.5">
       <button type="button" data-plugin-filter="all" data-active="true" class="route-pill flex items-center gap-2.5 p-2.5 active:scale-95 w-full rounded-lg border border-zinc-800 text-left text-sm transition">
         <span class="icon-button justify-start">${icon("grid", "ui-icon-lg")}<span>Все</span></span>
       </button>

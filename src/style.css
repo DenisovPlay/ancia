@@ -930,21 +930,72 @@ body[data-mood="aggression"] .state-dot { background: #ef4444; }
   font-family: var(--app-mono-font-stack);
 }
 
+.hljs { background: transparent !important; padding: 0 !important; }
+
 .message-code-block {
   margin: 0.5rem 0;
   border-radius: 8px;
   border: 1px solid rgb(63 63 70);
-  background: rgb(9 9 11 / 0.7);
-  padding: 0.6rem 0.75rem;
-  overflow-x: auto;
+  background: rgb(9 9 11 / 0.85);
+  overflow: hidden;
+}
+
+.message-code-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.3rem 0.5rem 0.3rem 0.75rem;
+  border-bottom: 1px solid rgb(63 63 70 / 0.6);
+  background: rgb(24 24 27 / 0.5);
+}
+
+.message-code-lang {
+  font-size: 11px;
+  font-family: var(--app-mono-font-stack);
+  color: rgb(113 113 122);
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-code-copy {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 5px;
+  border: none;
+  background: transparent;
+  color: rgb(113 113 122);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color 120ms ease, background 120ms ease;
+  padding: 0;
+}
+
+.message-code-copy:hover {
+  color: rgb(212 212 216);
+  background: rgb(63 63 70 / 0.5);
+}
+
+.message-code-copy--done {
+  color: rgb(74 222 128) !important;
 }
 
 .message-code {
+  display: block;
   white-space: pre;
-  color: rgb(212 212 216);
   font-size: 12px;
-  line-height: 1.5;
+  line-height: 1.6;
   font-family: var(--app-mono-font-stack);
+  padding: 0.65rem 0.75rem;
+  overflow-x: auto;
 }
 
 .message-thinking {
@@ -966,11 +1017,23 @@ body[data-mood="aggression"] .state-dot { background: #ef4444; }
 .message-math { color: rgb(212 212 216); }
 
 .message-math-inline {
+  display: inline-block;
+  vertical-align: middle;
   border-radius: 4px;
   border: 1px solid rgb(63 63 70);
   background: rgb(39 39 42 / 0.5);
   padding: 0.05rem 0.3rem;
+  line-height: 1;
   font-size: 0.93em;
+}
+
+.message-math-inline .katex {
+  font-size: 1em;
+  line-height: 1;
+}
+
+.message-math-inline .katex-html {
+  white-space: nowrap;
 }
 
 .message-math-block {
@@ -980,6 +1043,15 @@ body[data-mood="aggression"] .state-dot { background: #ef4444; }
   background: rgb(24 24 27 / 0.6);
   padding: 0.55rem 0.7rem;
   overflow-x: auto;
+}
+
+.message-math-block .katex-display {
+  margin: 0;
+  text-align: left;
+}
+
+.message-math-block .katex {
+  font-size: 1em;
 }
 
 /* ── Tool calls ──────────────────────────────────────────────── */

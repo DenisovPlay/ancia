@@ -71,7 +71,7 @@ export const chatPageTemplate = `
       </div>
     </div>
 
-    <section id="chat-stream" aria-live="polite" class="chat-scroll min-h-0 overflow-y-auto flex-1 space-y-2.5 pr-1 pb-4 pt-12 -mb-3">
+    <section id="chat-stream" aria-live="polite" class="chat-scroll min-h-0 overflow-y-auto flex-1 space-y-2.5 pb-4 pt-[3.5rem] -mb-3">
       
     </section>
 
@@ -143,7 +143,7 @@ export const chatPageTemplate = `
 
       <div class="rounded-lg border border-zinc-800 bg-zinc-900/40 p-2.5">
         <p class="mb-2 text-[10px] uppercase tracking-[0.14em] text-zinc-600">Сессия</p>
-        <div class="space-y-1">
+        <div class="space-y-1.5">
           <div class="flex items-center justify-between text-[11px]">
             <span class="text-zinc-500">Токены</span>
             <span id="token-count" class="font-mono text-zinc-400">—</span>

@@ -594,13 +594,24 @@ export function createComposerGenerationController({
           }
 
           if (phase === "result" && toolStatus !== "error") {
-            const newMood = String(payload.output?.mood || "").trim();
+            const newMood = String(
+              payload.output?.mood
+              || payload.output?.state
+              || payload.args?.mood
+              || "",
+            ).trim();
             if (newMood && requestSessionId) {
               setChatSessionMood(requestSessionId, newMood, runtimeConfig.defaultTransitionMs);
             }
           }
 
-          if (phase === "result" && (!payload.output || !String(payload.output?.mood || "").trim())) {
+          const toolResultMood = String(
+            payload.output?.mood
+            || payload.output?.state
+            || payload.args?.mood
+            || "",
+          ).trim();
+          if (phase === "result" && !toolResultMood) {
             applyTransientMood(requestSessionId, "waiting", 220);
           }
 

@@ -1,4 +1,6 @@
 import "./style.css";
+import "katex/dist/katex.min.css";
+import "highlight.js/styles/atom-one-dark.min.css";
 import { StatefulLiquidBackground } from "./background.js";
 import { chatPageTemplate, createChatFeature } from "./chats.js";
 import { createModelsFeature, modelsPageTemplate } from "./models.js";

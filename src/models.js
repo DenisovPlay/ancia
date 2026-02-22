@@ -6,6 +6,68 @@ const VALID_MODEL_FILTERS = new Set(["all", "installed"]);
 
 export { modelsPageTemplate };
 
+function formatBytes(value) {
+  const safeValue = Number(value);
+  if (!Number.isFinite(safeValue) || safeValue < 0) return "";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let size = safeValue;
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+  if (unitIndex === 0) {
+    return `${Math.round(size)} ${units[unitIndex]}`;
+  }
+  return `${size.toFixed(size >= 100 ? 0 : size >= 10 ? 1 : 2)} ${units[unitIndex]}`;
+}
+
+function formatEta(secondsValue) {
+  const safeSeconds = Math.max(0, Math.floor(Number(secondsValue) || 0));
+  if (!safeSeconds) return "";
+  if (safeSeconds < 60) return `${safeSeconds}s`;
+  const minutes = Math.floor(safeSeconds / 60);
+  const seconds = safeSeconds % 60;
+  if (minutes < 60) return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+  const hours = Math.floor(minutes / 60);
+  const minutesRest = minutes % 60;
+  if (hours < 24) return `${hours}h ${String(minutesRest).padStart(2, "0")}m`;
+  const days = Math.floor(hours / 24);
+  const hoursRest = hours % 24;
+  return `${days}d ${hoursRest}h`;
+}
+
+function buildDownloadMeta(startup) {
+  const details = startup && typeof startup === "object" && startup.details && typeof startup.details === "object"
+    ? startup.details
+    : {};
+  const totalBytes = Number(details.download_total_bytes);
+  const downloadedBytes = Number(details.download_downloaded_bytes);
+  const speedBytesPerSecond = Number(details.download_speed_bytes_per_second);
+  const etaSeconds = Number(details.download_eta_seconds);
+
+  if (Number.isFinite(totalBytes) && totalBytes > 0 && Number.isFinite(downloadedBytes)) {
+    const safeDone = Math.max(0, Math.min(totalBytes, downloadedBytes));
+    const chunks = [`Скачано: ${formatBytes(safeDone)} / ${formatBytes(totalBytes)}`];
+    if (Number.isFinite(speedBytesPerSecond) && speedBytesPerSecond > 0) {
+      chunks.push(`${formatBytes(speedBytesPerSecond)}/с`);
+    }
+    if (Number.isFinite(etaSeconds) && etaSeconds > 0) {
+      const etaLabel = formatEta(etaSeconds);
+      if (etaLabel) {
+        chunks.push(`ETA ${etaLabel}`);
+      }
+    }
+    return chunks.join(" · ");
+  }
+
+  const filesToDownload = Number(details.download_files_to_download);
+  if (Number.isFinite(filesToDownload) && filesToDownload > 0) {
+    return `Файлов к скачиванию: ${Math.floor(filesToDownload)}`;
+  }
+  return "";
+}
+
 export function createModelsFeature({
   runtimeConfig,
   backendClient,
@@ -131,7 +193,10 @@ export function createModelsFeature({
     if (runtimeMetaNode) {
       const selectedLabel = getModelLabelById(selected, selected || "не выбрана");
       const loadedLabel = loaded ? getModelLabelById(loaded, loaded) : "не загружена";
-      runtimeMetaNode.textContent = `Выбрана: ${selectedLabel} · Загружена: ${loadedLabel}`;
+      const downloadMeta = buildDownloadMeta(startup);
+      runtimeMetaNode.textContent = downloadMeta
+        ? `Выбрана: ${selectedLabel} · Загружена: ${loadedLabel} · ${downloadMeta}`
+        : `Выбрана: ${selectedLabel} · Загружена: ${loadedLabel}`;
     }
 
     if (runtimeBadgeNode) {

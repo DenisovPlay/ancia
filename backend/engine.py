@@ -487,6 +487,265 @@ class PythonModelEngine(EngineModelsMixin):
       details=payload,
     )
 
+  @staticmethod
+  def _format_eta_label(seconds: float | int | None) -> str:
+    try:
+      total_seconds = int(float(seconds or 0))
+    except (TypeError, ValueError):
+      return ""
+    if total_seconds <= 0:
+      return ""
+    if total_seconds < 60:
+      return f"{total_seconds}s"
+    minutes, seconds_remainder = divmod(total_seconds, 60)
+    if minutes < 60:
+      return f"{minutes}m {seconds_remainder:02d}s"
+    hours, minutes_remainder = divmod(minutes, 60)
+    if hours < 24:
+      return f"{hours}h {minutes_remainder:02d}m"
+    days, hours_remainder = divmod(hours, 24)
+    return f"{days}d {hours_remainder}h"
+
+  @staticmethod
+  def _loading_stage_progress_for_ratio(ratio: float) -> int:
+    start = int(STARTUP_STAGE_PROGRESS["loading_model"])
+    safe_ratio = max(0.0, min(1.0, float(ratio or 0.0)))
+    # Для этапа loading_model оставляем зазор до 100, чтобы ready выставлялся отдельно.
+    return max(start, min(97, int(round(start + safe_ratio * 25.0))))
+
+  def _prefetch_snapshot_with_progress(
+    self,
+    *,
+    model_repo: str,
+    model_label: str,
+    details_base: dict[str, Any],
+  ) -> str:
+    safe_repo = normalize_model_repo(model_repo, "")
+    if not safe_repo:
+      return safe_repo
+
+    try:
+      from huggingface_hub import snapshot_download  # type: ignore
+      from tqdm.auto import tqdm as tqdm_auto  # type: ignore
+    except Exception:
+      return safe_repo
+
+    repo_cache_dir = self._model_storage.resolve_repo_cache_dir(safe_repo)
+    cached_bytes_before = (
+      self._model_storage.directory_size_bytes(repo_cache_dir)
+      if repo_cache_dir is not None and repo_cache_dir.exists()
+      else 0
+    )
+    state: dict[str, Any] = {
+      "phase": "preparing",
+      "complete": False,
+      "files_total": 0,
+      "files_to_download": 0,
+      "cached_bytes": max(0, int(cached_bytes_before)),
+      "network_total_bytes": 0,
+      "network_downloaded_bytes": 0,
+      "model_total_bytes": 0,
+      "speed_bytes_per_second": 0.0,
+      "eta_seconds": None,
+    }
+    last_emit_at = 0.0
+    speed_ref_at = time.monotonic()
+    speed_ref_downloaded = 0
+
+    def emit_progress(*, force: bool = False, phase: str | None = None) -> None:
+      nonlocal last_emit_at, speed_ref_at, speed_ref_downloaded
+      now = time.monotonic()
+      if phase:
+        state["phase"] = phase
+      if not force and (now - last_emit_at) < 0.25:
+        return
+
+      cached_bytes = max(0, int(state.get("cached_bytes") or 0))
+      network_total_bytes = max(0, int(state.get("network_total_bytes") or 0))
+      network_downloaded_bytes = max(0, int(state.get("network_downloaded_bytes") or 0))
+      model_total_bytes = max(0, int(state.get("model_total_bytes") or 0))
+      if model_total_bytes <= 0:
+        model_total_bytes = cached_bytes + network_total_bytes
+      model_downloaded_bytes = cached_bytes + network_downloaded_bytes
+      if model_total_bytes > 0:
+        model_downloaded_bytes = min(model_total_bytes, model_downloaded_bytes)
+      else:
+        model_downloaded_bytes = max(0, model_downloaded_bytes)
+
+      elapsed_for_speed = now - speed_ref_at
+      if elapsed_for_speed >= 0.35:
+        speed_delta = max(0, network_downloaded_bytes - speed_ref_downloaded)
+        state["speed_bytes_per_second"] = (
+          float(speed_delta) / elapsed_for_speed
+          if speed_delta > 0
+          else 0.0
+        )
+        speed_ref_downloaded = network_downloaded_bytes
+        speed_ref_at = now
+
+      speed_bytes_per_second = float(state.get("speed_bytes_per_second") or 0.0)
+      eta_seconds: int | None = None
+      if network_total_bytes > 0 and speed_bytes_per_second > 0:
+        remaining = max(0, network_total_bytes - network_downloaded_bytes)
+        eta_seconds = int(round(remaining / max(speed_bytes_per_second, 1e-6)))
+      state["eta_seconds"] = eta_seconds
+
+      ratio = 0.0
+      if model_total_bytes > 0:
+        ratio = float(model_downloaded_bytes) / float(model_total_bytes)
+      elif network_total_bytes > 0:
+        ratio = float(network_downloaded_bytes) / float(network_total_bytes)
+      elif bool(state.get("complete")):
+        ratio = 1.0
+      progress_percent = self._loading_stage_progress_for_ratio(ratio)
+      if bool(state.get("complete")):
+        progress_percent = 97
+
+      phase_token = str(state.get("phase") or "").strip().lower()
+      if phase_token == "complete":
+        message = f"Файлы {model_label} готовы. Инициализируем модель..."
+      elif network_total_bytes > 0 and model_total_bytes > 0:
+        ratio_percent = max(0.0, min(100.0, (float(model_downloaded_bytes) / float(model_total_bytes)) * 100.0))
+        suffix_parts: list[str] = []
+        if speed_bytes_per_second > 0:
+          suffix_parts.append(f"{format_bytes(int(speed_bytes_per_second))}/s")
+        eta_label = self._format_eta_label(eta_seconds)
+        if eta_label:
+          suffix_parts.append(f"ETA {eta_label}")
+        suffix = f" · {' · '.join(suffix_parts)}" if suffix_parts else ""
+        message = (
+          f"Скачиваем {model_label}: "
+          f"{format_bytes(model_downloaded_bytes)} / {format_bytes(model_total_bytes)} "
+          f"({ratio_percent:.1f}%){suffix}"
+        )
+      elif int(state.get("files_to_download") or 0) > 0:
+        message = f"Скачиваем {model_label}..."
+      else:
+        message = f"Файлы {model_label} уже в кэше. Инициализируем модель..."
+
+      details_payload = {
+        **details_base,
+        "progress_percent": progress_percent,
+        "download_phase": phase_token or "preparing",
+        "download_complete": bool(state.get("complete")),
+        "download_files_total": int(state.get("files_total") or 0),
+        "download_files_to_download": int(state.get("files_to_download") or 0),
+        "download_total_bytes": model_total_bytes,
+        "download_total_human": format_bytes(model_total_bytes),
+        "download_downloaded_bytes": model_downloaded_bytes,
+        "download_downloaded_human": format_bytes(model_downloaded_bytes),
+        "download_cached_bytes": cached_bytes,
+        "download_cached_human": format_bytes(cached_bytes),
+        "download_network_total_bytes": network_total_bytes,
+        "download_network_total_human": format_bytes(network_total_bytes),
+        "download_network_bytes": network_downloaded_bytes,
+        "download_network_human": format_bytes(network_downloaded_bytes),
+        "download_speed_bytes_per_second": int(speed_bytes_per_second) if speed_bytes_per_second > 0 else 0,
+        "download_speed_human_per_second": f"{format_bytes(int(speed_bytes_per_second))}/s" if speed_bytes_per_second > 0 else "",
+        "download_eta_seconds": eta_seconds,
+        "download_eta_human": self._format_eta_label(eta_seconds),
+      }
+      self._startup.set(
+        status="loading",
+        stage="loading_model",
+        message=message,
+        details=details_payload,
+      )
+      last_emit_at = now
+
+    def on_download_chunk(delta_bytes: int) -> None:
+      if delta_bytes <= 0:
+        return
+      network_total_bytes = int(state.get("network_total_bytes") or 0)
+      if network_total_bytes <= 0:
+        return
+      downloaded = int(state.get("network_downloaded_bytes") or 0)
+      state["network_downloaded_bytes"] = min(network_total_bytes, downloaded + delta_bytes)
+      emit_progress(force=False, phase="downloading")
+
+    class _SilentTqdm(tqdm_auto):  # type: ignore[misc,valid-type]
+      def __init__(self, *args: Any, **kwargs: Any) -> None:
+        kwargs.setdefault("disable", True)
+        super().__init__(*args, **kwargs)
+
+    class _StartupDownloadTqdm(_SilentTqdm):
+      def update(self, n: int = 1) -> bool:
+        result = super().update(n)
+        try:
+          delta_bytes = int(n)
+        except (TypeError, ValueError):
+          delta_bytes = 0
+        if delta_bytes > 0:
+          on_download_chunk(delta_bytes)
+        return result
+
+    hub_cache_dir = str((self._models_dir / "hub").resolve())
+    emit_progress(force=True, phase="preparing")
+    try:
+      dry_run_files = snapshot_download(
+        repo_id=safe_repo,
+        cache_dir=hub_cache_dir,
+        dry_run=True,
+        tqdm_class=_SilentTqdm,
+      )
+      if isinstance(dry_run_files, list):
+        files_total = len(dry_run_files)
+        files_to_download = sum(
+          1
+          for item in dry_run_files
+          if bool(getattr(item, "will_download", False))
+        )
+        network_total_bytes = sum(
+          max(0, int(getattr(item, "file_size", 0) or 0))
+          for item in dry_run_files
+          if bool(getattr(item, "will_download", False))
+        )
+        model_total_bytes = sum(
+          max(0, int(getattr(item, "file_size", 0) or 0))
+          for item in dry_run_files
+        )
+        state["files_total"] = files_total
+        state["files_to_download"] = files_to_download
+        state["network_total_bytes"] = network_total_bytes
+        state["model_total_bytes"] = model_total_bytes
+    except Exception as exc:
+      LOGGER.debug("HF dry-run unavailable for %s: %s", safe_repo, exc)
+
+    if int(state.get("model_total_bytes") or 0) <= 0:
+      state["model_total_bytes"] = int(state.get("cached_bytes") or 0) + int(state.get("network_total_bytes") or 0)
+
+    if int(state.get("network_total_bytes") or 0) > 0:
+      emit_progress(force=True, phase="downloading")
+    else:
+      emit_progress(force=True, phase="cached")
+
+    try:
+      snapshot_path = snapshot_download(
+        repo_id=safe_repo,
+        cache_dir=hub_cache_dir,
+        tqdm_class=_StartupDownloadTqdm,
+      )
+      if int(state.get("network_total_bytes") or 0) > 0:
+        state["network_downloaded_bytes"] = int(state.get("network_total_bytes") or 0)
+      state["complete"] = True
+      emit_progress(force=True, phase="complete")
+      return str(snapshot_path)
+    except Exception as exc:
+      LOGGER.warning("Snapshot prefetch with progress failed for %s: %s", safe_repo, exc)
+      fallback_details = {
+        **details_base,
+        "progress_percent": STARTUP_STAGE_PROGRESS["loading_model"],
+        "download_phase": "fallback",
+        "download_error": str(exc),
+      }
+      self._startup.set(
+        status="loading",
+        stage="loading_model",
+        message=f"Загружаем {model_label}...",
+        details=fallback_details,
+      )
+      return safe_repo
+
   def _load_model(
     self,
     target_tier: str,
@@ -534,20 +793,28 @@ class PythonModelEngine(EngineModelsMixin):
       )
       self._memory_details = self._check_memory()
 
+      loading_details_base = {
+        **self._memory_details,
+        "model_tier": target_tier,
+        "tier_label": tier_label,
+        "model_id": target_model_id,
+        "model_label": model_label,
+        "model_repo": target_repo,
+      }
       self._startup.set(
         status="loading",
         stage="loading_model",
         message=f"Загружаем {model_label}...",
         details={
           "progress_percent": STARTUP_STAGE_PROGRESS["loading_model"],
-          **self._memory_details,
-          "model_tier": target_tier,
-          "tier_label": tier_label,
-          "model_id": target_model_id,
-          "model_label": model_label,
-          "model_repo": target_repo,
+          **loading_details_base,
         },
       )
+      load_target = self._prefetch_snapshot_with_progress(
+        model_repo=target_repo,
+        model_label=model_label,
+        details_base=loading_details_base,
+      ) or target_repo
 
       # mlx_lm.load()/mlx_vlm.load() пишут прогресс в stdout. При запуске через Tauri pipe
       # stdout может быть закрыт и вызывать BrokenPipeError. Перенаправляем на devnull.
@@ -573,9 +840,10 @@ class PythonModelEngine(EngineModelsMixin):
           vlm_load_target, vlm_patch_applied = self._resolve_vlm_load_target(
             model_id=target_model_id,
             model_repo=target_repo,
+            preloaded_snapshot_path=load_target,
           )
           if not vlm_load_target:
-            vlm_load_target = target_repo
+            vlm_load_target = load_target
 
           _old_stdout, _old_stderr = sys.stdout, sys.stderr
           try:
@@ -633,7 +901,7 @@ class PythonModelEngine(EngineModelsMixin):
         try:
           sys.stdout = _io.TextIOWrapper(_io.FileIO(os.devnull, "w"), errors="replace")
           sys.stderr = _io.TextIOWrapper(_io.FileIO(os.devnull, "w"), errors="replace")
-          model, tokenizer = mlx_load(target_repo)
+          model, tokenizer = mlx_load(load_target)
         finally:
           sys.stdout, sys.stderr = _old_stdout, _old_stderr
         with self._generation_lock:
@@ -1089,41 +1357,59 @@ class PythonModelEngine(EngineModelsMixin):
     probe = f"{model_id} {model_repo}".strip().lower().replace("_", "-")
     return "qwen3-vl" in probe
 
-  def _resolve_vlm_load_target(self, *, model_id: str, model_repo: str) -> tuple[str, bool]:
+  def _resolve_vlm_load_target(
+    self,
+    *,
+    model_id: str,
+    model_repo: str,
+    preloaded_snapshot_path: str | None = None,
+  ) -> tuple[str, bool]:
     """Return repo/path for mlx_vlm.load and whether config compatibility patch was applied."""
     safe_repo = str(model_repo or "").strip()
+    safe_preloaded_snapshot_path = str(preloaded_snapshot_path or "").strip()
     if not safe_repo:
-      return safe_repo, False
+      return safe_preloaded_snapshot_path, False
+    if safe_preloaded_snapshot_path and not self._is_qwen3_vl_family(model_id, safe_repo):
+      return safe_preloaded_snapshot_path, False
     if not self._is_qwen3_vl_family(model_id, safe_repo):
       return safe_repo, False
+
+    snapshot_path: Path | None = None
+    if safe_preloaded_snapshot_path:
+      try:
+        preloaded_path = Path(safe_preloaded_snapshot_path).expanduser()
+        if preloaded_path.exists():
+          snapshot_path = preloaded_path.resolve()
+      except Exception:
+        snapshot_path = None
 
     try:
       from huggingface_hub import snapshot_download  # type: ignore
     except Exception as exc:
       LOGGER.warning("Qwen3-VL patch skipped: snapshot_download unavailable (%s)", exc)
-      return safe_repo, False
+      return safe_preloaded_snapshot_path or safe_repo, False
 
-    # HF_HUB_CACHE указывает на <models_dir>/hub — именно там лежат загруженные модели.
-    # cache_dir в snapshot_download должен совпадать, иначе local_files_only=True упадёт
-    # и придётся идти в сеть.
-    hub_cache_dir = str((self._models_dir / "hub").resolve())
-    snapshot_path: Path | None = None
-    for cache_dir_candidate in [hub_cache_dir, str(self._models_dir)]:
-      try:
-        snapshot_path = Path(
-          snapshot_download(
-            repo_id=safe_repo,
-            cache_dir=cache_dir_candidate,
-            local_files_only=True,
+    if snapshot_path is None:
+      # HF_HUB_CACHE указывает на <models_dir>/hub — именно там лежат загруженные модели.
+      # cache_dir в snapshot_download должен совпадать, иначе local_files_only=True упадёт
+      # и придётся идти в сеть.
+      hub_cache_dir = str((self._models_dir / "hub").resolve())
+      for cache_dir_candidate in [hub_cache_dir, str(self._models_dir)]:
+        try:
+          snapshot_path = Path(
+            snapshot_download(
+              repo_id=safe_repo,
+              cache_dir=cache_dir_candidate,
+              local_files_only=True,
+            )
           )
-        )
-        break
-      except Exception:
-        continue
+          break
+        except Exception:
+          continue
 
     if snapshot_path is None:
       LOGGER.warning("Qwen3-VL patch skipped: model not found in local cache for %s", safe_repo)
-      return safe_repo, False
+      return safe_preloaded_snapshot_path or safe_repo, False
 
     config_path = snapshot_path / "config.json"
     if not config_path.is_file():

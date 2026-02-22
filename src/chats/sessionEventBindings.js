@@ -61,6 +61,27 @@ export function bindChatSessionEvents({
     });
   });
 
+  elements.chatStream?.addEventListener("click", (event) => {
+    const copyBtn = event.target instanceof Element ? event.target.closest("[data-copy-code]") : null;
+    if (!(copyBtn instanceof HTMLElement)) {
+      return;
+    }
+    const pre = copyBtn.closest(".message-code-block");
+    const rawCode = pre instanceof HTMLElement ? String(pre.dataset.rawCode || "") : "";
+    if (!rawCode) {
+      return;
+    }
+    navigator.clipboard.writeText(rawCode).then(() => {
+      const originalHtml = copyBtn.innerHTML;
+      copyBtn.classList.add("message-code-copy--done");
+      copyBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>`;
+      window.setTimeout(() => {
+        copyBtn.classList.remove("message-code-copy--done");
+        copyBtn.innerHTML = originalHtml;
+      }, 1800);
+    }).catch(() => {});
+  });
+
   elements.chatStream?.addEventListener("contextmenu", (event) => {
     const row = event.target instanceof Element ? event.target.closest("[data-message-id]") : null;
     if (!(row instanceof HTMLElement)) {

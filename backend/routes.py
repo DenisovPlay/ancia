@@ -652,6 +652,32 @@ def register_api_routes(
     active_tools = {tool for tool in active_tools if tool_registry.has_tool(tool)}
     return user_text, chat_id, chat_title, incoming_mood, runtime, active_tools
 
+  def _extract_tool_event_mood(output: Any) -> str:
+    if not isinstance(output, dict):
+      return ""
+    mood_candidate = str(
+      output.get("mood")
+      or output.get("state")
+      or "",
+    ).strip()
+    if not mood_candidate:
+      return ""
+    return normalize_mood(mood_candidate, "")
+
+  def resolve_final_chat_mood(
+    *,
+    incoming_mood: str,
+    result_mood: str,
+    tool_events: list[Any] | None = None,
+  ) -> str:
+    safe_tool_events = list(tool_events or [])
+    for event in reversed(safe_tool_events):
+      output = event.get("output") if isinstance(event, dict) else getattr(event, "output", {})
+      tool_mood = _extract_tool_event_mood(output)
+      if tool_mood:
+        return tool_mood
+    return normalize_mood(result_mood, incoming_mood)
+
   def build_chat_response(
     *,
     payload: ChatRequest,
@@ -661,7 +687,11 @@ def register_api_routes(
     active_tools: set[str],
     result: Any,
   ) -> ChatResponse:
-    final_mood = normalize_mood(result.mood, incoming_mood)
+    final_mood = resolve_final_chat_mood(
+      incoming_mood=incoming_mood,
+      result_mood=str(getattr(result, "mood", "") or ""),
+      tool_events=list(getattr(result, "tool_events", []) or []),
+    )
     storage.update_chat_mood(chat_id, final_mood)
 
     system_prompt_value = build_system_prompt_fn(
@@ -1108,7 +1138,11 @@ def register_api_routes(
         if result is None:
           raise RuntimeError("Поток генерации завершился без результата.")
 
-        final_mood = normalize_mood(result.mood, incoming_mood)
+        final_mood = resolve_final_chat_mood(
+          incoming_mood=incoming_mood,
+          result_mood=str(getattr(result, "mood", "") or ""),
+          tool_events=list(getattr(result, "tool_events", []) or []),
+        )
         storage.update_chat_mood(chat_id, final_mood)
         system_prompt_value = build_system_prompt_fn(
           system_prompt,

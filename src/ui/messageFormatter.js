@@ -1,10 +1,10 @@
+import hljs from "highlight.js/lib/common";
+import katex from "katex";
+
 const BLOCK_TOKEN_PATTERN = /@@BLOCK_(\d+)@@/g;
 const INLINE_TOKEN_PATTERN = /@@INLINE_(\d+)@@/g;
 
-let katexLoaderPromise = null;
-let katexRender = null;
-const KATEX_CSS_MODULE = "katex/dist/katex.min.css";
-const KATEX_JS_MODULE = "katex";
+const COPY_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
 
 function escapeHtml(value) {
   return String(value || "")
@@ -147,12 +147,23 @@ function tokenizeBlocks(input) {
     return `\n@@BLOCK_${id}@@\n`;
   };
 
-  text = text.replace(/```([^\n`]*)\n?([\s\S]*?)```/g, (_full, language, code) => (
+  // Match code blocks: closing may be 2 or 3+ backticks (some models truncate)
+  text = text.replace(/```([^\n`]*)\n?([\s\S]*?)``+/g, (_full, language, code) => (
     pushBlock("code_block", {
       language: String(language || "").trim(),
       code: String(code || "").replace(/\n$/, ""),
     })
   ));
+
+  // Handle unclosed code block at end of text
+  const unclosedCode = /```([^\n`]*)\n([\s\S]+)$/.exec(text);
+  if (unclosedCode) {
+    const before = text.slice(0, unclosedCode.index);
+    text = before + pushBlock("code_block", {
+      language: String(unclosedCode[1] || "").trim(),
+      code: String(unclosedCode[2] || "").replace(/\n$/, ""),
+    });
+  }
 
   text = text.replace(/<think>([\s\S]*?)<\/think>/gi, (_full, content) => (
     pushBlock("think_block", { content: String(content || "").trim() })
@@ -184,11 +195,36 @@ function renderBlockToken(token) {
   }
   if (token.type === "code_block") {
     const language = String(token.payload.language || "").trim();
+    const rawCode = String(token.payload.code || "");
+
+    let highlightedCode;
+    if (language && hljs.getLanguage(language)) {
+      try {
+        highlightedCode = hljs.highlight(rawCode, { language, ignoreIllegals: true }).value;
+      } catch {
+        highlightedCode = escapeHtml(rawCode);
+      }
+    } else {
+      try {
+        const result = hljs.highlightAuto(rawCode);
+        highlightedCode = result.value;
+      } catch {
+        highlightedCode = escapeHtml(rawCode);
+      }
+    }
+
+    const langLabel = language
+      ? `<span class="message-code-lang">${escapeHtml(language)}</span>`
+      : `<span class="message-code-lang"></span>`;
+
+    const header = `<div class="message-code-header">${langLabel}<button class="message-code-copy" data-copy-code="true" title="Копировать">${COPY_ICON}</button></div>`;
     const languageClass = language ? ` language-${escapeAttr(language)}` : "";
+
     return (
-      `<pre class="message-code-block"><code class="message-code${languageClass}">`
-      + `${escapeHtml(token.payload.code || "")}`
-      + "</code></pre>"
+      `<pre class="message-code-block" data-raw-code="${escapeAttr(rawCode)}">`
+      + header
+      + `<code class="message-code${languageClass}">${highlightedCode}</code>`
+      + "</pre>"
     );
   }
   if (token.type === "math_block") {
@@ -255,21 +291,22 @@ function normalizeInlineListSyntax(input) {
 
     // Частый кейс от моделей: ".... . - Пункт - Пункт"
     // Нормализуем в реальные markdown-списки.
+    // Lookahead включает ` чтобы ловить элементы вида "2. `tool`"
     next = next.replace(
-      /([.!?:;])\s+([-*+])\s+(?=[A-Za-zА-Яа-яЁё0-9"«])/g,
+      /([.!?:;])\s+([-*+])\s+(?=[A-Za-zА-Яа-яЁё0-9"«`])/g,
       "$1\n$2 ",
     );
     next = next.replace(
-      /([.!?:;])\s+(\d{1,3}\.)\s+(?=[A-Za-zА-Яа-яЁё0-9"«])/g,
+      /([.!?:;])\s+(\d{1,3}\.)\s+(?=[A-Za-zА-Яа-яЁё0-9"«`])/g,
       "$1\n$2 ",
     );
     next = next.replace(/\s+-\s+(?=📌\s+)/g, "\n- ");
     next = next.replace(
-      /\s+-\s+(?=(?:📌|✅|⚠️|🔹|🔸|\*\*|[A-ZА-ЯЁ]))/g,
+      /\s+-\s+(?=(?:📌|✅|⚠️|🔹|🔸|\*\*|`|[A-ZА-ЯЁ]))/g,
       "\n- ",
     );
     next = next.replace(
-      /\s+(\d{1,3}\.)\s+(?=(?:📌|✅|⚠️|🔹|🔸|\*\*|[A-ZА-ЯЁ]))/g,
+      /\s+(\d{1,3}\.)\s+(?=(?:📌|✅|⚠️|🔹|🔸|\*\*|`|[A-ZА-ЯЁ]))/g,
       "\n$1 ",
     );
 
@@ -396,65 +433,16 @@ function renderMarkdown(input) {
   return htmlBlocks.filter(Boolean).join("\n");
 }
 
-function ensureKatexLoaded() {
-  if (typeof katexRender === "function") {
-    return Promise.resolve(true);
-  }
-  if (window.katex?.render) {
-    katexRender = window.katex.render.bind(window.katex);
-    return Promise.resolve(true);
-  }
-  if (katexLoaderPromise) {
-    return katexLoaderPromise;
-  }
-
-  katexLoaderPromise = (async () => {
-    try {
-      await import(/* @vite-ignore */ KATEX_CSS_MODULE);
-    } catch (error) {
-      // CSS optional: rendering can still proceed without stylesheet.
-    }
-
-    try {
-      const katexModule = await import(/* @vite-ignore */ KATEX_JS_MODULE);
-      const katexApi = katexModule?.default && typeof katexModule.default.render === "function"
-        ? katexModule.default
-        : katexModule;
-      if (katexApi && typeof katexApi.render === "function") {
-        katexRender = katexApi.render.bind(katexApi);
-        if (!window.katex) {
-          window.katex = katexApi;
-        }
-        return true;
-      }
-    } catch (error) {
-      return false;
-    }
-
-    return false;
-  })();
-
-  return katexLoaderPromise;
-}
-
 export function renderMessageHtml(text) {
   return renderMarkdown(text);
 }
 
-export async function typesetMathInElement(container) {
+export function typesetMathInElement(container) {
   if (!(container instanceof HTMLElement)) {
     return;
   }
-  const candidates = [...container.querySelectorAll("[data-latex]")];
+  const candidates = [...container.querySelectorAll("[data-latex]:not(.message-math-ready)")];
   if (candidates.length === 0) {
-    return;
-  }
-
-  const ready = await ensureKatexLoaded();
-  const renderer = typeof katexRender === "function"
-    ? katexRender
-    : (window.katex?.render ? window.katex.render.bind(window.katex) : null);
-  if (!ready || typeof renderer !== "function") {
     return;
   }
 
@@ -465,14 +453,14 @@ export async function typesetMathInElement(container) {
     }
     const displayMode = node.getAttribute("data-math-display") === "true";
     try {
-      renderer(expr, node, {
+      katex.render(expr, node, {
         throwOnError: false,
         displayMode,
         strict: "ignore",
       });
       node.classList.add("message-math-ready");
-    } catch (error) {
-      // Оставляем текстовый fallback, если KaTeX не смог разобрать выражение.
+    } catch {
+      // Оставляем текстовый fallback
     }
   });
 }
