@@ -1,3 +1,5 @@
+import { createModalOverlayManager } from "./modalOverlayManager.js";
+
 export function createActionDialogManager({
   overlay,
   dialog,
@@ -8,21 +10,24 @@ export function createActionDialogManager({
   cancelButton,
   confirmButton,
   isMotionEnabled,
-  transitionMs = 260,
+  transitionMs = 200,
 } = {}) {
+  const modalOverlay = createModalOverlayManager({
+    overlay,
+    isMotionEnabled,
+    transitionMs,
+  });
+
   const state = {
     open: false,
     mode: "confirm",
     resolve: null,
     keydownHandler: null,
-    restoreFocusEl: null,
-    closeTimerId: null,
-    closeToken: 0,
   };
 
   function hasSupport() {
     return Boolean(
-      overlay
+      modalOverlay.hasSupport()
         && dialog
         && title
         && message
@@ -31,22 +36,6 @@ export function createActionDialogManager({
         && cancelButton
         && confirmButton,
     );
-  }
-
-  function finalizeVisualClose(restoreFocusEl = null) {
-    if (!hasSupport()) {
-      return;
-    }
-
-    overlay.classList.remove("is-open", "is-closing");
-    overlay.classList.add("hidden");
-    overlay.setAttribute("aria-hidden", "true");
-
-    if (restoreFocusEl instanceof HTMLElement) {
-      window.requestAnimationFrame(() => {
-        restoreFocusEl.focus({ preventScroll: true });
-      });
-    }
   }
 
   function settle(
@@ -59,14 +48,10 @@ export function createActionDialogManager({
 
     const resolver = state.resolve;
     const keydownHandler = state.keydownHandler;
-    const restoreFocusEl = state.restoreFocusEl;
-
     state.open = false;
     state.mode = "confirm";
     state.resolve = null;
     state.keydownHandler = null;
-    state.restoreFocusEl = null;
-    const closeToken = ++state.closeToken;
 
     inputWrap.classList.add("hidden");
     input.value = "";
@@ -77,26 +62,7 @@ export function createActionDialogManager({
       document.removeEventListener("keydown", keydownHandler);
     }
 
-    if (state.closeTimerId != null) {
-      window.clearTimeout(state.closeTimerId);
-      state.closeTimerId = null;
-    }
-
-    const shouldAnimate = Boolean(typeof isMotionEnabled === "function" ? isMotionEnabled() : true) && !skipAnimation;
-    if (!shouldAnimate) {
-      finalizeVisualClose(restoreFocusEl);
-    } else {
-      overlay.classList.remove("is-open");
-      overlay.classList.add("is-closing");
-      overlay.setAttribute("aria-hidden", "true");
-      state.closeTimerId = window.setTimeout(() => {
-        if (closeToken !== state.closeToken) {
-          return;
-        }
-        state.closeTimerId = null;
-        finalizeVisualClose(restoreFocusEl);
-      }, transitionMs);
-    }
+    modalOverlay.close({ skipAnimation });
 
     if (typeof resolver === "function") {
       resolver(result);
@@ -128,10 +94,6 @@ export function createActionDialogManager({
     const safeMode = mode === "prompt" ? "prompt" : "confirm";
     state.open = true;
     state.mode = safeMode;
-    state.restoreFocusEl = document.activeElement instanceof HTMLElement
-      ? document.activeElement
-      : null;
-
     title.textContent = String(titleText || "Подтверждение");
     message.textContent = String(messageText || "Подтвердите действие.");
     cancelButton.textContent = String(cancelLabel || "Отмена");
@@ -142,27 +104,7 @@ export function createActionDialogManager({
     inputWrap.classList.toggle("hidden", !promptMode);
     input.placeholder = String(placeholder || "");
     input.value = String(defaultValue ?? "");
-
-    if (state.closeTimerId != null) {
-      window.clearTimeout(state.closeTimerId);
-      state.closeTimerId = null;
-    }
-
-    const openToken = ++state.closeToken;
-    overlay.classList.remove("hidden", "is-open", "is-closing");
-    overlay.setAttribute("aria-hidden", "false");
-
-    const shouldAnimate = Boolean(typeof isMotionEnabled === "function" ? isMotionEnabled() : true);
-    if (shouldAnimate) {
-      window.requestAnimationFrame(() => {
-        if (!state.open || openToken !== state.closeToken) {
-          return;
-        }
-        overlay.classList.add("is-open");
-      });
-    } else {
-      overlay.classList.add("is-open");
-    }
+    modalOverlay.open({ captureFocus: true });
 
     return new Promise((resolve) => {
       state.resolve = resolve;
@@ -308,6 +250,6 @@ export function createActionDialogManager({
     bind,
     requestConfirm,
     requestText,
-    isOpen: () => Boolean(state.open),
+    isOpen: () => Boolean(state.open || modalOverlay.isOpen()),
   };
 }

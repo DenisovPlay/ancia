@@ -5,6 +5,8 @@ dist
 __pycache__
 *.pyc
 backend/.runtime
+# Локальный кэш моделей (HF/MLX), не коммитим.
+backend/data/models/
 
 src-tauri/target
 src-tauri/.cargo

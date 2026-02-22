@@ -91,10 +91,10 @@ export function renderModelCard(model) {
   const stateBadge = resolveStateBadge(model);
   const isInstalled = model.cache.cached || model.loaded || model.loading;
   const cardBorder = model.loaded
-    ? "border-emerald-500/30"
+    ? "border-emerald-900/50"
     : model.selected
-      ? "border-sky-500/30"
-      : "border-zinc-600/30";
+      ? "border-sky-900/50"
+      : "border-zinc-800";
   const shortMeta = [model.family, model.size, model.quantization].filter(Boolean).join(" · ");
   const compatClass = resolveCompatibilityClass(model.compatibility.level);
   const compatText = model.compatibility.reason || "Совместимость не определена.";
@@ -104,46 +104,50 @@ export function renderModelCard(model) {
   if (model.supportsVision) capTags.push("vision");
   if (model.supportsDocuments) capTags.push("документы");
   const capTagsHtml = capTags
-    .map((tag) => `<span class="rounded-full border border-zinc-700/40 px-2 py-0.5">${escapeHtml(tag)}</span>`)
+    .map((tag) => `<span class="rounded-md border border-zinc-800 px-1.5 py-0.5">${escapeHtml(tag)}</span>`)
     .join("");
 
   const cacheLabel = model.cache.cached
     ? `Локально: ${model.cache.size_human || "готово"}`
     : "Не установлена";
 
+  const btnBase = "icon-button active:scale-95 rounded-lg border px-2.5 py-1 text-xs transition";
+  const btnDefault = `${btnBase} border-zinc-800 bg-zinc-900 text-zinc-300 hover:bg-zinc-800`;
+  const btnAccent = `${btnBase} border-sky-900/50 bg-sky-950/40 text-sky-300 hover:bg-sky-950/60`;
+
   let actionHtml = "";
   if (model.loading) {
     actionHtml = `
-      <button type="button" data-model-action="select" class="icon-button active:scale-95 rounded-full border border-zinc-600/30 bg-zinc-800/70 px-3 py-1.5 text-xs text-zinc-200 transition hover:bg-zinc-700/80">Выбрать</button>
-      <button type="button" disabled class="rounded-full border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-300 opacity-70 cursor-default">
+      <button type="button" data-model-action="select" class="${btnDefault}">Выбрать</button>
+      <button type="button" disabled class="rounded-lg border border-amber-900/40 bg-amber-950/30 px-2.5 py-1 text-xs text-amber-400 opacity-70 cursor-default">
         <span class="inline-block animate-pulse">Загружается…</span>
       </button>
     `;
   } else if (model.loaded) {
     actionHtml = `
-      <button type="button" data-model-action="select" class="icon-button active:scale-95 rounded-full border border-zinc-600/30 bg-zinc-800/70 px-3 py-1.5 text-xs text-zinc-200 transition hover:bg-zinc-700/80">Выбрать</button>
-      <button type="button" data-model-action="unload" class="icon-button active:scale-95 rounded-full border border-zinc-600/30 bg-zinc-800/70 px-3 py-1.5 text-xs text-zinc-200 transition hover:bg-zinc-700/80">${icon("stop")} Выгрузить</button>
+      <button type="button" data-model-action="select" class="${btnDefault}">Выбрать</button>
+      <button type="button" data-model-action="unload" class="${btnDefault}">${icon("stop")} Выгрузить</button>
     `;
   } else if (model.cache.cached) {
     actionHtml = `
-      <button type="button" data-model-action="select" class="icon-button active:scale-95 rounded-full border border-zinc-600/30 bg-zinc-800/70 px-3 py-1.5 text-xs text-zinc-200 transition hover:bg-zinc-700/80">Выбрать</button>
-      <button type="button" data-model-action="load" class="icon-button active:scale-95 rounded-full border border-zinc-600/30 bg-zinc-800/70 px-3 py-1.5 text-xs text-zinc-200 transition hover:bg-zinc-700/80">${icon("play")} Запустить</button>
-      <button type="button" data-model-action="delete-cache" class="icon-button active:scale-95 rounded-full border border-zinc-600/30 bg-zinc-800/70 px-3 py-1.5 text-xs text-zinc-200 transition hover:bg-zinc-700/80">${icon("trash")} Удалить</button>
+      <button type="button" data-model-action="select" class="${btnDefault}">Выбрать</button>
+      <button type="button" data-model-action="load" class="${btnDefault}">${icon("play")} Запустить</button>
+      <button type="button" data-model-action="delete-cache" class="${btnDefault}">${icon("trash")} Удалить</button>
     `;
   } else {
     actionHtml = `
-      <button type="button" data-model-action="select" class="icon-button active:scale-95 rounded-full border border-zinc-600/30 bg-zinc-800/70 px-3 py-1.5 text-xs text-zinc-200 transition hover:bg-zinc-700/80">Выбрать</button>
-      <button type="button" data-model-action="load" class="icon-button active:scale-95 rounded-full border border-sky-500/35 bg-sky-500/10 px-3 py-1.5 text-xs text-sky-200 transition hover:bg-sky-500/20">${icon("play")} Скачать и запустить</button>
+      <button type="button" data-model-action="select" class="${btnDefault}">Выбрать</button>
+      <button type="button" data-model-action="load" class="${btnAccent}">${icon("play")} Скачать и запустить</button>
     `;
   }
 
   const homepageHtml = model.homepage
-    ? `<a href="${escapeHtml(model.homepage)}" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1 text-xs text-zinc-400 hover:text-zinc-200 transition">${icon("globe", "ui-icon-sm")} источник</a>`
+    ? `<a href="${escapeHtml(model.homepage)}" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1 text-xs text-zinc-500 hover:text-zinc-300 transition">${icon("globe", "ui-icon-sm")} источник</a>`
     : "";
 
   return `
     <article
-      class="plugin-card rounded-3xl border ${cardBorder} p-3 flex flex-col h-full gap-0 transition"
+      class="plugin-card flex flex-col rounded-xl border ${cardBorder} bg-zinc-900/30 p-3.5 gap-2.5 transition h-full"
       data-model-card
       data-model-id="${escapeHtml(model.id)}"
       data-model-source="${escapeHtml(model.source)}"
@@ -151,27 +155,31 @@ export function renderModelCard(model) {
       data-model-keywords="${escapeHtml([model.label, model.family, model.size, model.quantization, model.description].join(" ").toLowerCase())}"
     >
       <div class="flex items-start justify-between gap-2">
-        <div class="min-w-0">
-          <h3 class="truncate text-sm font-semibold text-zinc-100">${escapeHtml(model.label)}</h3>
-          ${shortMeta ? `<p class="mt-0.5 truncate text-xs text-zinc-400">${escapeHtml(shortMeta)}</p>` : ""}
+        <div class="min-w-0 flex-1">
+          <div class="flex items-center gap-2 min-w-0">
+            <h3 class="truncate text-sm font-semibold text-zinc-100 leading-snug">${escapeHtml(model.label)}</h3>
+          </div>
+          ${shortMeta ? `<p class="mt-0.5 truncate text-[11px] text-zinc-500">${escapeHtml(shortMeta)}</p>` : ""}
         </div>
-        <span class="ml-1 shrink-0 rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-[0.12em] ${stateBadge.className}">${escapeHtml(stateBadge.text)}</span>
+        <span class="shrink-0 rounded-md border px-2 py-0.5 text-[10px] uppercase tracking-wide ${stateBadge.className}">${escapeHtml(stateBadge.text)}</span>
       </div>
 
-      ${model.description ? `<p class="mt-2 text-xs leading-5 text-zinc-300 line-clamp-3">${escapeHtml(model.description)}</p>` : ""}
+      ${model.description ? `<p class="text-xs leading-[1.6] text-zinc-400 line-clamp-2 flex-1">${escapeHtml(model.description)}</p>` : `<div class="flex-1"></div>`}
 
-      <p class="mt-1.5 text-[11px] ${compatClass}">${escapeHtml(compatText)}</p>
-      <div class="flex-grow flex-shrink-0"></div>
-      <div class="mt-2 flex flex-wrap items-center gap-1.5 text-[10px] text-zinc-500">
-        <span class="rounded-full border border-zinc-700/40 px-2 py-0.5">${escapeHtml(humanSource(model.source))}</span>
+      <div class="flex flex-wrap items-center gap-1.5 text-[10px] text-zinc-600">
+        <span class="rounded border border-zinc-800 px-1.5 py-0.5 font-medium">${escapeHtml(humanSource(model.source))}</span>
         ${capTagsHtml}
-        <span class="ml-auto text-zinc-600">${escapeHtml(cacheLabel)}</span>
+        ${model.cache.cached ? `<span class="ml-auto text-zinc-500">${escapeHtml(model.cache.size_human || "локально")}</span>` : ""}
       </div>
 
-      <div class="mt-3 flex flex-wrap items-center gap-2">
+      <p class="text-[11px] ${compatClass} leading-snug">${escapeHtml(compatText)}</p>
+
+      <div class="flex flex-wrap items-center gap-1.5 pt-1">
         ${actionHtml}
-        ${homepageHtml}
-        ${isInstalled ? `<button type="button" data-model-action="open-params" class="ml-auto text-xs text-zinc-500 hover:text-zinc-300 transition">${icon("settings", "ui-icon-sm")} параметры</button>` : ""}
+        <div class="flex items-center gap-1.5 ml-auto">
+          ${homepageHtml}
+          ${isInstalled ? `<button type="button" data-model-action="open-params" class="icon-button text-xs text-zinc-500 hover:text-zinc-300 transition">${icon("settings", "ui-icon-sm")} параметры</button>` : ""}
+        </div>
       </div>
     </article>
   `;

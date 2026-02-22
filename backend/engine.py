@@ -228,6 +228,7 @@ class PythonModelEngine(EngineModelsMixin):
     self._loading_tier = ""
     self._pending_tier = ""
     self._pending_model_id = ""
+    self._pending_prefer_vision_runtime: bool | None = None
     self._loaded_tier = ""
     self._loaded_model_id = ""
     self._model_storage = EngineModelStorage(
@@ -258,9 +259,20 @@ class PythonModelEngine(EngineModelsMixin):
       },
     )
 
-  def start_background_load(self, tier: str | None = None) -> None:
+  def start_background_load(
+    self,
+    tier: str | None = None,
+    *,
+    prefer_vision_runtime: bool | None = None,
+  ) -> None:
     target_model_id = self.get_selected_model_id()
     target_model_entry = get_model_entry(target_model_id)
+    supports_vision = bool(target_model_entry and getattr(target_model_entry, "supports_vision", False))
+    resolved_prefer_vision_runtime: bool | None
+    if prefer_vision_runtime is None:
+      resolved_prefer_vision_runtime = None
+    else:
+      resolved_prefer_vision_runtime = bool(prefer_vision_runtime and supports_vision)
     target_tier = normalize_model_tier_key(
       getattr(target_model_entry, "recommended_tier", "") if target_model_entry is not None else "",
       normalize_model_tier_key(tier, self.get_selected_tier()),
@@ -272,7 +284,7 @@ class PythonModelEngine(EngineModelsMixin):
     )
     load_thread = threading.Thread(
       target=self._load_model,
-      args=(target_tier, target_model_id, target_repo),
+      args=(target_tier, target_model_id, target_repo, resolved_prefer_vision_runtime),
       name="ancia-model-loader",
       daemon=True,
     )
@@ -280,10 +292,12 @@ class PythonModelEngine(EngineModelsMixin):
       if self._load_thread and self._load_thread.is_alive():
         self._pending_tier = target_tier
         self._pending_model_id = target_model_id
+        self._pending_prefer_vision_runtime = resolved_prefer_vision_runtime
         return
       self._loading_tier = target_tier
       self._pending_tier = ""
       self._pending_model_id = ""
+      self._pending_prefer_vision_runtime = None
       self._load_thread = load_thread
 
     self._startup.set(
@@ -296,6 +310,7 @@ class PythonModelEngine(EngineModelsMixin):
         "model_id": target_model_id,
         "model_label": target_model_entry.label if target_model_entry is not None else target_model_id,
         "model_repo": target_repo,
+        "prefer_vision_runtime": resolved_prefer_vision_runtime,
       },
     )
     load_thread.start()
@@ -352,6 +367,7 @@ class PythonModelEngine(EngineModelsMixin):
       self._loaded_model_id = ""
       self._pending_tier = ""
       self._pending_model_id = ""
+      self._pending_prefer_vision_runtime = None
     self._startup.set(
       status="idle",
       stage="unloaded",
@@ -471,10 +487,23 @@ class PythonModelEngine(EngineModelsMixin):
       details=payload,
     )
 
-  def _load_model(self, target_tier: str, target_model_id: str, target_repo: str) -> None:
+  def _load_model(
+    self,
+    target_tier: str,
+    target_model_id: str,
+    target_repo: str,
+    prefer_vision_runtime: bool | None = None,
+  ) -> None:
     next_tier = ""
+    next_prefer_vision_runtime: bool | None = None
     tier_label = MODEL_TIERS[target_tier].label
     target_model_entry = get_model_entry(target_model_id)
+    target_supports_vision = bool(target_model_entry and getattr(target_model_entry, "supports_vision", False))
+    requested_vision_runtime = (
+      target_supports_vision
+      if prefer_vision_runtime is None
+      else bool(prefer_vision_runtime and target_supports_vision)
+    )
     model_label = target_model_entry.label if target_model_entry is not None else target_model_id
     try:
       self._startup.set(
@@ -525,8 +554,8 @@ class PythonModelEngine(EngineModelsMixin):
       import io as _io
 
       use_vlm_runtime = bool(
-        target_model_entry is not None
-        and bool(getattr(target_model_entry, "supports_vision", False))
+        target_supports_vision
+        and requested_vision_runtime
         and self._runtime_supports_vision_inputs()
       )
       runtime_backend_kind = "mlx_lm"
@@ -626,11 +655,13 @@ class PythonModelEngine(EngineModelsMixin):
 
       ready_message = "Модель загружена и готова к работе."
       if (
-        target_model_entry is not None
-        and bool(getattr(target_model_entry, "supports_vision", False))
+        target_supports_vision
         and runtime_backend_kind != "mlx_vlm"
       ):
-        ready_message = "Модель загружена в text-only режиме (vision runtime недоступен)."
+        if requested_vision_runtime:
+          ready_message = "Модель загружена в text-only режиме (vision runtime недоступен)."
+        else:
+          ready_message = "Модель загружена в текстовом режиме."
 
       self._startup.set(
         status="ready",
@@ -645,6 +676,7 @@ class PythonModelEngine(EngineModelsMixin):
           "model_label": model_label,
           "model_repo": target_repo,
           "runtime_backend": runtime_backend_kind,
+          "prefer_vision_runtime": requested_vision_runtime,
           "vision_runtime_warning": runtime_warning,
           "python_version": sys.version.split()[0],
           "platform": f"{platform.system()} {platform.machine()}",
@@ -666,13 +698,16 @@ class PythonModelEngine(EngineModelsMixin):
         if self._pending_tier and (
           self._pending_tier != target_tier
           or self._pending_model_id != target_model_id
+          or self._pending_prefer_vision_runtime != prefer_vision_runtime
         ):
           next_tier = self._pending_tier
+          next_prefer_vision_runtime = self._pending_prefer_vision_runtime
         self._pending_tier = ""
         self._pending_model_id = ""
+        self._pending_prefer_vision_runtime = None
         self._loading_tier = ""
       if next_tier:
-        self.start_background_load(next_tier)
+        self.start_background_load(next_tier, prefer_vision_runtime=next_prefer_vision_runtime)
 
   @staticmethod
   def _truncate_text(value: str, limit: int = 3500) -> str:
@@ -1125,20 +1160,10 @@ class PythonModelEngine(EngineModelsMixin):
     override = self._resolve_vision_runtime_override()
     if override is not None:
       return override
+
     if self._vision_runtime_probe_failed:
       return False
     if not self._is_mlx_vlm_installed():
-      return False
-    selected_model_id = normalize_model_id(self.get_selected_model_id(), "")
-    loaded_model_id = normalize_model_id(self.get_loaded_model_id(), "")
-    selected_model = get_model_entry(selected_model_id)
-    selected_supports_vision = bool(selected_model and getattr(selected_model, "supports_vision", False))
-    if (
-      selected_supports_vision
-      and self.is_ready()
-      and loaded_model_id == selected_model_id
-      and self._runtime_backend_kind != "mlx_vlm"
-    ):
       return False
     return True
 

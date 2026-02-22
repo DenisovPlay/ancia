@@ -3,26 +3,26 @@ import { icon } from "../ui/icons.js";
 export const chatPageTemplate = `
   <aside
     id="panel-left"
-    class="page-aside glass-panel mt-[2.5rem] xl:mt-0 pt-3 !backdrop-blur-none 2xl:backdrop-blur-md fixed inset-y-0 left-0 z-10 flex w-[84vw] max-w-[290px] -translate-x-[112%] flex-col p-3 opacity-0 pointer-events-none transition-transform duration-300 xl:relative xl:z-10 xl:h-full xl:min-h-0 xl:translate-x-0 xl:opacity-100 xl:pointer-events-auto"
+    class="page-aside bg-zinc-950/60 backdrop-blur-sm mt-[2.5rem] xl:mt-0 pt-3 fixed inset-y-0 left-0 z-10 flex w-[80vw] max-w-[260px] -translate-x-[112%] flex-col p-3 opacity-0 pointer-events-none transition-transform duration-200 xl:relative xl:z-10 xl:h-full xl:min-h-0 xl:translate-x-0 xl:opacity-100 xl:pointer-events-auto"
   >
     <button
       id="chat-new-session-button"
       type="button"
-      class="icon-button active:scale-95 mb-3 rounded-3xl border border-zinc-600/30 bg-zinc-100 px-4 py-2 text-sm font-semibold text-zinc-900 transition hover:bg-zinc-200"
+      class="icon-button active:scale-95 mb-3 rounded-lg border border-zinc-700 bg-zinc-100 px-3 py-1.5 text-sm font-medium text-zinc-900 transition hover:bg-zinc-200"
     >
       ${icon("chat-plus")}
       <span>Новый чат</span>
     </button>
 
-    <div class="mb-3 flex items-center justify-between px-1">
-      <h2 class="text-[11px] uppercase tracking-[0.16em] text-zinc-500">Диалоги</h2>
+    <div class="mb-2 flex items-center justify-between px-1">
+      <h2 class="text-[10px] uppercase tracking-[0.12em] text-zinc-500">Диалоги</h2>
       <div class="flex items-center gap-1">
         <button
           id="chat-clear-session-button"
           type="button"
           aria-label="Очистить активную сессию"
           title="Очистить активную сессию"
-          class="border border-zinc-600/30 icon-button active:scale-95 h-7 w-7 rounded-full text-zinc-200 hover:bg-zinc-700/80"
+          class="border border-zinc-800 icon-button active:scale-95 h-6 w-6 rounded-md text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
         >
           ${icon("trash")}
         </button>
@@ -31,21 +31,21 @@ export const chatPageTemplate = `
           type="button"
           aria-label="Фильтр"
           title="Фильтр"
-          class="border border-zinc-600/30 icon-button active:scale-95 h-7 w-7 rounded-full text-zinc-200 hover:bg-zinc-700/80"
+          class="border border-zinc-800 icon-button active:scale-95 h-6 w-6 rounded-md text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
         >
           ${icon("filter")}
         </button>
       </div>
     </div>
 
-    <div id="chat-session-list" class="chat-scroll flex-1 min-h-0 space-y-2 overflow-auto pr-1">
+    <div id="chat-session-list" class="chat-scroll flex-1 min-h-0 space-y-1.5 overflow-auto pr-0.5">
       
     </div>
   </aside>
 
-  <main class="page-main glass-panel relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden p-3 pt-0">
-    <div class="fixed top-0 inset-x-0 p-3 flex flex-wrap items-center justify-between gap-3" style="z-index:9999;">
-      <div class=" flex items-center justify-between xl:justify-end gap-3 2xl:hidden w-full">
+  <main class="page-main bg-zinc-950/60 backdrop-blur-sm relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden p-3 pt-0">
+    <div class="fixed top-0 inset-x-0 p-3 flex flex-wrap items-center justify-between gap-2 z-50">
+      <div class="flex items-center justify-between xl:justify-end gap-2 2xl:hidden w-full">
         <button
           id="open-left-panel"
           type="button"
@@ -53,7 +53,7 @@ export const chatPageTemplate = `
           aria-controls="panel-left"
           aria-expanded="false"
           title="Сессии"
-          class="icon-button backdrop-blur-lg bg-zinc-900/50 active:scale-95 h-9 w-9 rounded-full border border-zinc-600/30 text-zinc-200 transition hover:bg-zinc-700/80 xl:hidden"
+          class="icon-button backdrop-blur-sm bg-zinc-900/80 active:scale-95 h-8 w-8 rounded-lg border border-zinc-800 text-zinc-400 transition hover:bg-zinc-800 hover:text-zinc-200 xl:hidden"
         >
           ${icon("sessions")}
         </button>
@@ -64,47 +64,45 @@ export const chatPageTemplate = `
           aria-controls="panel-right"
           aria-expanded="false"
           title="Инспектор"
-          class="icon-button backdrop-blur-lg bg-zinc-900/50 active:scale-95 h-9 w-9 rounded-full border border-zinc-600/30 text-zinc-200 transition hover:bg-zinc-700/80 2xl:hidden"
+          class="icon-button backdrop-blur-sm bg-zinc-900/80 active:scale-95 h-8 w-8 rounded-lg border border-zinc-800 text-zinc-400 transition hover:bg-zinc-800 hover:text-zinc-200 2xl:hidden"
         >
           ${icon("inspector")}
         </button>
       </div>
     </div>
 
-    <section id="chat-stream" aria-live="polite" class="chat-scroll min-h-0 overflow-y-auto flex-1 space-y-3 pr-1 pb-6 pt-14 -mb-3">
+    <section id="chat-stream" aria-live="polite" class="chat-scroll min-h-0 overflow-y-auto flex-1 space-y-2.5 pr-1 pb-4 pt-12 -mb-3">
       
     </section>
 
-    <form id="composer-form" class="flex flex-col w-full border border-zinc-600/30 bg-zinc-900 p-3 rounded-3xl" style="z-index:99999;">
-      <div class="flex items-start w-full">
+    <form id="composer-form" class="flex flex-col w-full border border-zinc-800 bg-zinc-950 p-2.5 rounded-xl relative z-10">
+      <div class="flex items-start w-full gap-2">
         <textarea
           id="composer-input"
           rows="3"
           aria-label="Поле ввода сообщения"
-          placeholder="Спросите что-нибудь!"
-          class="w-full resize-none text-sm text-zinc-100 outline-none bg-transparent focus:ring-none focus:outline-none"
+          placeholder="Спросите что-нибудь…"
+          class="flex-1 resize-none text-sm text-zinc-200 outline-none bg-transparent focus:ring-none focus:outline-none placeholder:text-zinc-600 min-h-[4.25rem] py-1"
         ></textarea>
         <button
           id="composer-submit"
           type="submit"
           aria-label="Отправить сообщение"
-          class="icon-button flex items-center justify-center active:scale-95 rounded-full border border-zinc-500/30 bg-zinc-100 h-10 w-10 text-sm font-semibold text-zinc-950 transition hover:bg-zinc-200"
+          class="icon-button flex-shrink-0 flex items-center justify-center active:scale-95 rounded-lg border border-zinc-700 bg-zinc-100 h-9 w-9 text-sm font-medium text-zinc-950 transition hover:bg-zinc-200 mb-0.5"
         >
           ${icon("send")}
         </button>
       </div>
-      <div class="flex flex-wrap items-center justify-between gap-3">
-        <div class="flex flex-wrap items-center gap-3">
-          <button
-            id="composer-attach-button"
-            type="button"
-            aria-label="Добавить вложение"
-            title="Добавить вложение"
-            class="icon-button active:scale-95 h-8 w-8 rounded-full border border-zinc-600/30 bg-zinc-800/80 text-zinc-300 hover:bg-zinc-700/80"
-          >
-            ${icon("attach")}
-          </button>
-        </div>
+      <div class="flex items-center gap-1.5 pt-1 mt-1.5">
+        <button
+          id="composer-attach-button"
+          type="button"
+          aria-label="Добавить вложение"
+          title="Добавить вложение"
+          class="icon-button active:scale-95 h-7 w-7 rounded-md border border-zinc-800 bg-transparent text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300 transition"
+        >
+          ${icon("attach")}
+        </button>
       </div>
       <input
         id="composer-attachments-input"
@@ -113,78 +111,59 @@ export const chatPageTemplate = `
         multiple
         accept="image/*,text/*,.md,.txt,.json,.csv,.xml,.yaml,.yml,.html,.pdf,.doc,.docx"
       />
-      <div id="composer-attachments-list" class="mt-2 hidden flex flex-wrap gap-2"></div>
+      <div id="composer-attachments-list" class="mt-2 hidden flex flex-wrap gap-1.5"></div>
     </form>
   </main>
 
   <aside
     id="panel-right"
-    class="page-aside glass-panel mt-[2.5rem] 2xl:mt-0 pt-3 !backdrop-blur-none 2xl:backdrop-blur-md fixed inset-y-0 right-0 z-10 flex w-[86vw] max-w-[360px] translate-x-[112%] flex-col p-3 opacity-0 pointer-events-none transition-transform duration-300 2xl:relative 2xl:z-10 2xl:h-full 2xl:min-h-0 2xl:translate-x-0 2xl:opacity-100 2xl:pointer-events-auto"
+    class="page-aside bg-zinc-950/60 backdrop-blur-sm mt-[2.5rem] 2xl:mt-0 pt-3 fixed inset-y-0 right-0 z-10 flex w-[82vw] max-w-[320px] translate-x-[112%] flex-col p-3 opacity-0 pointer-events-none transition-transform duration-200 2xl:relative 2xl:z-10 2xl:h-full 2xl:min-h-0 2xl:translate-x-0 2xl:opacity-100 2xl:pointer-events-auto"
   >
-    <div class="mb-3 flex items-center justify-between rounded-3xl bg-zinc-800/75 px-3 py-2">
-      <h2 class="text-sm font-semibold">Инспектор</h2>
-      <span class="rounded-full border border-zinc-600/30 bg-zinc-900/70 px-2 py-1 text-[11px] text-zinc-300">Запуск #0189</span>
+    <div class="mb-3 flex items-center justify-between">
+      <h2 class="text-[10px] uppercase tracking-[0.14em] text-zinc-500">Инспектор</h2>
+      <div class="flex items-center gap-1.5">
+        <span class="state-dot flex-shrink-0"></span>
+        <span id="inspector-mood" class="text-[11px] font-mono text-zinc-400">нейтрально</span>
+      </div>
     </div>
 
-    <section class="mb-3">
-      <h3 class="text-xs uppercase tracking-[0.18em] text-zinc-400">Состояние бота</h3>
-      <div class="mt-3 space-y-2 text-sm">
-        <div class="flex items-center justify-between">
-          <span class="text-zinc-300">Текущее состояние</span>
-          <span id="inspector-mood" class="font-mono text-zinc-100">нейтрально</span>
+    <div class="space-y-3">
+      <div class="rounded-lg border border-zinc-800 bg-zinc-900/40 p-2.5">
+        <p class="mb-2 text-[10px] uppercase tracking-[0.14em] text-zinc-600">Модель</p>
+        <p id="runtime-model-label" class="truncate text-xs font-medium text-zinc-200">—</p>
+        <div class="mt-2 flex items-center justify-between text-[11px]">
+          <span class="text-zinc-500">Режим</span>
+          <span id="runtime-mode" class="font-mono text-zinc-400">—</span>
         </div>
-        <div class="flex items-center justify-between">
-          <span class="text-zinc-300">Переход</span>
-          <span class="font-mono text-zinc-100">плавный</span>
-        </div>
-        <div class="flex items-center justify-between">
-          <span class="text-zinc-300">Режим рендера</span>
-          <span id="render-quality" class="font-mono text-zinc-100">адаптивный</span>
+        <div class="mt-1 flex items-center justify-between text-[11px]">
+          <span class="text-zinc-500">Бэкенд</span>
+          <span id="backend-status" class="font-mono text-zinc-400">—</span>
         </div>
       </div>
-    </section>
 
-    <section class="mb-3">
-      <h3 class="text-xs uppercase tracking-[0.18em] text-zinc-400">Рантайм</h3>
-      <div class="mt-3 space-y-2 text-sm">
-        <div class="flex items-center justify-between">
-          <span class="text-zinc-300">Токены контекста</span>
-          <span class="font-mono text-zinc-100" id="token-count">18.2k</span>
-        </div>
-        <div class="flex items-center justify-between">
-          <span class="text-zinc-300">Бюджет кадра</span>
-          <span class="font-mono text-zinc-100" id="frame-budget">20ms</span>
-        </div>
-        <div class="flex items-center justify-between">
-          <span class="text-zinc-300">Бэкенд</span>
-          <span class="font-mono text-zinc-100" id="backend-status">не проверен</span>
-        </div>
-        <div class="flex items-center justify-between">
-          <span class="text-zinc-300">Режим</span>
-          <span class="font-mono text-zinc-100" id="runtime-mode">симуляция</span>
-        </div>
-        <div class="flex items-center justify-between">
-          <span class="text-zinc-300">Модель</span>
-          <span class="font-mono text-zinc-100" id="runtime-model-label">codex-local</span>
+      <div class="rounded-lg border border-zinc-800 bg-zinc-900/40 p-2.5">
+        <p class="mb-2 text-[10px] uppercase tracking-[0.14em] text-zinc-600">Сессия</p>
+        <div class="space-y-1">
+          <div class="flex items-center justify-between text-[11px]">
+            <span class="text-zinc-500">Токены</span>
+            <span id="token-count" class="font-mono text-zinc-400">—</span>
+          </div>
+          <div class="flex items-center justify-between text-[11px]">
+            <span class="text-zinc-500">Бюджет кадра</span>
+            <span id="frame-budget" class="font-mono text-zinc-400">—</span>
+          </div>
+          <div class="flex items-center justify-between text-[11px]">
+            <span class="text-zinc-500">Качество рендера</span>
+            <span id="render-quality" class="font-mono text-zinc-400">адаптивный</span>
+          </div>
         </div>
       </div>
-    </section>
+    </div>
 
-    <section class="chat-scroll flex-1 min-h-0 overflow-auto">
-      <h3 class="text-xs uppercase tracking-[0.18em] text-zinc-400">API состояний</h3>
-      <ul class="mt-3 space-y-2 text-xs font-mono text-zinc-300">
-        <li class="">window.botMood.setState("thinking")</li>
-        <li class="">window.chatRuntime.setCurrentChatState("coding")</li>
-        <li class="">window.chatRuntime.setChatState("chat-2", "warning")</li>
-        <li class="">window.chatRuntime.listChats()</li>
-        <li class="">window.chatRuntime.renameChat("chat-2", "План интеграции")</li>
-        <li class="">window.chatRuntime.clearCurrentChatState()</li>
-        <li class="">window.chatRuntime.clearActiveChatHistory()</li>
-        <li class="">window.chatRuntime.deleteMessage("msg-4")</li>
-        <li class="">window.chatRuntime.exportChats()</li>
-        <li class="">window.chatRuntime.openOnboarding()</li>
-        <li class="">window.botMood.registerState("custom", {...})</li>
-      </ul>
-    </section>
+    <div class="flex-1"></div>
+    <div class="rounded-lg border border-zinc-800 bg-zinc-900/40 p-2.5">
+      <p class="text-[10px] uppercase tracking-[0.14em] text-zinc-600">Сборка</p>
+      <p class="mt-1 text-[11px] font-mono text-zinc-500">Запуск #0189</p>
+    </div>
   </aside>
 `;

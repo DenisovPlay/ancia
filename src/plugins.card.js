@@ -74,12 +74,12 @@ export function renderPluginCard(plugin) {
   const isInstalled = plugin.installed !== false;
   const blockedByAutonomousMode = plugin.blockedReason === "autonomous_mode";
   const statusToneClass = !isInstalled
-    ? "border-sky-500/35 bg-sky-500/15 text-sky-300"
+    ? "border-sky-900/50 bg-sky-950/40 text-sky-400"
     : blockedByAutonomousMode
-      ? "border-amber-500/35 bg-amber-500/15 text-amber-300"
+      ? "border-amber-900/50 bg-amber-950/40 text-amber-400"
       : plugin.effectiveEnabled
-        ? "border-emerald-500/30 bg-emerald-500/15 text-emerald-300"
-        : "border-zinc-500/30 bg-zinc-800/70 text-zinc-300";
+        ? "border-emerald-900/50 bg-emerald-950/40 text-emerald-400"
+        : "border-zinc-800 bg-zinc-900 text-zinc-400";
   const badgeText = !isInstalled
     ? "доступен"
     : blockedByAutonomousMode
@@ -92,13 +92,16 @@ export function renderPluginCard(plugin) {
   const docsUrl = plugin.homepage || plugin.repoUrl;
   const homepageLink = docsUrl
     ? `<a href="${escapeHtml(docsUrl)}" target="_blank" rel="noreferrer" class="text-xs text-zinc-500 hover:text-zinc-300 transition">${plugin.homepage ? "Открыть страницу" : "Открыть репозиторий"}</a>`
-    : `<span class="text-xs text-zinc-500">Системный плагин</span>`;
+    : `<span class="text-xs text-zinc-600">Системный плагин</span>`;
 
   const canToggle = isInstalled && !plugin.locked;
   const toggleLabel = plugin.enabled ? "Выключить" : "Включить";
   const canUpdate = isInstalled && plugin.allowUpdate !== false;
   const canInstall = !isInstalled && plugin.canInstall;
   const canUninstall = isInstalled && plugin.canUninstall;
+
+  const btnCls = "active:scale-95 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-1 text-xs text-zinc-300 hover:bg-zinc-800";
+  const btnDisabled = "opacity-50 cursor-not-allowed";
 
   const actionsHtml = !isInstalled
     ? `
@@ -109,7 +112,7 @@ export function renderPluginCard(plugin) {
         data-plugin-name="${escapeHtml(plugin.title)}"
         data-plugin-manifest-url="${escapeHtml(plugin.manifestUrl)}"
         ${canInstall ? "" : "disabled"}
-        class="active:scale-95 rounded-full border border-zinc-600/30 bg-zinc-900/60 px-3 py-1 text-xs text-zinc-200 hover:bg-zinc-700/80 ${canInstall ? "" : "opacity-60 cursor-not-allowed"}"
+        class="${btnCls} ${canInstall ? "" : btnDisabled}"
       >
         Установить
       </button>
@@ -122,7 +125,7 @@ export function renderPluginCard(plugin) {
         data-plugin-name="${escapeHtml(plugin.title)}"
         data-plugin-enabled="${String(Boolean(plugin.enabled))}"
         ${canToggle ? "" : "disabled"}
-        class="active:scale-95 rounded-full border border-zinc-600/30 bg-zinc-900/60 px-3 py-1 text-xs text-zinc-200 hover:bg-zinc-700/80 ${canToggle ? "" : "opacity-60 cursor-not-allowed"}"
+        class="${btnCls} ${canToggle ? "" : btnDisabled}"
       >
         ${escapeHtml(toggleLabel)}
       </button>
@@ -132,7 +135,7 @@ export function renderPluginCard(plugin) {
         data-plugin-id="${escapeHtml(plugin.id)}"
         data-plugin-name="${escapeHtml(plugin.title)}"
         ${canUpdate ? "" : "disabled"}
-        class="active:scale-95 rounded-full border border-zinc-600/30 bg-zinc-900/60 px-3 py-1 text-xs text-zinc-200 hover:bg-zinc-700/80 ${canUpdate ? "" : "opacity-60 cursor-not-allowed"}"
+        class="${btnCls} ${canUpdate ? "" : btnDisabled}"
       >
         Обновить
       </button>
@@ -142,7 +145,7 @@ export function renderPluginCard(plugin) {
         data-plugin-action="uninstall"
         data-plugin-id="${escapeHtml(plugin.id)}"
         data-plugin-name="${escapeHtml(plugin.title)}"
-        class="active:scale-95 rounded-full border border-zinc-600/30 bg-zinc-900/60 px-3 py-1 text-xs text-zinc-200 hover:bg-zinc-700/80"
+        class="${btnCls}"
       >
         Удалить
       </button>
@@ -157,25 +160,24 @@ export function renderPluginCard(plugin) {
       data-plugin-keywords="${escapeHtml(keywords)}"
       data-plugin-installed="${String(Boolean(plugin.installed))}"
       data-plugin-enabled="${String(Boolean(plugin.enabled))}"
-      class="plugin-card rounded-3xl border border-zinc-600/30 p-3 flex flex-col h-full"
+      class="plugin-card flex flex-col rounded-xl border border-zinc-800 bg-zinc-900/30 p-3.5 gap-2.5 transition h-full"
     >
-      <div class="flex items-start justify-between gap-3">
-        <div>
-          <h3 class="text-sm font-semibold text-zinc-100">${escapeHtml(plugin.title)}</h3>
-          <p class="mt-1 text-xs text-zinc-400">${escapeHtml(plugin.subtitle)}</p>
+      <div class="flex items-start gap-3">
+        <div class="flex-1 min-w-0">
+          <h3 class="text-sm font-semibold text-zinc-100 leading-snug">${escapeHtml(plugin.title)}</h3>
+          ${plugin.subtitle ? `<p class="mt-0.5 text-[11px] text-zinc-500 truncate">${escapeHtml(plugin.subtitle)}</p>` : ""}
         </div>
-        <span class="rounded-full border px-2 py-1 text-[10px] uppercase tracking-[0.14em] ${statusToneClass}">
+        <span class="shrink-0 rounded-md border px-2 py-0.5 text-[10px] uppercase tracking-wide ${statusToneClass}">
           ${escapeHtml(badgeText)}
         </span>
       </div>
-      <p class="mt-3 text-sm leading-6 text-zinc-300">${escapeHtml(plugin.description)}</p>
-      <div class="flex-grow flex-shrink-0"></div>
-      <div class="mt-3 flex items-center justify-between gap-3">
-        <div class="flex min-w-0 flex-col gap-0.5">
-          <span class="text-xs text-zinc-500">${escapeHtml(versionText)}</span>
+      <p class="text-xs leading-[1.6] text-zinc-400 line-clamp-2 flex-1">${escapeHtml(plugin.description || plugin.subtitle || plugin.title)}</p>
+      <div class="flex items-center justify-between gap-2 pt-1">
+        <div class="flex items-center gap-2 min-w-0">
+          <span class="text-[10px] font-mono text-zinc-600">${escapeHtml(versionText)}</span>
           ${homepageLink}
         </div>
-        <div class="flex items-center gap-2">
+        <div class="flex items-center gap-1.5 shrink-0">
           ${actionsHtml}
         </div>
       </div>

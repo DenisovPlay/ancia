@@ -76,14 +76,14 @@ export function createRuntimeUiController({
         : modeLabel;
       const chipPalette = runtimeConfig.mode === "backend"
         ? connectionState.status === BACKEND_STATUS.connected
-          ? "border-emerald-500/30 bg-emerald-500/15 text-emerald-300"
+          ? "border-emerald-900/50 bg-emerald-950/40 text-emerald-400"
           : connectionState.status === BACKEND_STATUS.error
-            ? "border-red-500/30 bg-red-500/15 text-red-300"
+            ? "border-red-900/50 bg-red-950/40 text-red-400"
             : connectionState.status === BACKEND_STATUS.checking
-              ? "border-amber-500/30 bg-amber-500/15 text-amber-300"
-              : "border-zinc-600/30 bg-zinc-900/55 text-zinc-300"
-        : "border-zinc-600/30 bg-zinc-900/55 text-zinc-300";
-      elements.titlebarBackendChip.className = `rounded-full border px-2 py-1 ${chipPalette}`;
+              ? "border-amber-900/50 bg-amber-950/40 text-amber-400"
+              : "border-zinc-800 bg-zinc-900 text-zinc-400"
+        : "border-zinc-800 bg-zinc-900 text-zinc-400";
+      elements.titlebarBackendChip.className = `rounded-md border px-2 py-0.5 text-[10px] uppercase tracking-wide ${chipPalette}`;
     }
   }
 
@@ -103,13 +103,13 @@ export function createRuntimeUiController({
     if (elements.settingsConnectionBadge) {
       elements.settingsConnectionBadge.textContent = badgeText;
       const badgePalette = status === BACKEND_STATUS.connected
-        ? "border-emerald-500/30 bg-emerald-500/15 text-emerald-300"
+        ? "border-emerald-900/50 bg-emerald-950/40 text-emerald-400"
         : status === BACKEND_STATUS.error
-          ? "border-red-500/30 bg-red-500/15 text-red-300"
+          ? "border-red-900/50 bg-red-950/40 text-red-400"
           : status === BACKEND_STATUS.checking
-            ? "border-amber-500/30 bg-amber-500/15 text-amber-300"
-            : "border-zinc-600/30 bg-zinc-800/70 text-zinc-300";
-      elements.settingsConnectionBadge.className = `rounded-full border px-2 py-1 text-[11px] uppercase tracking-[0.14em] ${badgePalette}`;
+            ? "border-amber-900/50 bg-amber-950/40 text-amber-400"
+            : "border-zinc-800 bg-zinc-900 text-zinc-400";
+      elements.settingsConnectionBadge.className = `rounded-md border px-2 py-0.5 text-[10px] uppercase tracking-wide ${badgePalette}`;
     }
     if (elements.settingsConnectionMeta) {
       const ts = connectionState.checkedAt

@@ -13,6 +13,7 @@ export function createModelsFeature({
   normalizeModelId,
   getModelLabelById,
   pushToast,
+  isMotionEnabled,
 }) {
   const gridNode = document.querySelector("#models-grid");
   const emptyStateNode = document.querySelector("#models-empty-state");
@@ -195,6 +196,7 @@ export function createModelsFeature({
   const modelParamsController = createModelParamsController({
     backendClient,
     pushToast,
+    isMotionEnabled,
     onSaved: async () => {
       await loadModels({ silent: true });
     },

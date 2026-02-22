@@ -1,3 +1,5 @@
+import { createModalOverlayManager } from "./ui/modalOverlayManager.js";
+
 const MODEL_PARAM_PRESETS = [
   { id: "balanced", label: "Сбалансированный", temperature: 0.7, top_p: 0.9, top_k: 40, max_tokens: 512, context_window: 4096 },
   { id: "creative", label: "Творческий", temperature: 1.1, top_p: 0.97, top_k: 60, max_tokens: 768, context_window: 4096 },
@@ -29,6 +31,7 @@ export function createModelParamsController({
   backendClient,
   pushToast,
   onSaved,
+  isMotionEnabled,
 }) {
   const modalElement = document.querySelector("#model-params-modal");
   const modalBody = document.querySelector("#model-params-modal-body");
@@ -36,19 +39,31 @@ export function createModelParamsController({
   const closeButton = document.querySelector("#model-params-modal-close");
   const cancelButton = document.querySelector("#model-params-modal-cancel");
   const saveButton = document.querySelector("#model-params-modal-save");
+  const modalOverlay = createModalOverlayManager({
+    overlay: modalElement,
+    isMotionEnabled,
+    transitionMs: 200,
+  });
 
   let modelId = "";
   let eventsBound = false;
 
-  function closeModelParamsModal() {
-    if (!modalElement) return;
-    modalElement.classList.add("hidden");
-    modalElement.setAttribute("aria-hidden", "true");
+  function closeModelParamsModal({ skipAnimation = false } = {}) {
+    if (!modalOverlay.hasSupport()) {
+      return;
+    }
     modelId = "";
+    modalOverlay.close({ skipAnimation });
   }
 
   function openModelParamsModal(model) {
-    if (!modalElement || !modalBody) return;
+    if (!modalOverlay.hasSupport() || !modalBody) {
+      return;
+    }
+    if (modalOverlay.isOpen()) {
+      modalOverlay.close({ skipAnimation: true, restoreFocusOnClose: false });
+    }
+
     modelId = model.id;
     const sourceParams = model?.params && typeof model.params === "object"
       ? model.params
@@ -115,9 +130,10 @@ export function createModelParamsController({
       });
     });
 
-    modalElement.classList.remove("hidden");
-    modalElement.setAttribute("aria-hidden", "false");
-    window.requestAnimationFrame(() => saveButton?.focus());
+    modalOverlay.open({ captureFocus: true });
+    requestAnimationFrame(() => {
+      saveButton?.focus();
+    });
   }
 
   async function saveModelParams() {
@@ -166,9 +182,14 @@ export function createModelParamsController({
     closeButton?.addEventListener("click", closeModelParamsModal);
     cancelButton?.addEventListener("click", closeModelParamsModal);
     saveButton?.addEventListener("click", () => void saveModelParams());
-    modalElement?.querySelector(".model-params-modal__backdrop")?.addEventListener("click", closeModelParamsModal);
+    modalElement?.addEventListener("click", (event) => {
+      if (event.target === modalElement) {
+        closeModelParamsModal();
+      }
+    });
     document.addEventListener("keydown", (event) => {
-      if (event.key === "Escape" && modalElement && !modalElement.classList.contains("hidden")) {
+      if (event.key === "Escape" && modalOverlay.isOpen()) {
+        event.preventDefault();
         closeModelParamsModal();
       }
     });

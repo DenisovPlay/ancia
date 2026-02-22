@@ -38,11 +38,11 @@ export function createChatSessionUiController({
     button.dataset.active = String(isActive);
     button.dataset.sessionId = session.id;
     button.dataset.sessionTitle = session.title;
-    button.className = "active:scale-95 w-full rounded-3xl border border-zinc-600/30 p-3 text-left transition hover:bg-zinc-800/80 data-[active=true]:bg-zinc-700/80";
+    button.className = "route-pill active:scale-95 w-full rounded-lg border p-2.5 text-left transition";
     button.setAttribute("aria-pressed", String(isActive));
 
     const title = document.createElement("p");
-    title.className = isActive ? "text-sm font-semibold text-zinc-100 truncate w-full" : "text-sm font-medium text-zinc-100 truncate w-full";
+    title.className = "text-sm truncate w-full";
     title.textContent = session.title;
     button.appendChild(title);
     return button;
@@ -97,7 +97,7 @@ export function createChatSessionUiController({
       button.setAttribute("aria-pressed", String(isActive));
       const titleNode = button.querySelector("p");
       if (titleNode) {
-        titleNode.className = isActive ? "text-sm font-semibold text-zinc-100 truncate w-full" : "text-sm font-medium text-zinc-100 truncate w-full";
+        titleNode.className = "text-sm truncate w-full";
       }
     });
 

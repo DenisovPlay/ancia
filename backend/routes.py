@@ -427,33 +427,97 @@ def register_api_routes(
     }
     return int(stage_progress_map.get(stage, 0))
 
-  def ensure_selected_model_ready(*, timeout_seconds: float = 240.0) -> tuple[str, str]:
+  def _payload_has_image_attachments(payload: ChatRequest) -> bool:
+    attachments = list(payload.attachments or [])
+    for attachment in attachments:
+      item = attachment.model_dump() if hasattr(attachment, "model_dump") else dict(attachment)
+      kind = str(item.get("kind") or "file").strip().lower()
+      if kind == "image":
+        return True
+      mime_type = str(item.get("mimeType") or "").strip().lower()
+      if mime_type.startswith("image/"):
+        return True
+      data_url = str(item.get("dataUrl") or "").strip().lower()
+      if data_url.startswith("data:image/"):
+        return True
+    return False
+
+  def _selected_model_supports_vision_catalog(selected_model_id: str) -> bool:
+    safe_selected_model_id = str(selected_model_id or "").strip().lower()
+    if not safe_selected_model_id or not hasattr(model_engine, "list_models_catalog"):
+      return False
+    try:
+      for item in model_engine.list_models_catalog():
+        model_id = str(item.get("id") or "").strip().lower()
+        if model_id != safe_selected_model_id:
+          continue
+        return bool(item.get("supports_vision_catalog", item.get("supports_vision", False)))
+    except Exception:
+      return False
+    return False
+
+  def _resolve_required_runtime_backend(*, selected_model_id: str, require_vision_runtime: bool) -> str:
+    if require_vision_runtime and _selected_model_supports_vision_catalog(selected_model_id):
+      return "mlx_vlm"
+    return "mlx_lm"
+
+  def ensure_selected_model_ready(
+    *,
+    timeout_seconds: float = 240.0,
+    require_vision_runtime: bool = False,
+  ) -> tuple[str, str]:
     selected_model_id = model_engine.get_selected_model_id()
     selected_model_label = resolve_model_display_name(selected_model_id)
+    required_runtime_backend = _resolve_required_runtime_backend(
+      selected_model_id=selected_model_id,
+      require_vision_runtime=require_vision_runtime,
+    )
+    prefer_vision_runtime = required_runtime_backend == "mlx_vlm"
     runtime_snapshot = (
       model_engine.get_runtime_snapshot()
       if hasattr(model_engine, "get_runtime_snapshot")
       else {}
     )
+    startup = runtime_snapshot.get("startup") if isinstance(runtime_snapshot, dict) else {}
+    startup_status = str((startup or {}).get("status") or "").strip().lower()
     loaded_model_id = str(runtime_snapshot.get("loaded_model_id") or "").strip().lower()
+    runtime_backend = str(runtime_snapshot.get("runtime_backend_kind") or "").strip().lower()
     is_ready_now = bool(
-      model_engine.is_ready()
+      startup_status == "ready"
+      and model_engine.is_ready()
       and loaded_model_id == str(selected_model_id).strip().lower()
+      and runtime_backend == required_runtime_backend
     )
     if is_ready_now:
       return selected_model_id, selected_model_label
 
-    model_engine.start_background_load()
-    ok, snapshot = model_engine.wait_until_ready(
-      expected_model_id=selected_model_id,
-      timeout_seconds=timeout_seconds,
-      poll_interval_seconds=0.25,
-    )
-    if not ok:
-      startup = snapshot.get("startup") if isinstance(snapshot, dict) else {}
-      message = str((startup or {}).get("message") or "").strip() or model_engine.get_unavailable_message()
-      raise RuntimeError(message or "Модель ещё не готова.")
-    return selected_model_id, selected_model_label
+    loading_started_at = time.time()
+    model_engine.start_background_load(prefer_vision_runtime=prefer_vision_runtime)
+    while True:
+      runtime_snapshot = (
+        model_engine.get_runtime_snapshot()
+        if hasattr(model_engine, "get_runtime_snapshot")
+        else {}
+      )
+      startup = runtime_snapshot.get("startup") if isinstance(runtime_snapshot, dict) else {}
+      status = str((startup or {}).get("status") or "").strip().lower()
+      message = str((startup or {}).get("message") or "").strip()
+      loaded_model_id = str(runtime_snapshot.get("loaded_model_id") or "").strip().lower()
+      runtime_backend = str(runtime_snapshot.get("runtime_backend_kind") or "").strip().lower()
+      is_ready = bool(
+        status == "ready"
+        and loaded_model_id == str(selected_model_id).strip().lower()
+        and runtime_backend == required_runtime_backend
+      )
+      if is_ready:
+        return selected_model_id, selected_model_label
+      if status == "error":
+        raise RuntimeError(message or model_engine.get_unavailable_message())
+      if time.time() - loading_started_at > timeout_seconds:
+        if prefer_vision_runtime:
+          raise RuntimeError("Превышено время ожидания загрузки модели с vision runtime.")
+        raise RuntimeError("Превышено время ожидания загрузки модели.")
+      time.sleep(0.25)
 
   def prepare_chat_turn(
     payload: ChatRequest,
@@ -664,8 +728,12 @@ def register_api_routes(
   @app.post("/chat", response_model=ChatResponse)
   def chat(payload: ChatRequest) -> ChatResponse:
     user_text, chat_id, _chat_title, incoming_mood, runtime, active_tools = prepare_chat_turn(payload)
+    require_vision_runtime = _payload_has_image_attachments(payload)
     try:
-      ensure_selected_model_ready(timeout_seconds=240.0)
+      ensure_selected_model_ready(
+        timeout_seconds=240.0,
+        require_vision_runtime=require_vision_runtime,
+      )
     except RuntimeError as exc:
       raise HTTPException(
         status_code=503,
@@ -707,6 +775,12 @@ def register_api_routes(
     def stream_events() -> Generator[str, None, None]:
       selected_model_id = model_engine.get_selected_model_id()
       selected_model_label = resolve_model_display_name(selected_model_id)
+      require_vision_runtime = _payload_has_image_attachments(payload)
+      required_runtime_backend = _resolve_required_runtime_backend(
+        selected_model_id=selected_model_id,
+        require_vision_runtime=require_vision_runtime,
+      )
+      prefer_vision_runtime = required_runtime_backend == "mlx_vlm"
       stream_model_id = str(selected_model_id or "").strip()
       stream_model_label = str(selected_model_label or "").strip() or "модель"
       yield _format_sse(
@@ -807,15 +881,17 @@ def register_api_routes(
           else {}
         )
         loaded_model_id = str(runtime_snapshot.get("loaded_model_id") or "").strip().lower()
+        runtime_backend = str(runtime_snapshot.get("runtime_backend_kind") or "").strip().lower()
         startup = runtime_snapshot.get("startup") if isinstance(runtime_snapshot, dict) else {}
         startup_status = str((startup or {}).get("status") or "").strip().lower()
         selected_matches_loaded = bool(
           startup_status == "ready"
           and loaded_model_id == str(selected_model_id).strip().lower()
+          and runtime_backend == required_runtime_backend
         )
         if not selected_matches_loaded:
           loading_started_at = time.time()
-          model_engine.start_background_load()
+          model_engine.start_background_load(prefer_vision_runtime=prefer_vision_runtime)
           last_loading_snapshot = ""
           while True:
             runtime_snapshot = (
@@ -844,9 +920,11 @@ def register_api_routes(
               last_loading_snapshot = snapshot_key
 
             loaded_model_id = str(runtime_snapshot.get("loaded_model_id") or "").strip().lower()
+            runtime_backend = str(runtime_snapshot.get("runtime_backend_kind") or "").strip().lower()
             is_ready = bool(
               status == "ready"
               and loaded_model_id == str(selected_model_id).strip().lower()
+              and runtime_backend == required_runtime_backend
             )
             if is_ready:
               break
@@ -863,6 +941,11 @@ def register_api_routes(
           else {}
         )
         loaded_model_id_after_ready = str(post_load_snapshot.get("loaded_model_id") or "").strip().lower()
+        runtime_backend_after_ready = str(post_load_snapshot.get("runtime_backend_kind") or "").strip().lower()
+        if runtime_backend_after_ready != required_runtime_backend:
+          if prefer_vision_runtime:
+            raise RuntimeError("Vision runtime недоступен для выбранной модели.")
+          raise RuntimeError("Не удалось переключить runtime модели в текстовый режим.")
         if loaded_model_id_after_ready:
           stream_model_id = loaded_model_id_after_ready
           stream_model_label = resolve_model_display_name(stream_model_id)

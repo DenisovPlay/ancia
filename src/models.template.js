@@ -3,39 +3,40 @@ import { icon } from "./ui/icons.js";
 export const modelsPageTemplate = `
   <aside
     id="model-aside"
-    class="page-aside glass-panel fixed inset-y-0 left-0 z-10 flex w-[84vw] max-w-[290px] -translate-x-[112%] flex-col p-3 pt-10 opacity-0 pointer-events-none transition-transform duration-300 xl:relative xl:z-10 xl:h-full xl:min-h-0 xl:w-full xl:max-w-full xl:translate-x-0 xl:opacity-100 xl:pointer-events-auto xl:pt-3"
+    class="page-aside bg-zinc-950/60 backdrop-blur-sm fixed inset-y-0 left-0 z-10 flex w-[80vw] max-w-[260px] -translate-x-[112%] flex-col p-3 pt-10 opacity-0 pointer-events-none transition-transform duration-200 xl:relative xl:z-10 xl:h-full xl:min-h-0 xl:w-full xl:max-w-full xl:translate-x-0 xl:opacity-100 xl:pointer-events-auto xl:pt-3"
   >
     <input
       id="model-search-input"
       type="search"
       aria-label="Поиск модели"
       placeholder="Поиск модели"
-      class="rounded-3xl border border-zinc-600/30 bg-transparent p-3 text-sm text-zinc-100 outline-none transition focus:border-zinc-500/60"
+      class="rounded-lg border border-zinc-800 bg-zinc-950 p-2.5 text-sm text-zinc-200 outline-none transition focus:border-zinc-600"
     />
-    <div class="mt-3 space-y-2">
-      <button type="button" data-model-filter="all" data-active="true" class="flex items-center gap-3 p-3 active:scale-95 w-full rounded-3xl border border-zinc-600/30 text-left text-sm transition aria-pressed:bg-zinc-700/80 aria-pressed:font-bold">
+    <div class="mt-3 space-y-1.5">
+      <button type="button" data-model-filter="all" data-active="true" class="route-pill flex items-center gap-2.5 p-2.5 active:scale-95 w-full rounded-lg border border-zinc-800 text-left text-sm transition">
         <span class="icon-button justify-start">${icon("models", "ui-icon-lg")}<span>Все модели</span></span>
       </button>
-      <button type="button" data-model-filter="installed" data-active="false" class="flex items-center gap-3 p-3 active:scale-95 w-full rounded-3xl border border-zinc-600/30 text-left text-sm transition aria-pressed:bg-zinc-700/80 aria-pressed:font-bold">
+      <button type="button" data-model-filter="installed" data-active="false" class="route-pill flex items-center gap-2.5 p-2.5 active:scale-95 w-full rounded-lg border border-zinc-800 text-left text-sm transition">
         <span class="icon-button justify-start">${icon("models-installed", "ui-icon-lg")}<span>Установленные</span></span>
       </button>
-
     </div>
     <div class="flex-grow"></div>
-    <div class="mt-3 rounded-3xl border border-zinc-600/30 p-3">
-      <p class="text-xs text-zinc-300">Установлено</p>
-      <p id="models-installed-count" class="mt-1 text-2xl font-semibold text-zinc-100">0</p>
-      <p id="models-catalog-count" class="text-xs text-zinc-500">0 в каталоге</p>
+    <div class="mt-3 pt-1.5 border-t border-zinc-800/60">
+      <div class="flex items-end w-full">
+        <span id="models-installed-count" class="text-xl font-semibold text-zinc-200">0</span>
+        <span class="text-[10px] uppercase tracking-wide text-zinc-500 ml-2">Установлено</span>
+      </div>
+      <p id="models-catalog-count" class="text-[11px] text-zinc-600">0 в каталоге</p>
     </div>
   </aside>
 
-  <main class="page-main glass-panel flex h-full min-h-0 flex-col overflow-hidden px-3">
-    <div class="mb-3 flex flex-wrap items-center justify-between gap-3 pt-3">
+  <main class="page-main bg-zinc-950/60 backdrop-blur-sm flex h-full min-h-0 flex-col overflow-hidden px-3">
+    <div class="mb-2 flex flex-wrap items-center justify-between gap-2 pt-3">
       <div>
-        <p class="text-[11px] uppercase tracking-[0.2em] text-zinc-400">Модели</p>
-        <h1 class="text-lg font-semibold text-zinc-100 sm:text-xl">Каталог моделей</h1>
+        <p class="text-[10px] uppercase tracking-[0.14em] text-zinc-500">Модели</p>
+        <h1 class="text-base font-semibold text-zinc-200 sm:text-lg">Каталог моделей</h1>
       </div>
-      <div class="flex items-center gap-3">
+      <div class="flex items-center gap-2">
         <button
           type="button"
           data-open-model-aside
@@ -43,14 +44,14 @@ export const modelsPageTemplate = `
           aria-controls="model-aside"
           aria-expanded="false"
           title="Фильтр"
-          class="icon-button active:scale-95 h-9 w-9 rounded-full border border-zinc-600/30 bg-zinc-900/60 text-zinc-200 transition hover:bg-zinc-700/80 xl:hidden"
+          class="icon-button active:scale-95 h-8 w-8 rounded-lg border border-zinc-800 bg-zinc-900 text-zinc-400 transition hover:bg-zinc-800 hover:text-zinc-200 xl:hidden"
         >
           ${icon("categories")}
         </button>
         <button
           type="button"
           data-models-action="refresh"
-          class="icon-button active:scale-95 rounded-full border border-zinc-600/30 bg-zinc-900/60 px-4 py-2 text-sm text-zinc-200 transition hover:bg-zinc-700/80"
+          class="icon-button active:scale-95 rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-sm text-zinc-300 transition hover:bg-zinc-800"
         >
           ${icon("refresh")}
           <span>Обновить список</span>
@@ -58,7 +59,7 @@ export const modelsPageTemplate = `
         <button
           type="button"
           data-models-action="refresh-catalog"
-          class="icon-button active:scale-95 rounded-full border border-zinc-600/30 bg-zinc-900/60 px-4 py-2 text-sm text-zinc-200 transition hover:bg-zinc-700/80"
+          class="icon-button active:scale-95 rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-sm text-zinc-300 transition hover:bg-zinc-800"
         >
           ${icon("huggingface")}
           <span>Найти на HF</span>
@@ -66,31 +67,30 @@ export const modelsPageTemplate = `
       </div>
     </div>
 
-    <div class="mb-3 flex flex-wrap gap-2 xl:hidden">
-      <button type="button" data-model-filter="all" data-active="true" class="route-pill active:scale-95 rounded-full border px-3 py-1 text-xs transition">Все</button>
-      <button type="button" data-model-filter="installed" data-active="false" class="route-pill active:scale-95 rounded-full border px-3 py-1 text-xs transition">Установленные</button>
-
+    <div class="mb-2 flex flex-wrap gap-1.5 xl:hidden">
+      <button type="button" data-model-filter="all" data-active="true" class="route-pill active:scale-95 rounded-lg border px-2.5 py-1 text-xs transition">Все</button>
+      <button type="button" data-model-filter="installed" data-active="false" class="route-pill active:scale-95 rounded-lg border px-2.5 py-1 text-xs transition">Установленные</button>
     </div>
 
-    <article id="models-runtime-banner" class="hidden mb-3 rounded-3xl border border-sky-500/30 bg-sky-500/10 p-3">
-      <div class="flex items-center justify-between gap-3">
+    <article id="models-runtime-banner" class="hidden mb-2 rounded-lg border border-sky-900/40 bg-sky-950/30 p-2.5">
+      <div class="flex items-center justify-between gap-2">
         <div class="min-w-0">
-          <p id="models-runtime-status" class="text-sm text-zinc-200">Ожидаем состояние...</p>
-          <p id="models-runtime-meta" class="mt-0.5 text-xs text-zinc-400"></p>
+          <p id="models-runtime-status" class="text-sm text-zinc-300">Ожидаем состояние...</p>
+          <p id="models-runtime-meta" class="mt-0.5 text-[11px] text-zinc-500"></p>
         </div>
-        <span id="models-runtime-badge" class="rounded-full border border-zinc-600/30 bg-zinc-800/80 px-3 py-1 text-[11px] uppercase tracking-[0.14em] text-zinc-300 shrink-0">idle</span>
+        <span id="models-runtime-badge" class="rounded-md border border-zinc-800 bg-zinc-900 px-2 py-0.5 text-[10px] uppercase tracking-wide text-zinc-400 shrink-0">idle</span>
       </div>
-      <div class="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-zinc-800/70">
-        <div id="models-runtime-progress" class="h-full w-0 bg-sky-400/80 transition-all duration-300"></div>
+      <div class="mt-1.5 h-1 w-full overflow-hidden rounded bg-zinc-800">
+        <div id="models-runtime-progress" class="h-full w-0 bg-sky-500/60 transition-all duration-300"></div>
       </div>
     </article>
 
-    <section id="models-grid" class="chat-scroll grid flex-1 min-h-0 auto-rows-max gap-3 overflow-auto pb-2 md:grid-cols-2 2xl:grid-cols-3">
-      <article class="rounded-3xl border border-zinc-600/30 bg-zinc-900/60 p-5 text-center text-sm text-zinc-400 md:col-span-2 2xl:col-span-3">
+    <section id="models-grid" class="chat-scroll grid flex-1 min-h-0 auto-rows-max gap-2 overflow-auto pb-2 md:grid-cols-2 2xl:grid-cols-3">
+      <article class="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4 text-center text-sm text-zinc-500 md:col-span-2 2xl:col-span-3">
         Загружаем каталог моделей...
       </article>
     </section>
-    <article id="models-empty-state" class="hidden mt-3 rounded-3xl border border-zinc-600/30 bg-zinc-900/60 p-5 text-center text-sm text-zinc-400">
+    <article id="models-empty-state" class="hidden mt-2 rounded-lg border border-zinc-800 bg-zinc-900/50 p-4 text-center text-sm text-zinc-500">
       Ничего не найдено. Попробуйте другой запрос или сбросьте фильтр.
     </article>
   </main>

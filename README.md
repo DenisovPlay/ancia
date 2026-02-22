@@ -69,6 +69,8 @@ npm run backend:sidecar     # сборка backend sidecar (PyInstaller)
 
 - Поддерживаются загрузка по требованию, выгрузка и удаление локального кэша.
 - Проверяется совместимость с доступной unified memory.
+- Кэш и снапшоты моделей хранятся в `backend/data/models/` и игнорируются Git (`.gitignore`).
+- Для моделей с vision backend автоматически переключает runtime: текстовые запросы -> `mlx_lm`, запросы с image-вложениями -> `mlx_vlm`.
 - Параметры модели можно менять отдельно для каждой модели:
   - `context_window`
   - `max_tokens`

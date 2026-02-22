@@ -91,7 +91,7 @@ export function createPluginsFeature({
 
     if (loadingPlugins) {
       pluginGrid.innerHTML = `
-        <article class="rounded-3xl border border-zinc-600/30 bg-zinc-900/60 p-5 text-center text-sm text-zinc-400 md:col-span-2 2xl:col-span-3">
+        <article class="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4 text-center text-sm text-zinc-500 md:col-span-2 2xl:col-span-3">
           Загружаем плагины...
         </article>
       `;

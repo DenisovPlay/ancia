@@ -44,6 +44,7 @@ import {
   mountPageTemplates,
   collectDomNodes,
   hydratePrimaryRouteIcons,
+  hydrateIcons,
   createRouteHelpers,
   applyPlatformMarker,
 } from "./app/domBootstrap.js";
@@ -91,6 +92,7 @@ hydratePrimaryRouteIcons({
   routeIconByTarget: ROUTE_ICON_BY_TARGET,
   routeLabelByTarget: ROUTE_LABEL_BY_TARGET,
 });
+hydrateIcons();
 
 const setPreloaderStatus = (message, progressPercent = null) => {
   updatePreloaderStatus(
@@ -284,6 +286,7 @@ modelsFeature = createModelsFeature({
   normalizeModelId,
   getModelLabelById,
   pushToast,
+  isMotionEnabled,
 });
 
 chatFeature = createChatFeature({

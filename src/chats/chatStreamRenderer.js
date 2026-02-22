@@ -20,11 +20,13 @@ export function createChatStreamRenderer({
     chatStreamElement.innerHTML = "";
 
     const title = `
-  <div data-chat-empty="true" class="w-full h-full flex items-center justify-center gap-6">
-    <img src="/ancia.png" alt="Ancia Logo" class="h-24 w-24 rounded-[24px] border border-zinc-600/30 object-cover shadow-[0_12px_36px_rgb(2_6_23/0.35)]">
-    <div class="flex flex-col gap-3">
-      <span class="text-2xl font-bold text-white">Привет, что у тебя сегодня?</span>
-      <span class="text-xl text-white/80">Напиши любой вопрос.</span>
+  <div data-chat-empty="true" class="w-full h-full flex items-center justify-center">
+    <div class="flex flex-col items-center gap-4 text-center">
+      <img src="/ancia.png" alt="Ancia" class="h-14 w-14 rounded-xl border border-zinc-800 object-cover opacity-80">
+      <div class="flex flex-col gap-1.5">
+        <span class="text-xl font-semibold text-zinc-300 tracking-tight">Привет, что у тебя сегодня?</span>
+        <span class="text-sm text-zinc-600">Напиши любой вопрос.</span>
+      </div>
     </div>
   </div>
   `;

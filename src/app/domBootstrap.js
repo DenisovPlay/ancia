@@ -139,6 +139,16 @@ export function collectDomNodes() {
   };
 }
 
+export function hydrateIcons(root = document) {
+  root.querySelectorAll("[data-icon]").forEach((el) => {
+    const name = el.dataset.icon;
+    const cls = el.dataset.iconClass || "";
+    const tmp = document.createElement("span");
+    tmp.innerHTML = icon(name, cls);
+    el.replaceWith(tmp.firstElementChild || tmp);
+  });
+}
+
 export function hydratePrimaryRouteIcons({
   routeButtons,
   routeIconByTarget,
