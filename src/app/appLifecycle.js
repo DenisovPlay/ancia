@@ -2,6 +2,35 @@ import { bindGlobalShortcuts } from "./globalShortcuts.js";
 import { handleResetAllAction } from "./resetController.js";
 import { setupTauriTitlebarDragging } from "./titlebarDragging.js";
 
+async function showDesktopWindow() {
+  if (typeof window.__TAURI_INTERNALS__?.invoke === "function") {
+    try {
+      await window.__TAURI_INTERNALS__.invoke("show_main_window");
+    } catch {
+      // Fallback to browser mode / unsupported bridge.
+    }
+    return;
+  }
+  if (typeof window.__TAURI__?.core?.invoke === "function") {
+    try {
+      await window.__TAURI__.core.invoke("show_main_window");
+    } catch {
+      // Fallback to browser mode / unsupported bridge.
+    }
+  }
+}
+
+function revealAppShell() {
+  window.requestAnimationFrame(() => {
+    document.body.classList.add("app-shell-visible");
+  });
+}
+
+async function revealMainWindow() {
+  await showDesktopWindow();
+  revealAppShell();
+}
+
 export function bindAppUiEvents({
   routeButtons,
   navigateToRoute,
@@ -120,12 +149,23 @@ export async function runAppStartup({
         autonomousMode: runtimeConfig.autonomousMode,
       });
       await getChatFeature()?.syncChatStoreFromBackend({ preserveActive: true, silent: true });
+    } else if (!startupResult.skipped) {
+      if (elements.preloaderRetry) {
+        elements.preloaderRetry.classList.remove("hidden");
+        elements.preloaderRetry.addEventListener("click", () => window.location.reload());
+      }
+      const orb = elements.preloader?.querySelector(".app-preloader__orb");
+      if (orb) orb.style.display = "none";
+      await revealMainWindow();
+      return; // Stop app initialization
     }
   } else {
     updateConnectionState(BACKEND_STATUS.idle, "Активен режим симуляции");
     setPreloaderStatus("Запуск в режиме симуляции...");
   }
 
+  await showDesktopWindow();
+  revealAppShell();
   await hidePreloader();
   if (onboardingController?.shouldShowOnboarding()) {
     onboardingController.openOnboarding();

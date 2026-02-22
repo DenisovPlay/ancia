@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from typing import Any, Callable
 
@@ -23,6 +24,7 @@ def register_settings_routes(
   list_plugins_payload: Callable[[], dict[str, Any]],
   default_runtime_config: dict[str, Any],
   default_onboarding_state: dict[str, Any],
+  refresh_tool_registry_fn: Callable[[], None] | None = None,
 ) -> None:
   @app.get("/settings")
   def get_settings() -> dict[str, Any]:
@@ -90,12 +92,23 @@ def register_settings_routes(
         removed_plugin_files += 1
       except OSError:
         continue
+    for dir_path in sorted(user_plugins_dir.iterdir()):
+      if not dir_path.is_dir():
+        continue
+      try:
+        shutil.rmtree(dir_path)
+        removed_plugin_files += 1
+      except OSError:
+        continue
     defaults = persist_settings_payload(
       runtime_config=default_runtime_config,
       onboarding_state=default_onboarding_state if reset_onboarding else previous_settings["onboarding_state"],
       autonomous_mode=False,
     )
-    plugin_manager.reload()
+    if callable(refresh_tool_registry_fn):
+      refresh_tool_registry_fn()
+    else:
+      plugin_manager.reload()
     return {
       "ok": True,
       "message": "Локальные данные приложения сброшены.",

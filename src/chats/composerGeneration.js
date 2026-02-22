@@ -60,7 +60,222 @@ export function createComposerGenerationController({
     return generationChatId === targetChatId;
   }
 
+  function isAssistantRowAttached(row) {
+    return (
+      row instanceof HTMLElement
+      && row.isConnected
+      && row.parentNode === elements.chatStream
+    );
+  }
+
+  function getAssistantRowText(row) {
+    if (!(row instanceof HTMLElement)) {
+      return "";
+    }
+    const body = row.querySelector("[data-message-body]");
+    if (!(body instanceof HTMLElement)) {
+      return "";
+    }
+    return normalizeTextInput(body.textContent || "").trim();
+  }
+
+  function getAssistantRowMeta(row) {
+    if (!(row instanceof HTMLElement)) {
+      return "";
+    }
+    const meta = row.querySelector("[data-message-meta]");
+    if (!(meta instanceof HTMLElement)) {
+      return "";
+    }
+    return normalizeTextInput(meta.textContent || "").trim();
+  }
+
+  function findRecoverableAssistantRow(chatId, expectedText) {
+    if (!(elements.chatStream instanceof HTMLElement)) {
+      return null;
+    }
+    const targetChatId = String(chatId || "").trim();
+    const normalizedExpected = normalizeTextInput(expectedText || "").trim();
+    const rows = Array.from(elements.chatStream.querySelectorAll(".message-row[data-role='assistant']"));
+    for (let index = rows.length - 1; index >= 0; index -= 1) {
+      const row = rows[index];
+      if (!(row instanceof HTMLElement)) {
+        continue;
+      }
+      const rowChatId = String(row.dataset.chatId || "").trim();
+      if (targetChatId && rowChatId && rowChatId !== targetChatId) {
+        continue;
+      }
+      const body = row.querySelector("[data-message-body]");
+      const isPending = row.dataset.pending === "true"
+        || (body instanceof HTMLElement && body.getAttribute("data-pending") === "true");
+      const rowText = getAssistantRowText(row);
+      if (!normalizedExpected) {
+        if (isPending) {
+          return row;
+        }
+        continue;
+      }
+      if (isPending || !rowText) {
+        continue;
+      }
+      if (
+        rowText === normalizedExpected
+        || rowText.startsWith(normalizedExpected)
+        || normalizedExpected.startsWith(rowText)
+      ) {
+        return row;
+      }
+    }
+    return null;
+  }
+
+  function pruneTransientAssistantDuplicates(chatId = getActiveChatSessionId()) {
+    if (!(elements.chatStream instanceof HTMLElement)) {
+      return;
+    }
+    const targetChatId = String(chatId || "").trim();
+    const rows = Array.from(elements.chatStream.querySelectorAll(".message-row[data-role='assistant']"));
+    const persistedTextKeys = new Set();
+    const persistedFullKeys = new Set();
+    const transientRowsByTextKey = new Map();
+    const transientRowsByFullKey = new Map();
+
+    rows.forEach((row) => {
+      if (!(row instanceof HTMLElement)) {
+        return;
+      }
+      const rowChatId = String(row.dataset.chatId || "").trim();
+      if (targetChatId && rowChatId && rowChatId !== targetChatId) {
+        return;
+      }
+      if (row.dataset.pending === "true") {
+        return;
+      }
+      const text = normalizeTextInput(getAssistantRowText(row)).trim();
+      if (!text) {
+        return;
+      }
+      const metaText = normalizeTextInput(getAssistantRowMeta(row)).trim();
+      const fullKey = `${text}::${metaText}`;
+      const hasMessageId = Boolean(String(row.dataset.messageId || "").trim());
+      if (hasMessageId) {
+        persistedTextKeys.add(text);
+        persistedFullKeys.add(fullKey);
+        return;
+      }
+      const byText = transientRowsByTextKey.get(text);
+      if (Array.isArray(byText)) {
+        byText.push(row);
+      } else {
+        transientRowsByTextKey.set(text, [row]);
+      }
+
+      const byFull = transientRowsByFullKey.get(fullKey);
+      if (Array.isArray(byFull)) {
+        byFull.push(row);
+      } else {
+        transientRowsByFullKey.set(fullKey, [row]);
+      }
+    });
+
+    const removedRows = new Set();
+
+    transientRowsByFullKey.forEach((rowsForKey, key) => {
+      if (!persistedFullKeys.has(key)) {
+        return;
+      }
+      rowsForKey.forEach((row) => {
+        row.remove();
+        removedRows.add(row);
+      });
+    });
+
+    transientRowsByTextKey.forEach((rowsForText, textKey) => {
+      const candidates = rowsForText.filter((row) => !removedRows.has(row));
+      if (candidates.length === 0) {
+        return;
+      }
+      if (persistedTextKeys.has(textKey)) {
+        candidates.forEach((row) => row.remove());
+        return;
+      }
+      if (candidates.length > 1) {
+        // Оставляем только последнюю transient-строку, чтобы не копить дубли.
+        candidates.slice(0, -1).forEach((row) => row.remove());
+      }
+    });
+  }
+
+  function recoverAssistantRowForActiveGeneration() {
+    if (!activeGeneration) {
+      return null;
+    }
+    if (isAssistantRowAttached(activeGeneration.assistantRow)) {
+      return activeGeneration.assistantRow;
+    }
+
+    const activeChatId = String(getActiveChatSessionId() || "");
+    const generationChatId = String(activeGeneration.chatId || "");
+    if (!generationChatId || generationChatId !== activeChatId) {
+      return null;
+    }
+
+    const partialText = normalizeTextInput(activeGeneration.latestText || "");
+    const hasPartialText = partialText.trim().length > 0;
+    const existingRow = findRecoverableAssistantRow(generationChatId, partialText);
+    if (existingRow instanceof HTMLElement) {
+      activeGeneration.assistantRow = existingRow;
+      pruneTransientAssistantDuplicates(generationChatId);
+      return existingRow;
+    }
+    const restoredRow = appendMessage("assistant", hasPartialText ? partialText : "", activeGeneration.latestMetaSuffix || "модель", {
+      persist: false,
+      chatId: generationChatId,
+      pending: !hasPartialText,
+      pendingLabel: ASSISTANT_PENDING_LABEL,
+      animate: false,
+      autoScroll: false,
+    });
+    if (restoredRow instanceof HTMLElement) {
+      activeGeneration.assistantRow = restoredRow;
+      pruneTransientAssistantDuplicates(generationChatId);
+      return restoredRow;
+    }
+    return null;
+  }
+
+  function resetDetachedActiveGenerationIfNeeded() {
+    if (!activeGeneration) {
+      return;
+    }
+    const currentChatId = String(getActiveChatSessionId() || "");
+    const generationChatId = String(activeGeneration.chatId || "");
+    if (!generationChatId || generationChatId !== currentChatId) {
+      return;
+    }
+    if (recoverAssistantRowForActiveGeneration()) {
+      return;
+    }
+
+    const generation = activeGeneration;
+    activeGeneration = null;
+    generation.abortController?.abort();
+    if (runtimeConfig.mode === "backend") {
+      void backendClient.stopChatGeneration().catch(() => {});
+      if (isBackendRuntimeEnabled()) {
+        void syncChatStoreFromBackend({
+          preserveActive: true,
+          preferredActiveId: generationChatId,
+          silent: true,
+        });
+      }
+    }
+    updateConnectionState(BACKEND_STATUS.idle, "Генерация сброшена после обновления интерфейса");
+  }
+
   function syncState() {
+    resetDetachedActiveGenerationIfNeeded();
     const rawValue = elements.composerInput?.value || "";
     const hasText = rawValue.trim().length > 0;
     const hasAttachments = composerAttachments.hasAny();
@@ -103,6 +318,7 @@ export function createComposerGenerationController({
           text: finalStoppedText,
           metaSuffix: "остановлено",
           timestamp: new Date(),
+          streamMode: "",
         });
         if (!generation.assistantRow.dataset.messageId) {
           const persisted = persistChatMessage({
@@ -119,6 +335,7 @@ export function createComposerGenerationController({
       }
     }
 
+    pruneTransientAssistantDuplicates(generation.chatId || getActiveChatSessionId());
     syncState();
     updateConnectionState(BACKEND_STATUS.idle, "Генерация остановлена");
     if (!silent) {
@@ -162,14 +379,13 @@ export function createComposerGenerationController({
       return;
     }
 
-    const userMessageText = hasAttachments
-      ? `${effectiveText}\n\nВложения:\n${attachmentsSnapshot.map((item, index) => (
-        `${index + 1}. ${String(item.name || "file")} (${String(item.kind || "file")})`
-      )).join("\n")}`
-      : effectiveText;
+    const userMessageText = effectiveText;
 
     ensureSessionForOutgoingMessage(userMessageText);
-    appendMessage("user", userMessageText, "", { persist: true });
+    appendMessage("user", userMessageText, "", {
+      persist: true,
+      meta: hasAttachments ? { attachments: attachmentsSnapshot } : {},
+    });
     if (elements.composerInput) {
       elements.composerInput.value = "";
     }
@@ -189,7 +405,7 @@ export function createComposerGenerationController({
       : "симуляция";
 
     let streamMetaSuffix = initialMetaSuffix;
-    const assistantRow = appendMessage("assistant", "", initialMetaSuffix, {
+    let assistantRow = appendMessage("assistant", "", initialMetaSuffix, {
       persist: false,
       chatId: requestSessionId,
       pending: true,
@@ -204,25 +420,40 @@ export function createComposerGenerationController({
       assistantRow,
       abortController,
       latestText: "",
+      latestMetaSuffix: streamMetaSuffix,
       stoppedByUser: false,
     };
     syncState();
 
     let latestPartial = "";
+    let latestStreamMode = "";
     const seenToolInvocations = new Set();
     const toolRowsByInvocationId = new Map();
     let lastInsertedToolRowBeforeAssistant = null;
     let lastInsertedToolRowAfterAssistant = null;
 
+    const resolveAssistantRow = () => {
+      const recoveredRow = recoverAssistantRowForActiveGeneration();
+      if (recoveredRow instanceof HTMLElement) {
+        assistantRow = recoveredRow;
+        return recoveredRow;
+      }
+      if (isAssistantRowAttached(assistantRow)) {
+        return assistantRow;
+      }
+      return null;
+    };
+
     const hasAssistantVisibleText = () => {
-      if (!(assistantRow instanceof HTMLElement)) {
+      const activeRow = resolveAssistantRow();
+      if (!(activeRow instanceof HTMLElement)) {
         return false;
       }
-      const body = assistantRow.querySelector("[data-message-body]");
+      const body = activeRow.querySelector("[data-message-body]");
       if (!(body instanceof HTMLElement)) {
         return false;
       }
-      const pending = assistantRow.dataset.pending === "true" || body.getAttribute("data-pending") === "true";
+      const pending = activeRow.dataset.pending === "true" || body.getAttribute("data-pending") === "true";
       if (pending) {
         return false;
       }
@@ -230,10 +461,11 @@ export function createComposerGenerationController({
     };
 
     const insertToolRowNearAssistant = (row) => {
-      if (!(row instanceof HTMLElement) || !(assistantRow instanceof HTMLElement)) {
+      const activeRow = resolveAssistantRow();
+      if (!(row instanceof HTMLElement) || !(activeRow instanceof HTMLElement)) {
         return;
       }
-      if (assistantRow.parentNode !== elements.chatStream) {
+      if (activeRow.parentNode !== elements.chatStream) {
         return;
       }
       if (hasAssistantVisibleText()) {
@@ -247,8 +479,8 @@ export function createComposerGenerationController({
             elements.chatStream.appendChild(row);
           }
         } else {
-          if (assistantRow.nextSibling) {
-            elements.chatStream.insertBefore(row, assistantRow.nextSibling);
+          if (activeRow.nextSibling) {
+            elements.chatStream.insertBefore(row, activeRow.nextSibling);
           } else {
             elements.chatStream.appendChild(row);
           }
@@ -267,7 +499,7 @@ export function createComposerGenerationController({
           elements.chatStream.appendChild(row);
         }
       } else {
-        elements.chatStream.insertBefore(row, assistantRow);
+        elements.chatStream.insertBefore(row, activeRow);
       }
       lastInsertedToolRowBeforeAssistant = row;
     };
@@ -289,27 +521,37 @@ export function createComposerGenerationController({
         signal: abortController.signal,
         attachments: attachmentsSnapshot,
         onStatusUpdate: (statusMsg) => {
-          if (assistantRow instanceof HTMLElement) {
-            updateMessageRowContent(assistantRow, {
+          if (activeGeneration && activeGeneration.id === generationId) {
+            activeGeneration.latestMetaSuffix = statusMsg;
+          }
+          const activeRow = resolveAssistantRow();
+          if (activeRow instanceof HTMLElement) {
+            updateMessageRowContent(activeRow, {
               text: "",
               metaSuffix: statusMsg,
               timestamp: new Date(),
               pending: true,
               pendingLabel: ASSISTANT_PENDING_LABEL,
+              streamMode: "",
             });
           }
         },
         onModel: (modelLabel) => {
           streamMetaSuffix = resolveModelMetaSuffix(modelLabel, streamMetaSuffix);
-          if (assistantRow) {
-            const body = assistantRow.querySelector("[data-message-body]");
+          if (activeGeneration && activeGeneration.id === generationId) {
+            activeGeneration.latestMetaSuffix = streamMetaSuffix;
+          }
+          const activeRow = resolveAssistantRow();
+          if (activeRow) {
+            const body = activeRow.querySelector("[data-message-body]");
             const hasPartial = body instanceof HTMLElement && Boolean(body.textContent?.trim());
-            updateMessageRowContent(assistantRow, {
+            updateMessageRowContent(activeRow, {
               text: hasPartial ? latestPartial : "",
               metaSuffix: streamMetaSuffix,
               timestamp: new Date(),
               pending: !hasPartial,
               pendingLabel: ASSISTANT_PENDING_LABEL,
+              streamMode: "",
             });
           }
         },
@@ -351,12 +593,14 @@ export function createComposerGenerationController({
             }
           }
 
-          if (phase === "result" && payload.name === "chat.set_mood" && toolStatus !== "error") {
-            const newMood = String(payload.output?.mood || payload.args?.mood || "").trim();
+          if (phase === "result" && toolStatus !== "error") {
+            const newMood = String(payload.output?.mood || "").trim();
             if (newMood && requestSessionId) {
               setChatSessionMood(requestSessionId, newMood, runtimeConfig.defaultTransitionMs);
             }
-          } else if (phase === "result") {
+          }
+
+          if (phase === "result" && (!payload.output || !String(payload.output?.mood || "").trim())) {
             applyTransientMood(requestSessionId, "waiting", 220);
           }
 
@@ -371,15 +615,18 @@ export function createComposerGenerationController({
           latestPartial = normalizeTextInput(partialText);
           if (activeGeneration && activeGeneration.id === generationId) {
             activeGeneration.latestText = latestPartial;
+            activeGeneration.latestMetaSuffix = streamMetaSuffix;
           }
-          if (assistantRow) {
+          const activeRow = resolveAssistantRow();
+          if (activeRow) {
             const hasPartialText = latestPartial.trim().length > 0;
-            updateMessageRowContent(assistantRow, {
+            updateMessageRowContent(activeRow, {
               text: hasPartialText ? latestPartial : "",
               metaSuffix: streamMetaSuffix,
               timestamp: new Date(),
               pending: !hasPartialText,
               pendingLabel: ASSISTANT_PENDING_LABEL,
+              streamMode: "",
             });
           }
           if (requestSessionId && /<think>|<thinking>|\bthink|дум|размыш/i.test(latestPartial)) {
@@ -393,6 +640,9 @@ export function createComposerGenerationController({
       });
 
       if (reply?.cancelled) {
+        if (activeGeneration && activeGeneration.id === generationId) {
+          activeGeneration.latestMetaSuffix = "остановлено";
+        }
         applyTransientMood(requestSessionId, getChatSessionMood(requestSessionId) || savedMood, runtimeConfig.defaultTransitionMs);
         if (isBackendRuntimeEnabled()) {
           await syncChatStoreFromBackend({
@@ -406,6 +656,11 @@ export function createComposerGenerationController({
 
       const finalText = normalizeTextInput(reply.text || latestPartial || "Бэкенд вернул пустой ответ.");
       const finalMetaSuffix = String(reply.metaSuffix || streamMetaSuffix || initialMetaSuffix);
+      latestStreamMode = String(reply?.stream?.mode || "").trim().toLowerCase();
+      if (activeGeneration && activeGeneration.id === generationId) {
+        activeGeneration.latestText = finalText;
+        activeGeneration.latestMetaSuffix = finalMetaSuffix;
+      }
       const generatedChatTitle = sanitizeSessionTitle(String(reply.chatTitle || "").trim(), "");
       if (requestSessionId && generatedChatTitle) {
         renameChatSessionById(requestSessionId, generatedChatTitle);
@@ -434,11 +689,13 @@ export function createComposerGenerationController({
         });
       });
 
-      if (assistantRow) {
-        updateMessageRowContent(assistantRow, {
+      const activeRow = resolveAssistantRow();
+      if (activeRow) {
+        updateMessageRowContent(activeRow, {
           text: finalText,
           metaSuffix: finalMetaSuffix,
           timestamp: new Date(),
+          streamMode: latestStreamMode,
         });
       }
 
@@ -447,11 +704,13 @@ export function createComposerGenerationController({
         role: "assistant",
         text: finalText,
         metaSuffix: finalMetaSuffix,
+        meta: latestStreamMode ? { stream: { mode: latestStreamMode } } : {},
         timestamp: new Date().toISOString(),
       });
-      if (assistantRow && persisted?.id) {
-        assistantRow.dataset.messageId = persisted.id;
+      if (activeRow && persisted?.id) {
+        activeRow.dataset.messageId = persisted.id;
       }
+      pruneTransientAssistantDuplicates(requestSessionId);
 
       const finalMood = String(reply.mood || "").trim();
       if (requestSessionId) {
@@ -475,6 +734,9 @@ export function createComposerGenerationController({
     } finally {
       if (!activeGeneration || activeGeneration.id === generationId) {
         activeGeneration = null;
+        if (requestSessionId) {
+          pruneTransientAssistantDuplicates(requestSessionId);
+        }
         syncState();
       }
     }

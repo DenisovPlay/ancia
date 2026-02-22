@@ -90,6 +90,9 @@ class EngineModelStorage:
     return normalized
 
   def resolve_hf_hub_cache_root(self) -> Path:
+    hf_hub_cache = str(os.getenv("HF_HUB_CACHE") or "").strip()
+    if hf_hub_cache:
+      return Path(hf_hub_cache).expanduser().resolve()
     hf_home = str(os.getenv("HF_HOME") or "").strip()
     if hf_home:
       return (Path(hf_home).expanduser().resolve() / "hub")

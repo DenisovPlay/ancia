@@ -93,7 +93,7 @@ export const settingsPageTemplate = `
 
         <article
           data-settings-section="personalization"
-          class="settings-section rounded-3xl border border-zinc-600/30 bg-zinc-900/60 p-3"
+          class="settings-section rounded-3xl border border-zinc-600/30 p-3"
         >
           <div class="mb-3 flex items-center justify-between gap-3">
             <h2 class="text-sm font-semibold text-zinc-100">Персонализация</h2>
@@ -163,7 +163,7 @@ export const settingsPageTemplate = `
 
         <article
           data-settings-section="interface"
-          class="settings-section hidden rounded-3xl border border-zinc-600/30 bg-zinc-900/60 p-3"
+          class="settings-section hidden rounded-3xl border border-zinc-600/30 p-3"
         >
           <div class="mb-3 flex items-center justify-between gap-3">
             <h2 class="text-sm font-semibold text-zinc-100">Настройки интерфейса</h2>
@@ -247,7 +247,7 @@ export const settingsPageTemplate = `
 
         <article
           data-settings-section="developer"
-          class="settings-section hidden rounded-3xl border border-zinc-600/30 bg-zinc-900/60 p-3"
+          class="settings-section hidden rounded-3xl border border-zinc-600/30 p-3"
         >
           <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
             <h2 class="text-sm font-semibold text-zinc-100">Для разработчиков</h2>
@@ -395,7 +395,7 @@ export const settingsPageTemplate = `
 
         <article
           data-settings-section="about"
-          class="settings-section hidden rounded-3xl border border-zinc-600/30 bg-zinc-900/60 p-3"
+          class="settings-section hidden rounded-3xl border border-zinc-600/30 p-3"
         >
           <h2 class="text-sm font-semibold text-zinc-100">О приложении</h2>
           <div class="mt-3 grid gap-3 text-sm md:grid-cols-2">

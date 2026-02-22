@@ -1,0 +1,99 @@
+{
+  "id": "chat-mood",
+  "name": "Chat Mood",
+  "subtitle": "Состояние чата",
+  "description": "Устанавливает визуальное состояние (mood) чата.",
+  "homepage": "",
+  "manifest_url": "https://raw.githubusercontent.com/DenisovPlay/ancia-plugins/main/plugins/chat-mood/manifest.json",
+  "repo_url": "https://github.com/DenisovPlay/ancia-plugins",
+  "package_url": "https://raw.githubusercontent.com/DenisovPlay/ancia-plugins/main/packages/chat-mood-1.0.0.zip",
+  "source": "preinstalled",
+  "preinstalled": true,
+  "enabled": true,
+  "tools": [
+    {
+      "name": "chat.set_mood",
+      "description": "Устанавливает визуальное состояние (mood) чата.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "mood": {
+            "type": "string",
+            "enum": [
+              "neutral",
+              "success",
+              "error",
+              "warning",
+              "thinking",
+              "planning",
+              "coding",
+              "researching",
+              "creative",
+              "friendly",
+              "waiting",
+              "offline"
+            ],
+            "description": "Состояние интерфейса чата."
+          }
+        },
+        "required": [
+          "mood"
+        ],
+        "additionalProperties": false
+      },
+      "runtime_meta": {
+        "display_name": "Chat Mood",
+        "subtitle": "Состояние чата",
+        "category": "agent",
+        "keywords": [
+          "mood",
+          "chat",
+          "state",
+          "фон",
+          "настроение",
+          "состояние"
+        ],
+        "requires_network": false,
+        "aliases": [
+          "chat.mood",
+          "set_mood"
+        ],
+        "prompt": "Используй для смены визуального состояния чата, когда тон ответа явно меняется."
+      },
+      "handler": {
+        "type": "python",
+        "module_file": "plugin.py",
+        "callable": "handle"
+      },
+      "llm_schema": {}
+    }
+  ],
+  "ui_extensions": [
+    {
+      "type": "style",
+      "path": "ui/tool-ui.css",
+      "url": "",
+      "load": "style"
+    },
+    {
+      "type": "script",
+      "path": "ui/tool-ui.js",
+      "url": "",
+      "load": "script"
+    }
+  ],
+  "version": "1.0.0",
+  "category": "agent",
+  "keywords": [
+    "mood",
+    "chat",
+    "state",
+    "фон",
+    "настроение",
+    "состояние"
+  ],
+  "locked": false,
+  "allow_update": true,
+  "requires_network": false,
+  "installed_at": "2026-02-22T19:07:52.106256+00:00"
+}

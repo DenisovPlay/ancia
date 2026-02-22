@@ -313,6 +313,17 @@ function renderMarkdown(input) {
       continue;
     }
 
+    if (/^(?:-{3,}|\*{3,}|_{3,})$/.test(current.trim())) {
+      htmlBlocks.push('<hr class="message-divider">');
+      index += 1;
+      continue;
+    }
+
+    if (/^#{1,6}$/.test(current.trim())) {
+      index += 1;
+      continue;
+    }
+
     const headingMatch = /^(#{1,6})\s+(.+)$/.exec(current.trim());
     if (headingMatch) {
       const level = Math.min(6, headingMatch[1].length);
@@ -355,6 +366,12 @@ function renderMarkdown(input) {
     while (index < lines.length && lines[index].trim()) {
       const paragraphMarker = isBlockMarker(lines[index]);
       if (paragraphMarker) {
+        break;
+      }
+      if (/^(?:-{3,}|\*{3,}|_{3,})$/.test(lines[index].trim())) {
+        break;
+      }
+      if (/^#{1,6}$/.test(lines[index].trim())) {
         break;
       }
       if (/^(#{1,6})\s+/.test(lines[index].trim())) {

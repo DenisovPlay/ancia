@@ -15,9 +15,14 @@ def build_system_prompt(
   request: ChatRequest,
   *,
   active_tools: set[str] | None = None,
+  tool_definitions: dict[str, dict[str, Any]] | None = None,
 ) -> str:
   safe_active_tools = active_tools or set()
-  prompt_with_tools = apply_enabled_tools_prompt(base_prompt, safe_active_tools)
+  prompt_with_tools = apply_enabled_tools_prompt(
+    base_prompt,
+    safe_active_tools,
+    tool_definitions=tool_definitions or {},
+  )
   blocks = [prompt_with_tools] if prompt_with_tools else []
   blocks.append(build_chat_mood_prompt())
 

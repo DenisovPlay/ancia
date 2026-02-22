@@ -6,6 +6,13 @@ const MODEL_PARAM_PRESETS = [
   { id: "extended", label: "Длинные", temperature: 0.7, top_p: 0.9, top_k: 40, max_tokens: 2048, context_window: 8192 },
   { id: "code", label: "Код", temperature: 0.2, top_p: 0.75, top_k: 20, max_tokens: 1024, context_window: 8192 },
 ];
+const DEFAULT_MODEL_PARAMS = {
+  temperature: 0.7,
+  top_p: 0.9,
+  top_k: 40,
+  max_tokens: 512,
+  context_window: 4096,
+};
 
 function buildMpmField(name, label, min, max, step, value) {
   return `
@@ -43,6 +50,20 @@ export function createModelParamsController({
   function openModelParamsModal(model) {
     if (!modalElement || !modalBody) return;
     modelId = model.id;
+    const sourceParams = model?.params && typeof model.params === "object"
+      ? model.params
+      : {};
+    const resolveParam = (key) => {
+      const parsed = Number(sourceParams[key]);
+      return Number.isFinite(parsed) ? parsed : DEFAULT_MODEL_PARAMS[key];
+    };
+    const initialParams = {
+      temperature: resolveParam("temperature"),
+      top_p: resolveParam("top_p"),
+      top_k: resolveParam("top_k"),
+      max_tokens: resolveParam("max_tokens"),
+      context_window: resolveParam("context_window"),
+    };
     if (modalTitle) {
       modalTitle.textContent = `${model.label} — параметры`;
     }
@@ -55,11 +76,11 @@ export function createModelParamsController({
       <p class="text-[10px] uppercase tracking-[0.12em] text-zinc-600 mb-3">Готовые пресеты</p>
       <div class="mpm-presets">${presetsHtml}</div>
       <div class="mpm-fields">
-        ${buildMpmField("temperature", "Temperature", 0, 2, 0.05, 0.7)}
-        ${buildMpmField("top_p", "Top-p", 0, 1, 0.05, 0.9)}
-        ${buildMpmField("top_k", "Top-k", 0, 200, 1, 40)}
-        ${buildMpmField("max_tokens", "Max tokens", 64, 4096, 64, 512)}
-        ${buildMpmField("context_window", "Context window", 512, 131072, 512, 4096)}
+        ${buildMpmField("temperature", "Temperature", 0, 2, 0.05, initialParams.temperature)}
+        ${buildMpmField("top_p", "Top-p", 0, 1, 0.05, initialParams.top_p)}
+        ${buildMpmField("top_k", "Top-k", 1, 400, 1, initialParams.top_k)}
+        ${buildMpmField("max_tokens", "Max tokens", 16, 4096, 16, initialParams.max_tokens)}
+        ${buildMpmField("context_window", "Context window", 256, 32768, 256, initialParams.context_window)}
       </div>`;
 
     modalBody.querySelectorAll(".mpm-field__range").forEach((rangeElement) => {
@@ -103,7 +124,11 @@ export function createModelParamsController({
     if (!modelId || !modalBody) return;
     const read = (name) => {
       const rawValue = (modalBody.querySelector(`[data-mpm="${name}"]`)?.value ?? "").trim();
-      return rawValue !== "" ? Number(rawValue) : undefined;
+      if (rawValue === "") {
+        return undefined;
+      }
+      const parsed = Number(rawValue);
+      return Number.isFinite(parsed) ? parsed : undefined;
     };
 
     const params = {};

@@ -1,0 +1,78 @@
+{
+  "id": "system-time",
+  "name": "System Time",
+  "subtitle": "Системное время",
+  "description": "Возвращает текущее время и дату.",
+  "homepage": "",
+  "manifest_url": "https://raw.githubusercontent.com/DenisovPlay/ancia-plugins/main/plugins/system-time/manifest.json",
+  "repo_url": "https://github.com/DenisovPlay/ancia-plugins",
+  "package_url": "https://raw.githubusercontent.com/DenisovPlay/ancia-plugins/main/packages/system-time-1.0.0.zip",
+  "source": "preinstalled",
+  "preinstalled": true,
+  "enabled": true,
+  "tools": [
+    {
+      "name": "system.time",
+      "description": "Возвращает текущее время и дату.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "runtime_meta": {
+        "display_name": "System Time",
+        "subtitle": "Системное время",
+        "category": "system",
+        "keywords": [
+          "time",
+          "date",
+          "system",
+          "время",
+          "дата",
+          "timezone"
+        ],
+        "requires_network": false,
+        "aliases": [
+          "time.now",
+          "system.clock"
+        ],
+        "prompt": "Используй, когда нужно точное текущее время/дата для часового пояса пользователя."
+      },
+      "handler": {
+        "type": "python",
+        "module_file": "plugin.py",
+        "callable": "handle"
+      },
+      "llm_schema": {}
+    }
+  ],
+  "ui_extensions": [
+    {
+      "type": "style",
+      "path": "ui/tool-ui.css",
+      "url": "",
+      "load": "style"
+    },
+    {
+      "type": "script",
+      "path": "ui/tool-ui.js",
+      "url": "",
+      "load": "script"
+    }
+  ],
+  "version": "1.0.0",
+  "category": "system",
+  "keywords": [
+    "time",
+    "date",
+    "system",
+    "время",
+    "дата",
+    "timezone"
+  ],
+  "locked": false,
+  "allow_update": true,
+  "requires_network": false,
+  "installed_at": "2026-02-22T19:07:54.131698+00:00"
+}

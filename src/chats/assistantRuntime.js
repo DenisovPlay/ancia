@@ -90,6 +90,9 @@ export function createChatAssistantRuntime({
       : Array.isArray(response?.toolEvents)
         ? response.toolEvents
         : [];
+    const stream = response?.stream && typeof response.stream === "object"
+      ? response.stream
+      : {};
 
     return {
       text: String(text || fallbackText),
@@ -97,6 +100,7 @@ export function createChatAssistantRuntime({
       toolEvents,
       chatTitle,
       model,
+      stream,
     };
   }
 
@@ -146,11 +150,13 @@ export function createChatAssistantRuntime({
           density: runtimeConfig.uiDensity,
           animations: runtimeConfig.uiAnimations,
           modelId: runtimeConfig.modelId,
-          contextWindow: runtimeConfig.modelContextWindow,
-          maxTokens: runtimeConfig.modelMaxTokens,
-          temperature: runtimeConfig.modelTemperature,
-          topP: runtimeConfig.modelTopP,
-          topK: runtimeConfig.modelTopK,
+          // Параметры генерации — источник истины в БД бэкенда (/models/{id}/params).
+          // Не отправляем клиентские override, чтобы не перетирать сохранённые значения.
+          contextWindow: null,
+          maxTokens: null,
+          temperature: null,
+          topP: null,
+          topK: null,
         },
         history: getChatHistoryForBackend(backendHistoryMaxMessages),
       },
@@ -175,26 +181,6 @@ export function createChatAssistantRuntime({
     } catch {
       return "неизвестная ошибка потока";
     }
-  }
-
-  function chunkTextForPreview(text, maxChunk = 42) {
-    const normalized = normalizeTextInput(text);
-    const parts = normalized.match(/\S+\s*|\s+/g) || [normalized];
-    const chunks = [];
-    let buffer = "";
-    parts.forEach((part) => {
-      const next = buffer + part;
-      if (buffer && next.length > maxChunk) {
-        chunks.push(buffer);
-        buffer = part;
-      } else {
-        buffer = next;
-      }
-    });
-    if (buffer) {
-      chunks.push(buffer);
-    }
-    return chunks;
   }
 
   async function requestAssistantReply(
@@ -246,15 +232,7 @@ export function createChatAssistantRuntime({
         ...draftAssistantReply(userText),
         metaSuffix: "симуляция",
       };
-      const previewChunks = chunkTextForPreview(draft.text, 28);
-      let partial = "";
-      for (const chunk of previewChunks) {
-        partial += chunk;
-        onPartial?.(partial);
-        await new Promise((resolve) => {
-          window.setTimeout(resolve, 45);
-        });
-      }
+      onPartial?.(draft.text);
       return draft;
     }
 
@@ -316,11 +294,21 @@ export function createChatAssistantRuntime({
         reply: streamedText,
         mood: inferMoodFromText(streamedText),
         model: "backend-stream",
+        stream: {
+          mode: "streaming",
+          delta_count: streamedText ? 1 : 0,
+          delta_chars: streamedText.length,
+        },
       };
-      updateConnectionState(BACKEND_STATUS.connected, "Поток ответа завершён");
       const parsed = parseBackendResponse(finalPayload, streamedText || "Бэкенд вернул пустой ответ.");
       if (streamedText && !parsed.text) {
         parsed.text = streamedText;
+      }
+      const streamMode = String(parsed.stream?.mode || "").trim().toLowerCase();
+      if (streamMode && streamMode !== "streaming") {
+        updateConnectionState(BACKEND_STATUS.connected, "Ответ получен без токен-стрима");
+      } else {
+        updateConnectionState(BACKEND_STATUS.connected, "Поток ответа завершён");
       }
       return {
         ...parsed,
@@ -339,7 +327,10 @@ export function createChatAssistantRuntime({
       const streamErrorMessage = String(error?.message || "");
       const isStreamTransportIssue = /HTTP \d+/.test(streamErrorMessage)
         || /Поток ответа недоступен/i.test(streamErrorMessage)
-        || /\/chat\/stream/i.test(streamErrorMessage);
+        || /\/chat\/stream/i.test(streamErrorMessage)
+        || /потоковой генерации/i.test(streamErrorMessage)
+        || /stream(?:ing)? generation/i.test(streamErrorMessage)
+        || /broken pipe|errno\s*32/i.test(streamErrorMessage);
       if (isStreamTransportIssue) {
         try {
           const payload = await backendClient.sendMessage(buildBackendChatPayload(userText, chatId, attachments));
@@ -359,10 +350,10 @@ export function createChatAssistantRuntime({
               });
             });
           }
-          onPartial?.(parsed.text);
           updateConnectionState(BACKEND_STATUS.connected, "Ответ получен от бэкенда");
           return {
             ...parsed,
+            text: parsed.text || streamedText,
             metaSuffix: resolveModelMetaSuffix(parsed.model, runtimeConfig.modelId),
           };
         } catch (fallbackError) {

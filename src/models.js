@@ -171,9 +171,13 @@ export function createModelsFeature({
 
       const selectedModelId = normalizeModelId(payloadState?.selected_model || runtimeConfig.modelId);
       const selectedModel = findModelById(selectedModelId);
+      const runtimeVisionAvailable = payloadState?.runtime
+        && typeof payloadState.runtime.vision_runtime_available === "boolean"
+        ? Boolean(payloadState.runtime.vision_runtime_available)
+        : true;
       applyRuntimeConfig({
         modelId: selectedModelId,
-        modelSupportsVision: selectedModel?.supportsVision ?? false,
+        modelSupportsVision: Boolean(selectedModel?.supportsVision && runtimeVisionAvailable),
       });
 
       render();
@@ -203,7 +207,11 @@ export function createModelsFeature({
     try {
       if (action === "select") {
         await backendClient.selectModel({ model_id: model.id });
-        applyRuntimeConfig({ modelId: model.id, modelSupportsVision: model.supportsVision });
+        const runtimeVisionAvailable = payloadState?.runtime
+          && typeof payloadState.runtime.vision_runtime_available === "boolean"
+          ? Boolean(payloadState.runtime.vision_runtime_available)
+          : true;
+        applyRuntimeConfig({ modelId: model.id, modelSupportsVision: Boolean(model.supportsVision && runtimeVisionAvailable) });
         await loadModels({ silent: true });
         pushToast("Модель выбрана.", { tone: "success", durationMs: 2000 });
         return;
@@ -211,7 +219,11 @@ export function createModelsFeature({
 
       if (action === "load") {
         await backendClient.loadModel({ model_id: model.id });
-        applyRuntimeConfig({ modelId: model.id, modelSupportsVision: model.supportsVision });
+        const runtimeVisionAvailable = payloadState?.runtime
+          && typeof payloadState.runtime.vision_runtime_available === "boolean"
+          ? Boolean(payloadState.runtime.vision_runtime_available)
+          : true;
+        applyRuntimeConfig({ modelId: model.id, modelSupportsVision: Boolean(model.supportsVision && runtimeVisionAvailable) });
         await loadModels({ silent: true });
         pushToast(model.cache.cached ? "Запускаем модель…" : "Скачиваем и запускаем модель…", {
           tone: "neutral",
@@ -261,8 +273,7 @@ export function createModelsFeature({
           durationMs: 3000,
         });
         if (result?.models_payload) {
-          payloadState = result.models_payload;
-          render();
+          await loadModels({ silent: true });
         }
       } catch (error) {
         pushToast(`Ошибка обновления: ${error.message}`, { tone: "error", durationMs: 3600 });

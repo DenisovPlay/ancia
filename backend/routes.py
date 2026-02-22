@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import queue as queue_lib
@@ -64,7 +65,11 @@ def register_api_routes(
   plugin_manager: Any,
   system_prompt: str,
   data_dir: str,
+  plugins_root_dir: str,
+  plugins_user_dir: str,
+  plugins_preinstalled_dir: str,
   build_system_prompt_fn: Callable[..., str],
+  refresh_tool_registry_fn: Callable[[], None] | None = None,
 ) -> None:
   settings_service = SettingsService(storage=storage, model_engine=model_engine)
   get_autonomous_mode = settings_service.get_autonomous_mode
@@ -73,41 +78,24 @@ def register_api_routes(
   PLUGIN_REGISTRY_URL_SETTING_KEY = "plugin_registry_url"
   DEFAULT_PLUGIN_REGISTRY_URL = (
     os.getenv("ANCIA_PLUGIN_REGISTRY_URL", "").strip()
-    or "https://raw.githubusercontent.com/DenisovPlay/ancia-plugins/index.json"
+    or "https://raw.githubusercontent.com/DenisovPlay/ancia-plugins/main/index.json"
   )
   MAX_REGISTRY_DOWNLOAD_BYTES = 1024 * 1024
-  MAX_MANIFEST_DOWNLOAD_BYTES = 512 * 1024
-  user_plugins_dir = (Path(data_dir).resolve() / "plugins")
-  user_plugins_dir.mkdir(parents=True, exist_ok=True)
-  try:
-    os.chmod(user_plugins_dir, 0o700)
-  except OSError:
-    pass
+  plugins_user_path = Path(plugins_user_dir).resolve()
+  plugins_preinstalled_path = Path(plugins_preinstalled_dir).resolve()
   plugin_marketplace = PluginMarketplaceService(
     storage=storage,
     plugin_manager=plugin_manager,
-    user_plugins_dir=user_plugins_dir,
+    user_plugins_dir=plugins_user_path,
+    preinstalled_plugins_dir=plugins_preinstalled_path,
     plugin_registry_url_setting_key=PLUGIN_REGISTRY_URL_SETTING_KEY,
     default_plugin_registry_url=DEFAULT_PLUGIN_REGISTRY_URL,
     max_registry_download_bytes=MAX_REGISTRY_DOWNLOAD_BYTES,
     utc_now_fn=utc_now_iso,
   )
-  builtin_plugin_ids = plugin_marketplace.builtin_plugin_ids
-
-  def sanitize_plugin_id(value: Any) -> str:
-    return plugin_marketplace.sanitize_plugin_id(value)
 
   def normalize_http_url(url_like: Any) -> str:
     return plugin_marketplace.normalize_http_url(url_like)
-
-  def fetch_remote_json(url: str, *, max_bytes: int) -> Any:
-    return plugin_marketplace.fetch_remote_json(url, max_bytes=max_bytes)
-
-  def resolve_user_plugin_manifest_path(plugin_id: str) -> Path | None:
-    return plugin_marketplace.resolve_user_plugin_manifest_path(plugin_id)
-
-  def serialize_plugin(plugin: Any, *, autonomous_mode: bool) -> dict[str, Any]:
-    return plugin_marketplace.serialize_plugin(plugin, autonomous_mode=autonomous_mode)
 
   def list_plugins_payload() -> dict[str, Any]:
     return plugin_marketplace.list_plugins_payload(autonomous_mode=get_autonomous_mode())
@@ -115,11 +103,22 @@ def register_api_routes(
   def build_registry_plugins_payload() -> dict[str, Any]:
     return plugin_marketplace.build_registry_plugins_payload(autonomous_mode=get_autonomous_mode())
 
-  def normalize_install_manifest(payload: Any) -> dict[str, Any]:
-    return plugin_marketplace.normalize_install_manifest(payload)
+  def _bootstrap_preinstalled_plugins() -> None:
+    try:
+      bootstrap_result = plugin_marketplace.ensure_preinstalled_plugins(autonomous_mode=False)
+      if (bootstrap_result.get("installed") or bootstrap_result.get("updated")) and callable(refresh_tool_registry_fn):
+        refresh_tool_registry_fn()
+    except Exception:
+      # Bootstrap preinstalled plugins must not break backend startup.
+      return
 
-  def write_user_manifest(plugin_id: str, manifest: dict[str, Any]) -> None:
-    plugin_marketplace.write_user_manifest(plugin_id, manifest)
+  if not get_autonomous_mode():
+    bootstrap_thread = threading.Thread(
+      target=_bootstrap_preinstalled_plugins,
+      name="ancia-plugin-bootstrap",
+      daemon=True,
+    )
+    bootstrap_thread.start()
 
   @app.get("/health")
   def health() -> dict[str, Any]:
@@ -162,6 +161,7 @@ def register_api_routes(
     app,
     model_engine=model_engine,
     tool_registry=tool_registry,
+    plugin_manager=plugin_manager,
     get_autonomous_mode=get_autonomous_mode,
   )
 
@@ -170,32 +170,24 @@ def register_api_routes(
     storage=storage,
     model_engine=model_engine,
     plugin_manager=plugin_manager,
-    user_plugins_dir=user_plugins_dir,
+    user_plugins_dir=plugins_user_path,
     get_settings_payload=get_settings_payload,
     persist_settings_payload=persist_settings_payload,
     list_plugins_payload=list_plugins_payload,
     default_runtime_config=DEFAULT_RUNTIME_CONFIG,
     default_onboarding_state=DEFAULT_ONBOARDING_STATE,
+    refresh_tool_registry_fn=refresh_tool_registry_fn,
   )
 
   register_plugin_routes(
     app,
     storage=storage,
     plugin_manager=plugin_manager,
+    plugin_marketplace=plugin_marketplace,
     plugin_registry_url_setting_key=PLUGIN_REGISTRY_URL_SETTING_KEY,
     default_plugin_registry_url=DEFAULT_PLUGIN_REGISTRY_URL,
-    max_manifest_download_bytes=MAX_MANIFEST_DOWNLOAD_BYTES,
-    builtin_plugin_ids=builtin_plugin_ids,
     get_autonomous_mode=get_autonomous_mode,
-    sanitize_plugin_id=sanitize_plugin_id,
-    normalize_http_url=normalize_http_url,
-    fetch_remote_json=fetch_remote_json,
-    resolve_user_plugin_manifest_path=resolve_user_plugin_manifest_path,
-    serialize_plugin=serialize_plugin,
-    list_plugins_payload=list_plugins_payload,
-    build_registry_plugins_payload=build_registry_plugins_payload,
-    normalize_install_manifest=normalize_install_manifest,
-    write_user_manifest=write_user_manifest,
+    refresh_tool_registry_fn=refresh_tool_registry_fn,
   )
 
   register_chat_store_routes(
@@ -258,9 +250,69 @@ def register_api_routes(
       return []
     return [token.strip().strip('"').strip("'") for token in match.group(1).split() if token.strip()]
 
+  def _origin_matches_frame_ancestor(source: str, *, request_origin: str, target_origin: str) -> bool:
+    safe_source = str(source or "").strip().lower()
+    safe_request_origin = str(request_origin or "").strip().lower()
+    safe_target_origin = str(target_origin or "").strip().lower()
+    if not safe_source or not safe_request_origin:
+      return False
+    if safe_source == "*":
+      return True
+    if safe_source in {"self", "'self'"}:
+      return bool(safe_target_origin and safe_request_origin == safe_target_origin)
+    if safe_source in {"none", "'none'"}:
+      return False
+
+    request_parsed = url_parse.urlparse(safe_request_origin)
+    request_scheme = str(request_parsed.scheme or "").strip().lower()
+    request_host = str(request_parsed.hostname or "").strip().lower()
+    if not request_scheme or not request_host:
+      return False
+
+    # CSP host-source может быть без схемы, тогда схема не ограничивается.
+    source_has_scheme = "://" in safe_source
+    source_allows_any_port = safe_source.endswith(":*")
+    source_for_parse = safe_source[:-2] if source_allows_any_port else safe_source
+    if not source_has_scheme:
+      source_for_parse = f"{request_scheme}://{source_for_parse}"
+
+    parsed_source = url_parse.urlparse(source_for_parse)
+    source_scheme = str(parsed_source.scheme or "").strip().lower()
+    source_host = str(parsed_source.hostname or "").strip().lower()
+    if not source_host:
+      return False
+    if source_has_scheme and source_scheme and source_scheme != request_scheme:
+      return False
+
+    try:
+      request_port = request_parsed.port
+    except ValueError:
+      request_port = None
+    if request_port is None:
+      if request_scheme == "https":
+        request_port = 443
+      elif request_scheme == "http":
+        request_port = 80
+
+    try:
+      source_port = parsed_source.port
+    except ValueError:
+      source_port = None
+    if not source_allows_any_port and source_port is not None:
+      if request_port is None or request_port != source_port:
+        return False
+
+    if source_host.startswith("*."):
+      suffix = source_host[2:]
+      if not suffix or request_host == suffix:
+        return False
+      return request_host.endswith(f".{suffix}")
+
+    return request_host == source_host
+
   @app.get("/links/inspect")
-  def inspect_link(url: str, request: Request) -> dict[str, Any]:
-    final_url, headers = _fetch_link_headers(url)
+  async def inspect_link(url: str, request: Request) -> dict[str, Any]:
+    final_url, headers = await asyncio.to_thread(_fetch_link_headers, url)
     parsed_target = url_parse.urlparse(final_url)
     target_origin = f"{parsed_target.scheme}://{parsed_target.netloc}".lower() if parsed_target.netloc else ""
     request_origin = str(request.headers.get("origin") or "").strip().lower()
@@ -281,22 +333,21 @@ def register_api_routes(
 
     if frame_ancestors:
       lower_ancestors = [token.lower() for token in frame_ancestors]
-      if "none" in lower_ancestors:
+      if any(token in {"none", "'none'"} for token in lower_ancestors):
         blocked_reasons.append("Сайт запрещает iframe через CSP frame-ancestors 'none'.")
-      elif "*" not in lower_ancestors:
-        if is_cross_origin:
-          allows_origin = False
-          for token in lower_ancestors:
-            if token in {"self", "unsafe-inline", "unsafe-eval"}:
-              continue
-            if token == request_origin:
-              allows_origin = True
-              break
-            if token.startswith("http://") or token.startswith("https://"):
-              allows_origin = allows_origin or request_origin == token
-          if "self" in lower_ancestors and not allows_origin:
+      elif request_origin and not any(token in {"*", "'*'"} for token in lower_ancestors):
+        allows_origin = any(
+          _origin_matches_frame_ancestor(
+            token,
+            request_origin=request_origin,
+            target_origin=target_origin,
+          )
+          for token in frame_ancestors
+        )
+        if not allows_origin:
+          if any(token in {"self", "'self'"} for token in lower_ancestors):
             blocked_reasons.append("Сайт разрешает iframe только для того же origin (CSP frame-ancestors 'self').")
-          elif not allows_origin:
+          else:
             blocked_reasons.append("CSP frame-ancestors не разрешает текущий origin приложения.")
 
     blocked = len(blocked_reasons) > 0
@@ -323,28 +374,6 @@ def register_api_routes(
     status = str(event.status or "").strip().lower() or "ok"
     summary = model_engine._summarize_tool_event(event).strip()
     safe_summary = model_engine._truncate_text(summary, 2600) if summary else ""
-
-    if name == "web.search.duckduckgo":
-      query = str(event.output.get("query") or "").strip()
-      header_base = display_name or "Поиск"
-      header = f"{header_base}: {query}" if query else header_base
-      label = f"{header}\n{safe_summary}".strip()
-      return label, f"инструмент • {status}"
-
-    if name == "web.visit.website":
-      url = str(event.output.get("url") or event.output.get("requested_url") or "").strip()
-      header_base = display_name or "Страница"
-      header = f"{header_base}: {url}" if url else header_base
-      label = f"{header}\n{safe_summary}".strip()
-      return label, f"инструмент • {status}"
-
-    if name == "chat.set_mood":
-      mood = str(event.output.get("mood") or "").strip()
-      header_base = display_name or "chat.set_mood"
-      header = f"{header_base}: {mood}" if mood else header_base
-      label = f"{header}\n{safe_summary}".strip()
-      return label, f"инструмент • {status}"
-
     header = display_name or name or "tool"
     label = f"{header}\n{safe_summary}".strip()
     return label, f"инструмент • {status}"
@@ -529,10 +558,6 @@ def register_api_routes(
       attachment_preview_lines.append(f"{index}. {' '.join(label_parts)}")
 
     user_text_for_storage = user_text
-    if attachment_preview_lines:
-      user_text_for_storage = (
-        f"{user_text}\n\nВложения:\n" + "\n".join(attachment_preview_lines)
-      ).strip()
 
     storage.append_message(
       chat_id=chat_id,
@@ -542,6 +567,8 @@ def register_api_routes(
         "source": "ui",
         "meta_suffix": "",
         "attachments": attachment_payloads,
+        "attachment_preview_lines": attachment_preview_lines,
+        "has_attachments": bool(attachment_payloads),
       },
     )
 
@@ -553,7 +580,10 @@ def register_api_routes(
     )
 
     autonomous_mode = get_autonomous_mode()
-    plugin_manager.reload()
+    if callable(refresh_tool_registry_fn):
+      refresh_tool_registry_fn()
+    else:
+      plugin_manager.reload()
     active_tools = plugin_manager.resolve_active_tools(autonomous_mode=autonomous_mode)
     active_tools = {tool for tool in active_tools if tool_registry.has_tool(tool)}
     return user_text, chat_id, chat_title, incoming_mood, runtime, active_tools
@@ -574,6 +604,11 @@ def register_api_routes(
       system_prompt,
       payload,
       active_tools=active_tools,
+      tool_definitions=(
+        tool_registry.build_tool_definition_map(active_tools)
+        if hasattr(tool_registry, "build_tool_definition_map")
+        else {}
+      ),
     )
     for event in result.tool_events:
       tool_text, tool_meta_suffix = format_tool_event_for_chat(event)
@@ -687,6 +722,43 @@ def register_api_routes(
       assistant_message_id: str | None = None
       assistant_stream_text = ""
       tool_message_by_invocation: dict[str, str] = {}
+      stream_started_at = time.perf_counter()
+      first_delta_at: float | None = None
+      delta_count = 0
+      delta_chars = 0
+
+      def build_stream_diagnostics(final_reply: str) -> dict[str, Any]:
+        safe_reply = str(final_reply or "")
+        reply_chars = len(safe_reply)
+        total_ms = max(0, int((time.perf_counter() - stream_started_at) * 1000))
+        first_token_ms = (
+          max(0, int((first_delta_at - stream_started_at) * 1000))
+          if first_delta_at is not None
+          else None
+        )
+
+        mode = "streaming"
+        reason = ""
+        if delta_count == 0:
+          mode = "buffered"
+          reason = "no_delta_events"
+        elif (
+          delta_count == 1
+          and reply_chars >= 48
+          and delta_chars >= max(1, int(reply_chars * 0.8))
+        ):
+          mode = "buffered_single_chunk"
+          reason = "single_large_delta"
+
+        return {
+          "mode": mode,
+          "reason": reason,
+          "delta_count": int(delta_count),
+          "delta_chars": int(delta_chars),
+          "reply_chars": int(reply_chars),
+          "first_token_ms": first_token_ms,
+          "total_ms": total_ms,
+        }
 
       def upsert_assistant_message(
         text: str,
@@ -720,6 +792,13 @@ def register_api_routes(
             meta=meta_payload,
           )
         return assistant_message_id
+
+      def is_user_cancelled_error(error: RuntimeError) -> bool:
+        normalized = str(error or "").strip().lower()
+        return (
+          "генерация остановлена пользователем" in normalized
+          or "generation stopped by user" in normalized
+        )
 
       try:
         runtime_snapshot = (
@@ -916,14 +995,21 @@ def register_api_routes(
                 continue
             if not delta:
               continue
-            assistant_stream_text += str(delta)
+            safe_delta = str(delta)
+            if not safe_delta:
+              continue
+            assistant_stream_text += safe_delta
+            delta_count += 1
+            delta_chars += len(safe_delta)
+            if first_delta_at is None:
+              first_delta_at = time.perf_counter()
             upsert_assistant_message(
               assistant_stream_text,
               model_label=stream_model_label,
               mood=incoming_mood,
               streaming=True,
             )
-            yield _format_sse("delta", {"text": delta})
+            yield _format_sse("delta", {"text": safe_delta})
             continue
 
           if packet_type == "done":
@@ -945,10 +1031,16 @@ def register_api_routes(
           system_prompt,
           payload,
           active_tools=active_tools,
+          tool_definitions=(
+            tool_registry.build_tool_definition_map(active_tools)
+            if hasattr(tool_registry, "build_tool_definition_map")
+            else {}
+          ),
         )
         final_reply = str(result.reply or assistant_stream_text or "").strip()
         if not final_reply:
           final_reply = "Не удалось сформировать ответ."
+        stream_diagnostics = build_stream_diagnostics(final_reply)
         token_estimate = max(1, len(user_text) // 4 + len(final_reply) // 4)
         response_model = ChatResponse(
           chat_id=chat_id,
@@ -970,6 +1062,7 @@ def register_api_routes(
           extra_meta={
             "system_prompt": system_prompt_value,
             "tool_events": [event.model_dump() for event in result.tool_events],
+            "stream": stream_diagnostics,
           },
         )
         yield _format_sse(
@@ -982,17 +1075,69 @@ def register_api_routes(
             "model": response_model.model,
             "tool_events": [event.model_dump() for event in response_model.tool_events],
             "usage": response_model.usage,
+            "stream": stream_diagnostics,
           },
         )
       except RuntimeError as exc:
+        if is_user_cancelled_error(exc):
+          cancelled_reply = str(assistant_stream_text or "").strip()
+          cancelled_model = str(stream_model_label or selected_model_label or "модель")
+          cancelled_mood = normalize_mood(incoming_mood, "neutral")
+          stream_diagnostics = build_stream_diagnostics(cancelled_reply)
+          cancelled_meta: dict[str, Any] = {
+            "model": cancelled_model,
+            "mood": cancelled_mood,
+            "meta_suffix": f"{cancelled_model} • остановлено",
+            "streaming": False,
+            "cancelled": True,
+            "stream": stream_diagnostics,
+          }
+          if assistant_message_id is not None and cancelled_reply:
+            storage.update_message(
+              chat_id,
+              assistant_message_id,
+              text=cancelled_reply,
+              meta=cancelled_meta,
+            )
+          elif assistant_message_id is None and cancelled_reply:
+            assistant_message_id = storage.append_message(
+              chat_id=chat_id,
+              role="assistant",
+              text=cancelled_reply,
+              meta=cancelled_meta,
+            )
+          prompt_tokens = max(1, len(user_text) // 4)
+          completion_tokens = max(0, len(cancelled_reply) // 4)
+          yield _format_sse(
+            "done",
+            {
+              "chat_id": chat_id,
+              "chat_title": chat_title,
+              "reply": cancelled_reply,
+              "mood": cancelled_mood,
+              "model": cancelled_model,
+              "tool_events": [],
+              "usage": {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": prompt_tokens + completion_tokens,
+              },
+              "cancelled": True,
+              "stream": stream_diagnostics,
+            },
+          )
+          return
+
         error_text = assistant_stream_text or str(exc)
         error_label = stream_model_label
+        stream_diagnostics = build_stream_diagnostics(error_text)
         error_meta: dict[str, Any] = {
           "model": error_label,
           "mood": "error",
           "meta_suffix": f"{error_label} • ошибка",
           "streaming": False,
           "error": str(exc),
+          "stream": stream_diagnostics,
         }
         if assistant_message_id is None:
           assistant_message_id = storage.append_message(
@@ -1013,11 +1158,18 @@ def register_api_routes(
           {
             "message": str(exc),
             "startup": model_engine.get_startup_snapshot(),
+            "stream": stream_diagnostics,
           },
         )
 
+    def stream_events_with_cleanup() -> Generator[str, None, None]:
+      try:
+        yield from stream_events()
+      finally:
+        model_engine.request_stop_generation()
+
     return StreamingResponse(
-      stream_events(),
+      stream_events_with_cleanup(),
       media_type="text/event-stream",
       headers={
         "Cache-Control": "no-cache",

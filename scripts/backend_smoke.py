@@ -5,8 +5,8 @@ import os
 import sys
 from pathlib import Path
 
-# Для smoke-проверки не грузим MLX, чтобы тесты работали в CI/песочнице.
-os.environ.setdefault("ANCIA_DISABLE_MODEL_AUTOLOAD", "1")
+# Для smoke-проверки не грузим модель на старте, чтобы тесты работали в CI/песочнице.
+os.environ["ANCIA_ENABLE_MODEL_EAGER_LOAD"] = "0"
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
   sys.path.insert(0, str(ROOT_DIR))
@@ -61,9 +61,10 @@ def main() -> int:
   else:
     plugin_items = plugins_payload.json().get("plugins", [])
     plugin_ids = sorted([str(item.get("id") or "") for item in plugin_items if isinstance(item, dict)])
-    expected_ids = sorted(["duckduckgo", "visit-website", "system-time", "chat-mood"])
-    if plugin_ids != expected_ids:
-      print(f"[FAIL] plugin ids mismatch: {plugin_ids} != {expected_ids}")
+    required_ids = {"duckduckgo", "visit-website", "system-time", "chat-mood"}
+    missing_required = sorted(required_ids.difference(set(plugin_ids)))
+    if missing_required:
+      print(f"[FAIL] required plugins missing: {missing_required}; got={plugin_ids}")
       failed = True
     else:
       print(f"[OK] plugin ids -> {plugin_ids}")

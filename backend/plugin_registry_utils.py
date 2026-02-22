@@ -34,19 +34,56 @@ def normalize_http_url(url_like: Any) -> str:
   return parsed.geturl()
 
 
+def normalize_registry_url(url_like: Any) -> str:
+  safe_url = normalize_http_url(url_like)
+  parsed = url_parse.urlparse(safe_url)
+  netloc = parsed.netloc.strip().lower()
+  path_parts = [part for part in parsed.path.split("/") if part]
+
+  # Legacy format used by older builds:
+  # https://raw.githubusercontent.com/<owner>/<repo>/index.json
+  # Correct format requires branch segment:
+  # https://raw.githubusercontent.com/<owner>/<repo>/main/index.json
+  if netloc == "raw.githubusercontent.com" and len(path_parts) == 3:
+    owner, repo, file_name = path_parts
+    if file_name.lower().endswith(".json"):
+      parsed = parsed._replace(path=f"/{owner}/{repo}/main/{file_name}")
+      return url_parse.urlunparse(parsed)
+
+  return safe_url
+
+
 def resolve_plugin_registry_url(*, storage: Any, setting_key: str, default_url: str) -> str:
   from_settings = str(storage.get_setting(setting_key) or "").strip()
   if from_settings:
     try:
-      return normalize_http_url(from_settings)
+      normalized = normalize_registry_url(from_settings)
+      if normalized != from_settings:
+        try:
+          storage.set_setting(setting_key, normalized)
+        except Exception:
+          pass
+      return normalized
     except ValueError:
       pass
-  return default_url
+  try:
+    return normalize_registry_url(default_url)
+  except ValueError:
+    return default_url
 
 
 def fetch_remote_json(url: str, *, max_bytes: int) -> Any:
+  payload = fetch_remote_bytes(url, max_bytes=max_bytes)
   try:
-    safe_url = normalize_http_url(url)
+    text = payload.decode("utf-8")
+    return json.loads(text)
+  except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+    raise RuntimeError("Registry payload is not valid JSON") from exc
+
+
+def fetch_remote_bytes(url: str, *, max_bytes: int) -> bytes:
+  try:
+    safe_url = normalize_registry_url(url)
   except ValueError as exc:
     raise RuntimeError(str(exc)) from exc
 
@@ -70,12 +107,8 @@ def fetch_remote_json(url: str, *, max_bytes: int) -> Any:
 
   if len(raw) > max_bytes:
     raise RuntimeError("Registry payload is too large")
+  return raw
 
-  try:
-    text = raw.decode("utf-8")
-    return json.loads(text)
-  except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-    raise RuntimeError("Registry payload is not valid JSON") from exc
 
 
 def normalize_registry_item(payload: Any) -> dict[str, Any] | None:
@@ -112,6 +145,13 @@ def normalize_registry_item(payload: Any) -> dict[str, Any] | None:
     except ValueError:
       repo_url = ""
 
+  package_url = str(payload.get("package_url") or payload.get("packageUrl") or "").strip()
+  if package_url:
+    try:
+      package_url = normalize_http_url(package_url)
+    except ValueError:
+      package_url = ""
+
   raw_keywords = payload.get("keywords")
   keywords: list[str] = []
   if isinstance(raw_keywords, list):
@@ -144,6 +184,9 @@ def normalize_registry_item(payload: Any) -> dict[str, Any] | None:
     "homepage": homepage,
     "repo_url": repo_url,
     "manifest_url": manifest_url,
+    "package_url": package_url,
+    "source": str(payload.get("source") or "registry").strip().lower() or "registry",
+    "preinstalled": bool(payload.get("preinstalled", False)),
     "keywords": unique_keywords,
     "tools": tools,
     "requires_network": bool(payload.get("requires_network", False)),

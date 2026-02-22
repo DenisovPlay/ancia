@@ -277,6 +277,10 @@ export class BackendClient {
     });
   }
 
+  async listPluginUiExtensions() {
+    return this.request("/plugins/ui/extensions", { method: "GET" });
+  }
+
   async sendMessage(payload) {
     return this.request("/chat", {
       method: "POST",
@@ -374,38 +378,43 @@ export class BackendClient {
       const reader = response.body.getReader();
       const decoder = new TextDecoder("utf-8");
       let buffer = "";
+      let shouldStopReading = false;
       const dispatchEvent = (block) => {
         const parsed = parseSseEvent(block);
         if (!parsed) {
-          return;
+          return "";
         }
         if (parsed.event === "start") {
           onStart?.(parsed.data || {});
-          return;
+          return "start";
         }
         if (parsed.event === "delta") {
           onDelta?.(parsed.data || {});
-          return;
+          return "delta";
         }
         if (parsed.event === "tool_start") {
           onToolStart?.(parsed.data || {});
-          return;
+          return "tool_start";
         }
         if (parsed.event === "tool_result") {
           onToolResult?.(parsed.data || {});
-          return;
+          return "tool_result";
         }
         if (parsed.event === "status") {
           onStatus?.(parsed.data || {});
-          return;
+          return "status";
         }
         if (parsed.event === "done") {
           onDone?.(parsed.data || {});
-          return;
+          shouldStopReading = true;
+          return "done";
         }
         if (parsed.event === "error") {
           onError?.(parsed.data || {});
+          shouldStopReading = true;
+          return "error";
         }
+        return parsed.event;
       };
 
       while (true) {
@@ -414,14 +423,28 @@ export class BackendClient {
           break;
         }
         buffer += decoder.decode(value, { stream: true });
-        const normalized = buffer.replace(/\r\n/g, "\n");
+        const normalized = buffer.replace(/\r\n?/g, "\n");
         const blocks = normalized.split("\n\n");
         buffer = blocks.pop() || "";
-        blocks.forEach(dispatchEvent);
+        for (const block of blocks) {
+          dispatchEvent(block);
+          if (shouldStopReading) {
+            break;
+          }
+        }
+        if (shouldStopReading) {
+          try {
+            await reader.cancel();
+          } catch {
+            // no-op: stream might already be closed.
+          }
+          break;
+        }
       }
 
+      buffer += decoder.decode();
       const tail = buffer.trim();
-      if (tail) {
+      if (tail && !shouldStopReading) {
         dispatchEvent(tail);
       }
     } catch (error) {

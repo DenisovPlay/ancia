@@ -29,6 +29,7 @@ export function createChatFeature({
   elements,
   runtimeConfig,
   backendClient,
+  getPluginToolRenderer,
   background,
   normalizeRoute,
   getRouteFromHash,
@@ -419,6 +420,7 @@ const {
   getActiveChatSessionId: () => activeChatSessionId,
   normalizeToolName,
   lookupToolMeta,
+  getPluginToolRenderer,
 });
 appendMessageFn = appendMessage;
 streamRenderer = createChatStreamRenderer({
@@ -566,6 +568,7 @@ function clearCurrentChatState(transitionMs = runtimeConfig.defaultTransitionMs)
 return {
   initialize,
   refreshToolCatalog,
+  rerenderMessages: () => renderActiveChatMessages({ animateEntries: false, transition: false }),
   closeContextMenu,
   isContextMenuOpen,
   applyContextualBackground,

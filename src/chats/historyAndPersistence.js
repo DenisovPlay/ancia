@@ -76,8 +76,21 @@ export function createChatHistoryAndPersistence({
     }
 
     const safeMeta = meta && typeof meta === "object" && !Array.isArray(meta) ? { ...meta } : {};
+    const existingIds = new Set(
+      (Array.isArray(targetSession.messages) ? targetSession.messages : [])
+        .map((item) => String(item?.id || "").trim())
+        .filter(Boolean),
+    );
+    const baseId = `msg-${Date.now().toString(36)}`;
+    let idCounter = 0;
+    let nextMessageId = `${baseId}-${Math.random().toString(36).slice(2, 8) || "0"}`;
+    while (existingIds.has(nextMessageId)) {
+      idCounter += 1;
+      nextMessageId = `${baseId}-${idCounter}`;
+    }
+
     const normalized = normalizeChatMessage({
-      id: `msg-${targetSession.messages.length + 1}`,
+      id: nextMessageId,
       role,
       text,
       metaSuffix,

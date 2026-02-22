@@ -42,7 +42,7 @@ export function createChatSessionUiController({
     button.setAttribute("aria-pressed", String(isActive));
 
     const title = document.createElement("p");
-    title.className = isActive ? "text-sm font-semibold text-zinc-100" : "text-sm font-medium text-zinc-100";
+    title.className = isActive ? "text-sm font-semibold text-zinc-100 truncate w-full" : "text-sm font-medium text-zinc-100 truncate w-full";
     title.textContent = session.title;
     button.appendChild(title);
     return button;
@@ -97,7 +97,7 @@ export function createChatSessionUiController({
       button.setAttribute("aria-pressed", String(isActive));
       const titleNode = button.querySelector("p");
       if (titleNode) {
-        titleNode.className = isActive ? "text-sm font-semibold text-zinc-100" : "text-sm font-medium text-zinc-100";
+        titleNode.className = isActive ? "text-sm font-semibold text-zinc-100 truncate w-full" : "text-sm font-medium text-zinc-100 truncate w-full";
       }
     });
 

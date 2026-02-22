@@ -3,7 +3,7 @@ import { icon } from "../ui/icons.js";
 export const chatPageTemplate = `
   <aside
     id="panel-left"
-    class="page-aside glass-panel pt-10 xl:pt-3 !backdrop-blur-none 2xl:backdrop-blur-md fixed inset-y-0 left-0 z-10 flex w-[84vw] max-w-[290px] -translate-x-[112%] flex-col p-3 opacity-0 pointer-events-none transition-transform duration-300 xl:relative xl:z-10 xl:h-full xl:min-h-0 xl:translate-x-0 xl:opacity-100 xl:pointer-events-auto"
+    class="page-aside glass-panel mt-[2.5rem] xl:mt-0 pt-3 !backdrop-blur-none 2xl:backdrop-blur-md fixed inset-y-0 left-0 z-10 flex w-[84vw] max-w-[290px] -translate-x-[112%] flex-col p-3 opacity-0 pointer-events-none transition-transform duration-300 xl:relative xl:z-10 xl:h-full xl:min-h-0 xl:translate-x-0 xl:opacity-100 xl:pointer-events-auto"
   >
     <button
       id="chat-new-session-button"
@@ -71,7 +71,7 @@ export const chatPageTemplate = `
       </div>
     </div>
 
-    <section id="chat-stream" aria-live="polite" class="chat-scroll min-h-0 overflow-y-auto flex-1 space-y-3 overflow-auto pr-1 pb-6 pt-14 -mb-3">
+    <section id="chat-stream" aria-live="polite" class="chat-scroll min-h-0 overflow-y-auto flex-1 space-y-3 pr-1 pb-6 pt-14 -mb-3">
       
     </section>
 
@@ -119,7 +119,7 @@ export const chatPageTemplate = `
 
   <aside
     id="panel-right"
-    class="page-aside glass-panel pt-10 2xl:pt-3 !backdrop-blur-none 2xl:backdrop-blur-md fixed inset-y-0 right-0 z-10 flex w-[86vw] max-w-[360px] translate-x-[112%] flex-col p-3 opacity-0 pointer-events-none transition-transform duration-300 2xl:relative 2xl:z-10 2xl:h-full 2xl:min-h-0 2xl:translate-x-0 2xl:opacity-100 2xl:pointer-events-auto"
+    class="page-aside glass-panel mt-[2.5rem] 2xl:mt-0 pt-3 !backdrop-blur-none 2xl:backdrop-blur-md fixed inset-y-0 right-0 z-10 flex w-[86vw] max-w-[360px] translate-x-[112%] flex-col p-3 opacity-0 pointer-events-none transition-transform duration-300 2xl:relative 2xl:z-10 2xl:h-full 2xl:min-h-0 2xl:translate-x-0 2xl:opacity-100 2xl:pointer-events-auto"
   >
     <div class="mb-3 flex items-center justify-between rounded-3xl bg-zinc-800/75 px-3 py-2">
       <h2 class="text-sm font-semibold">Инспектор</h2>

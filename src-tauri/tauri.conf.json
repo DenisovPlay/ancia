@@ -10,6 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "label": "main",
@@ -23,12 +24,30 @@
         "fullscreen": false,
         "decorations": true,
         "hiddenTitle": true,
+        "visible": false,
         "titleBarStyle": "Overlay",
         "backgroundColor": "#090512",
         "trafficLightPosition": {
           "x": 16,
           "y": 18
         }
+      },
+      {
+        "label": "splash",
+        "title": "Ancia Local",
+        "url": "splash.html",
+        "width": 360,
+        "height": 220,
+        "center": true,
+        "resizable": false,
+        "fullscreen": false,
+        "decorations": false,
+        "transparent": true,
+        "shadow": true,
+        "backgroundColor": "#050816",
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": true
       }
     ],
     "security": {
@@ -44,6 +63,8 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": ["bin/*"]
+    "resources": [
+      "bin/*"
+    ]
   }
 }

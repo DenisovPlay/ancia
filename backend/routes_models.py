@@ -15,8 +15,38 @@ def register_model_routes(
   *,
   model_engine: Any,
   tool_registry: Any,
+  plugin_manager: Any | None = None,
   get_autonomous_mode: Callable[[], bool] | None = None,
 ) -> None:
+  def resolve_context_guard_active_tools() -> set[str]:
+    autonomous_mode = bool(get_autonomous_mode()) if callable(get_autonomous_mode) else False
+    if plugin_manager is not None and hasattr(plugin_manager, "resolve_active_tools"):
+      active_tools = plugin_manager.resolve_active_tools(autonomous_mode=autonomous_mode)
+    else:
+      listed_tools = tool_registry.list_tools() if hasattr(tool_registry, "list_tools") else []
+      active_tools = {
+        str(item.get("name") or "").strip().lower()
+        for item in listed_tools
+        if isinstance(item, dict) and str(item.get("name") or "").strip()
+      }
+    if hasattr(tool_registry, "has_tool"):
+      active_tools = {tool for tool in active_tools if tool_registry.has_tool(tool)}
+    return active_tools
+
+  def build_context_window_requirements_payload() -> dict[str, Any]:
+    if not hasattr(model_engine, "get_context_window_requirements"):
+      return {}
+    active_tools = resolve_context_guard_active_tools()
+    tool_definitions = (
+      tool_registry.build_tool_definition_map(active_tools)
+      if hasattr(tool_registry, "build_tool_definition_map")
+      else {}
+    )
+    return model_engine.get_context_window_requirements(
+      active_tools=active_tools,
+      tool_definitions=tool_definitions,
+    )
+
   def build_models_payload() -> dict[str, Any]:
     startup = model_engine.get_startup_snapshot()
     runtime = model_engine.get_runtime_snapshot()
@@ -38,12 +68,15 @@ def register_model_routes(
         "error": 100,
         "unloaded": 0,
       }.get(stage, 0)
+    context_requirements = build_context_window_requirements_payload()
     return {
       "selected_model": model_engine.get_selected_model_id(),
       "loaded_model": model_engine.get_loaded_model_id(),
+      "models_dir": str(runtime.get("models_dir") or ""),
       "startup": startup,
       "runtime": runtime,
       "startup_progress_percent": max(0, min(100, int(progress_percent or 0))),
+      "context_window_requirements": context_requirements,
       "models": model_engine.list_models_catalog(),
       "installed_models": cache_map,
     }
@@ -121,6 +154,26 @@ def register_model_routes(
     if not requested:
       raise HTTPException(status_code=400, detail="No model params provided")
 
+    context_limits: dict[str, Any] = {}
+    requested_context_window = requested.get("context_window")
+    if requested_context_window is not None:
+      context_limits = build_context_window_requirements_payload()
+      minimum_context_window = int(context_limits.get("min_context_window") or 0)
+      if int(requested_context_window) < minimum_context_window:
+        raise HTTPException(
+          status_code=400,
+          detail={
+            "code": "context_window_too_small",
+            "message": (
+              "Слишком маленький context_window: он должен быть не меньше системного промпта "
+              "и бюджета истории сообщений."
+            ),
+            "requested_context_window": int(requested_context_window),
+            "minimum_context_window": minimum_context_window,
+            "requirements": context_limits,
+          },
+        )
+
     model_item = next((item for item in model_engine.list_models_catalog() if str(item.get("id")) == safe_model_id), None)
     tier_hint = str(model_item.get("recommended_tier") or "compact") if model_item else "compact"
     try:
@@ -135,7 +188,33 @@ def register_model_routes(
       "ok": True,
       "model_id": safe_model_id,
       "params": params,
+      "context_window_requirements": context_limits,
       "models_payload": build_models_payload(),
+    }
+
+  @app.get("/models/context-requirements")
+  def get_context_requirements(model_id: str | None = None) -> dict[str, Any]:
+    selected_model_id = str(model_engine.get_selected_model_id() or "").strip().lower()
+    safe_model_id = str(model_id or "").strip().lower()
+    target_model_id = safe_model_id or selected_model_id
+    if not target_model_id:
+      raise HTTPException(status_code=400, detail="model_id is required")
+
+    model_item = next((item for item in model_engine.list_models_catalog() if str(item.get("id") or "").strip().lower() == target_model_id), None)
+    if model_item is None:
+      raise HTTPException(status_code=400, detail="Unsupported model id")
+    tier_hint = str(model_item.get("recommended_tier") or "compact")
+
+    context_limits = build_context_window_requirements_payload()
+    params = model_engine.get_model_params(target_model_id, tier_key=tier_hint)
+    return {
+      "ok": True,
+      "model_id": target_model_id,
+      "selected_model_id": selected_model_id,
+      "loaded_model_id": str(model_engine.get_loaded_model_id() or "").strip().lower(),
+      "recommended_tier": tier_hint,
+      "params": params,
+      "context_window_requirements": context_limits,
     }
 
   @app.get("/tools")

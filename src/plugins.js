@@ -12,6 +12,7 @@ export function createPluginsFeature({
   elements,
   pushToast,
   backendClient,
+  syncPluginUiExtensions,
 }) {
   const pluginFilterButtons = [...document.querySelectorAll("[data-plugin-filter]")];
   const pluginGrid = document.querySelector("#plugins-grid");
@@ -148,6 +149,10 @@ export function createPluginsFeature({
 
       if (autonomousMode) {
         activePluginFilter = "installed";
+      }
+
+      if (typeof syncPluginUiExtensions === "function") {
+        await syncPluginUiExtensions();
       }
     } catch (error) {
       pushToast(`Не удалось получить плагины с сервера: ${error.message}`, {

@@ -4,6 +4,18 @@ import { ASSISTANT_PENDING_LABEL, ROLE_STYLE_MAP, getClockTime } from "./constan
 export function createMessageContentRenderer() {
   const mathTypesetDebounceByNode = new WeakMap();
 
+  function normalizeStreamMode() {
+    return "";
+  }
+
+  function applyMetaStreamMode(metaNode) {
+    if (!(metaNode instanceof HTMLElement)) {
+      return;
+    }
+    delete metaNode.dataset.streamMode;
+    delete metaNode.dataset.streamLabel;
+  }
+
   function scheduleMathTypeset(container) {
     if (!(container instanceof HTMLElement)) {
       return;
@@ -74,6 +86,7 @@ export function createMessageContentRenderer() {
     timestamp = new Date(),
     pending = false,
     pendingLabel = ASSISTANT_PENDING_LABEL,
+    streamMode = "",
   } = {}) {
     if (!(wrapper instanceof HTMLElement)) {
       return;
@@ -100,9 +113,11 @@ export function createMessageContentRenderer() {
       if (!metaText) {
         metaNode.classList.add("hidden");
         metaNode.textContent = "";
+        applyMetaStreamMode(metaNode, "");
       } else {
         metaNode.classList.remove("hidden");
         metaNode.textContent = metaText;
+        applyMetaStreamMode(metaNode, pending ? "" : streamMode);
       }
     }
   }
@@ -111,6 +126,8 @@ export function createMessageContentRenderer() {
     renderMessageBody,
     renderPendingMessageBody,
     resolveMessageMeta,
+    normalizeStreamMode,
+    applyMetaStreamMode,
     updateMessageRowContent,
   };
 }

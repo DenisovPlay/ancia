@@ -85,6 +85,7 @@ export function createChatToolCatalog({
           subtitle: String(item.subtitle || "").trim(),
           category,
           iconKey,
+          pluginId: String(item.plugin_id || item.pluginId || "").trim().toLowerCase(),
         });
         toolNameByDisplayName.set(displayName.toLowerCase(), name);
       });

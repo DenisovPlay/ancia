@@ -23,6 +23,7 @@ export function createOnboardingController({
   let isBound = false;
   let onboardingStepIndex = 0;
   let onboardingIsOpen = false;
+  let onboardingHideTimeoutId = null;
   let onboardingState = loadOnboardingState();
 
   const resolveStepCount = () => Math.max(1, onboardingStepPanels.length || ONBOARDING_STEPS_COUNT);
@@ -179,11 +180,16 @@ export function createOnboardingController({
     if (!elements.onboardingOverlay || !elements.onboardingForm) {
       return;
     }
+    if (onboardingHideTimeoutId !== null) {
+      window.clearTimeout(onboardingHideTimeoutId);
+      onboardingHideTimeoutId = null;
+    }
     getChatFeature()?.closeContextMenu();
     hydrateForm();
     setStep(0, { animate: false });
     closeAllMobilePanels();
     onboardingIsOpen = true;
+    elements.onboardingOverlay.hidden = false;
     elements.onboardingOverlay.classList.add("is-open");
     elements.onboardingOverlay.setAttribute("aria-hidden", "false");
     document.body.classList.add("onboarding-open");
@@ -203,6 +209,15 @@ export function createOnboardingController({
     elements.onboardingOverlay.classList.remove("is-open");
     elements.onboardingOverlay.setAttribute("aria-hidden", "true");
     document.body.classList.remove("onboarding-open");
+    if (onboardingHideTimeoutId !== null) {
+      window.clearTimeout(onboardingHideTimeoutId);
+    }
+    onboardingHideTimeoutId = window.setTimeout(() => {
+      if (!onboardingIsOpen && elements.onboardingOverlay) {
+        elements.onboardingOverlay.hidden = true;
+      }
+      onboardingHideTimeoutId = null;
+    }, 280);
   }
 
   function finishOnboarding({ skipped = false } = {}) {
@@ -256,13 +271,35 @@ export function createOnboardingController({
     if (!payload || typeof payload !== "object") {
       return;
     }
-    onboardingState = {
+    const incomingState = {
       version: Number(payload.version) || ONBOARDING_VERSION,
       completed: Boolean(payload.completed),
       skipped: Boolean(payload.skipped),
       completedAt: String(payload.completedAt || ""),
       data: typeof payload.data === "object" && payload.data ? payload.data : {},
     };
+    incomingState.version = Math.max(
+      ONBOARDING_VERSION,
+      Number(onboardingState.version) || 0,
+      Number(incomingState.version) || 0,
+    );
+
+    // Никогда не откатываем completed=true назад в false из-за
+    // временно устаревшего/пустого состояния на стороне backend.
+    if (onboardingState.completed && !incomingState.completed) {
+      incomingState.completed = true;
+      incomingState.skipped = Boolean(onboardingState.skipped);
+      incomingState.completedAt = String(onboardingState.completedAt || incomingState.completedAt || "");
+      if (!incomingState.data || Object.keys(incomingState.data).length === 0) {
+        incomingState.data = (
+          onboardingState.data && typeof onboardingState.data === "object"
+            ? { ...onboardingState.data }
+            : {}
+        );
+      }
+    }
+
+    onboardingState = incomingState;
     persistOnboardingState(onboardingState);
   }
 

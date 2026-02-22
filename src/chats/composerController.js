@@ -35,12 +35,37 @@ export function createChatComposerController({
     elements,
     pushToast,
     getModelId: () => runtimeConfig.modelId,
+    getModelSupportsVision: () => Boolean(runtimeConfig.modelSupportsVision),
+    resolveCurrentModelSupportsVision: async () => {
+      try {
+        const payload = await backendClient.listModels();
+        if (!payload || typeof payload !== "object") {
+          return Boolean(runtimeConfig.modelSupportsVision);
+        }
+        const runtimeVisionAvailable = payload?.runtime
+          && typeof payload.runtime.vision_runtime_available === "boolean"
+          ? Boolean(payload.runtime.vision_runtime_available)
+          : null;
+        if (runtimeVisionAvailable === false) {
+          return false;
+        }
+        const selectedModelId = String(payload.selected_model || runtimeConfig.modelId || "").trim().toLowerCase();
+        const models = Array.isArray(payload.models) ? payload.models : [];
+        const selectedModel = models.find((item) => String(item?.id || "").trim().toLowerCase() === selectedModelId);
+        if (selectedModel && typeof selectedModel.supports_vision === "boolean") {
+          return Boolean(selectedModel.supports_vision);
+        }
+      } catch {
+        // ignore and fallback to runtimeConfig
+      }
+      return Boolean(runtimeConfig.modelSupportsVision);
+    },
     onChange: () => {
       syncState();
     },
     maxComposerAttachments: 10,
     maxAttachmentTextChars: 8000,
-    maxImageDataUrlChars: 140000,
+    maxImageDataUrlChars: 2_000_000,
   });
 
   const generationController = createComposerGenerationController({

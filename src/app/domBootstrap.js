@@ -28,6 +28,8 @@ export function collectDomNodes() {
   const elements = {
     preloader: document.querySelector("#app-preloader"),
     preloaderLabel: document.querySelector("#app-preloader .app-preloader__label"),
+    preloaderProgress: document.querySelector("#app-preloader-progress"),
+    preloaderRetry: document.querySelector("#app-preloader-retry"),
     contextMenu: document.querySelector("#context-menu"),
     actionDialogOverlay: document.querySelector("#action-dialog-overlay"),
     actionDialog: document.querySelector("#action-dialog"),
@@ -181,5 +183,11 @@ export function createRouteHelpers(validRoutes) {
 export function applyPlatformMarker(userAgent = navigator.userAgent) {
   if (/Mac|iPhone|iPad/.test(userAgent)) {
     document.body.dataset.os = "macos";
+    return;
   }
+  if (/Windows/i.test(userAgent)) {
+    document.body.dataset.os = "windows";
+    return;
+  }
+  document.body.dataset.os = "other";
 }

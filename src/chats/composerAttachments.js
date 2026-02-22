@@ -1,5 +1,18 @@
 import { icon } from "../ui/icons.js";
 import { normalizeTextInput } from "../ui/messageFormatter.js";
+import {
+  isImageAttachment,
+  normalizeAttachment,
+} from "./attachmentUtils.js";
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
 
 function classifyAttachmentKind(file) {
   const name = String(file?.name || "").toLowerCase();
@@ -36,12 +49,63 @@ export function createComposerAttachmentsManager({
   elements,
   pushToast,
   getModelId,
+  getModelSupportsVision,
+  resolveCurrentModelSupportsVision,
   onChange,
   maxComposerAttachments = 10,
   maxAttachmentTextChars = 8000,
-  maxImageDataUrlChars = 140000,
+  maxImageDataUrlChars = 2_000_000,
 }) {
   let attachments = [];
+  let visionSupportCache = {
+    modelId: "",
+    value: null,
+  };
+
+  function guessVisionSupportByModelId(modelId) {
+    const normalized = String(modelId || "").trim().toLowerCase();
+    if (!normalized) {
+      return null;
+    }
+    return /(?:^|[-_/])(vl|vision|llava|idefics|pixtral|moondream|minicpm-v)/i.test(normalized);
+  }
+
+  async function resolveVisionSupport() {
+    const currentModelId = String(getModelId?.() || "").trim().toLowerCase();
+    if (currentModelId && visionSupportCache.modelId === currentModelId && typeof visionSupportCache.value === "boolean") {
+      return visionSupportCache.value;
+    }
+
+    let resolved = null;
+    if (typeof resolveCurrentModelSupportsVision === "function") {
+      try {
+        const value = await resolveCurrentModelSupportsVision();
+        if (typeof value === "boolean") {
+          resolved = value;
+        }
+      } catch {
+        resolved = null;
+      }
+    }
+
+    if (resolved == null && typeof getModelSupportsVision === "function") {
+      const value = getModelSupportsVision();
+      if (typeof value === "boolean") {
+        resolved = value;
+      }
+    }
+
+    if (resolved == null) {
+      resolved = guessVisionSupportByModelId(currentModelId);
+    }
+
+    const safeResolved = Boolean(resolved);
+    visionSupportCache = {
+      modelId: currentModelId,
+      value: safeResolved,
+    };
+    return safeResolved;
+  }
 
   async function buildComposerAttachment(file) {
     const kind = classifyAttachmentKind(file);
@@ -53,6 +117,7 @@ export function createComposerAttachmentsManager({
       size: Number(file?.size || 0),
       textContent: "",
       dataUrl: "",
+      error: "",
     };
 
     if (kind === "text") {
@@ -65,8 +130,16 @@ export function createComposerAttachmentsManager({
     } else if (kind === "image") {
       try {
         const dataUrl = await readFileAsDataUrl(file);
-        attachment.dataUrl = String(dataUrl || "").slice(0, maxImageDataUrlChars);
+        const safeDataUrl = String(dataUrl || "");
+        if (!safeDataUrl.startsWith("data:image/")) {
+          attachment.error = "image_invalid";
+        } else if (safeDataUrl.length > maxImageDataUrlChars) {
+          attachment.error = "image_too_large";
+        } else {
+          attachment.dataUrl = safeDataUrl;
+        }
       } catch {
+        attachment.error = "image_read_failed";
         attachment.dataUrl = "";
       }
     }
@@ -86,22 +159,29 @@ export function createComposerAttachmentsManager({
     elements.composerAttachmentsList.classList.remove("hidden");
     elements.composerAttachmentsList.innerHTML = attachments
       .map((item) => {
-        const label = String(item?.name || "file");
-        const kind = String(item?.kind || "file");
+        const normalized = normalizeAttachment(item);
+        const label = escapeHtml(normalized.name);
+        const hasPreviewImage = isImageAttachment(normalized) && String(normalized.dataUrl || "").startsWith("data:image/");
         return `
-          <span class="inline-flex items-center gap-2 rounded-full border border-zinc-600/30 bg-zinc-800/70 px-3 py-1 text-xs text-zinc-200">
-            <span>${label}</span>
-            <span class="text-zinc-400">${kind}</span>
+          <div class="composer-attachment-card">
+            <div class="composer-attachment-card__preview">
+              ${hasPreviewImage
+                ? `<img src="${normalized.dataUrl}" alt="${label}" class="composer-attachment-card__image" loading="lazy" />`
+                : `<span class="composer-attachment-card__icon">${icon("attach")}</span>`}
+            </div>
+            <div class="composer-attachment-card__content">
+              <p class="composer-attachment-card__name" title="${label}">${label}</p>
+            </div>
             <button
               type="button"
-              data-attachment-remove="${item.id}"
-              class="icon-button h-5 w-5 rounded-full border border-zinc-600/40 bg-zinc-900/70 text-zinc-300 hover:bg-zinc-700/80"
+              data-attachment-remove="${normalized.id}"
+              class="composer-attachment-card__remove icon-button"
               aria-label="Удалить вложение"
               title="Удалить вложение"
             >
               ${icon("x-mark")}
             </button>
-          </span>
+          </div>
         `;
       })
       .join("");
@@ -122,10 +202,28 @@ export function createComposerAttachmentsManager({
     }
 
     let warnedAboutVision = false;
+    const supportsVision = await resolveVisionSupport();
+    const imageSizeHintBytes = Math.max(64 * 1024, Math.floor((maxImageDataUrlChars - 512) * 0.74));
     for (const file of selected) {
       const item = await buildComposerAttachment(file);
-      attachments.push(item);
-      if (!warnedAboutVision && item.kind === "image" && !/qwen3-vl/i.test(String(getModelId?.() || ""))) {
+      if (item.kind === "image" && !String(item.dataUrl || "").startsWith("data:image/")) {
+        const errorCode = String(item.error || "").trim().toLowerCase();
+        if (errorCode === "image_too_large") {
+          const maxMbLabel = (imageSizeHintBytes / (1024 * 1024)).toFixed(2);
+          pushToast?.(`Фото слишком большое для анализа (лимит примерно ${maxMbLabel} MB).`, {
+            tone: "warning",
+            durationMs: 3600,
+          });
+        } else {
+          pushToast?.("Не удалось прочитать изображение для анализа.", {
+            tone: "warning",
+            durationMs: 3200,
+          });
+        }
+        continue;
+      }
+      attachments.push(normalizeAttachment(item));
+      if (!warnedAboutVision && item.kind === "image" && !supportsVision) {
         warnedAboutVision = true;
         pushToast?.("Текущая модель может не анализировать изображения. Для фото лучше выбрать vision-модель.", {
           tone: "warning",

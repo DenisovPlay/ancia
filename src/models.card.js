@@ -19,6 +19,11 @@ export function normalizeModelCardPayload(rawModel) {
   }
   const cache = rawModel.cache && typeof rawModel.cache === "object" ? rawModel.cache : {};
   const compatibility = rawModel.compatibility && typeof rawModel.compatibility === "object" ? rawModel.compatibility : {};
+  const rawParams = rawModel.params && typeof rawModel.params === "object" ? rawModel.params : {};
+  const asNumberOrNull = (value) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
   return {
     id,
     label: String(rawModel.label || id).trim(),
@@ -42,6 +47,13 @@ export function normalizeModelCardPayload(rawModel) {
       compatible: compatibility.compatible !== false,
       level: String(compatibility.level || "ok").trim().toLowerCase(),
       reason: String(compatibility.reason || "").trim(),
+    },
+    params: {
+      context_window: asNumberOrNull(rawParams.context_window),
+      max_tokens: asNumberOrNull(rawParams.max_tokens),
+      temperature: asNumberOrNull(rawParams.temperature),
+      top_p: asNumberOrNull(rawParams.top_p),
+      top_k: asNumberOrNull(rawParams.top_k),
     },
   };
 }
@@ -131,7 +143,7 @@ export function renderModelCard(model) {
 
   return `
     <article
-      class="plugin-card rounded-3xl border ${cardBorder} p-3 flex flex-col gap-0 transition"
+      class="plugin-card rounded-3xl border ${cardBorder} p-3 flex flex-col h-full gap-0 transition"
       data-model-card
       data-model-id="${escapeHtml(model.id)}"
       data-model-source="${escapeHtml(model.source)}"
@@ -149,7 +161,7 @@ export function renderModelCard(model) {
       ${model.description ? `<p class="mt-2 text-xs leading-5 text-zinc-300 line-clamp-3">${escapeHtml(model.description)}</p>` : ""}
 
       <p class="mt-1.5 text-[11px] ${compatClass}">${escapeHtml(compatText)}</p>
-
+      <div class="flex-grow flex-shrink-0"></div>
       <div class="mt-2 flex flex-wrap items-center gap-1.5 text-[10px] text-zinc-500">
         <span class="rounded-full border border-zinc-700/40 px-2 py-0.5">${escapeHtml(humanSource(model.source))}</span>
         ${capTagsHtml}

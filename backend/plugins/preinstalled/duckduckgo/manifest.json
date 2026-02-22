@@ -1,0 +1,94 @@
+{
+  "id": "duckduckgo",
+  "name": "Web Search (DuckDuckGo)",
+  "subtitle": "Веб-поиск по интернету",
+  "description": "Веб-поиск через DuckDuckGo для актуальных фактов и ссылок.",
+  "homepage": "https://lmstudio.ai/danielsig/duckduckgo",
+  "manifest_url": "https://raw.githubusercontent.com/DenisovPlay/ancia-plugins/main/plugins/duckduckgo/manifest.json",
+  "repo_url": "https://github.com/DenisovPlay/ancia-plugins",
+  "package_url": "https://raw.githubusercontent.com/DenisovPlay/ancia-plugins/main/packages/duckduckgo-1.0.0.zip",
+  "source": "preinstalled",
+  "preinstalled": true,
+  "enabled": true,
+  "tools": [
+    {
+      "name": "web.search.duckduckgo",
+      "description": "Веб-поиск через DuckDuckGo для актуальных фактов и ссылок.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Поисковый запрос"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Максимум результатов (1–10)",
+            "default": 5
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "additionalProperties": false
+      },
+      "runtime_meta": {
+        "display_name": "Web Search (DuckDuckGo)",
+        "subtitle": "Веб-поиск по интернету",
+        "category": "web",
+        "keywords": [
+          "duckduckgo",
+          "search",
+          "web",
+          "поиск",
+          "интернет",
+          "новости",
+          "факты"
+        ],
+        "requires_network": true,
+        "aliases": [
+          "web.search",
+          "web.search.duckgo",
+          "duckduckgo.search",
+          "duckgo.search"
+        ],
+        "prompt": "Используй для поиска актуальной информации в интернете, когда нужны свежие факты и ссылки."
+      },
+      "handler": {
+        "type": "python",
+        "module_file": "plugin.py",
+        "callable": "handle"
+      },
+      "llm_schema": {}
+    }
+  ],
+  "ui_extensions": [
+    {
+      "type": "style",
+      "path": "ui/tool-ui.css",
+      "url": "",
+      "load": "style"
+    },
+    {
+      "type": "script",
+      "path": "ui/tool-ui.js",
+      "url": "",
+      "load": "script"
+    }
+  ],
+  "version": "1.0.0",
+  "category": "web",
+  "keywords": [
+    "duckduckgo",
+    "search",
+    "web",
+    "поиск",
+    "интернет",
+    "новости",
+    "факты"
+  ],
+  "locked": false,
+  "allow_update": true,
+  "requires_network": true,
+  "installed_at": "2026-02-22T19:07:53.228704+00:00"
+}

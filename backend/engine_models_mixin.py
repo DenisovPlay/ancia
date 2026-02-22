@@ -13,6 +13,15 @@ except ModuleNotFoundError:
 
 
 class EngineModelsMixin:
+  def _runtime_supports_vision(self) -> bool:
+    resolver = getattr(self, "_runtime_supports_vision_inputs", None)
+    if callable(resolver):
+      try:
+        return bool(resolver())
+      except Exception:
+        return False
+    return True
+
   def get_selected_tier(self) -> str:
     selected_model_id = self.get_selected_model_id()
     selected_model = get_model_entry(selected_model_id)
@@ -33,15 +42,41 @@ class EngineModelsMixin:
     with self._state_lock:
       pending_model_id = self._pending_model_id
       loaded_model_id = self._loaded_model_id
+    runtime_backend_kind = str(getattr(self, "_runtime_backend_kind", "") or "").strip().lower()
+    stream_source = ""
+    stream_available = False
+    generation_lock = getattr(self, "_generation_lock", None)
+    if generation_lock is not None:
+      with generation_lock:
+        if runtime_backend_kind == "mlx_vlm":
+          stream_available = bool(getattr(self, "_vlm_stream_generate_fn", None))
+          stream_source = "mlx_vlm.stream_generate"
+        else:
+          stream_available = bool(getattr(self, "_stream_generate_fn", None))
+          stream_source = "mlx_lm.stream_generate"
+    else:
+      if runtime_backend_kind == "mlx_vlm":
+        stream_available = bool(getattr(self, "_vlm_stream_generate_fn", None))
+        stream_source = "mlx_vlm.stream_generate"
+      else:
+        stream_available = bool(getattr(self, "_stream_generate_fn", None))
+        stream_source = "mlx_lm.stream_generate"
+
     startup = self.get_startup_snapshot()
     startup_details = startup.get("details") if isinstance(startup, dict) and isinstance(startup.get("details"), dict) else {}
     loading_model_id = normalize_model_id(startup_details.get("model_id"), "")
 
+    vision_runtime_available = self._runtime_supports_vision()
     return {
       "selected_model_id": self.get_selected_model_id(),
       "loaded_model_id": loaded_model_id,
       "loading_model_id": loading_model_id,
       "pending_model_id": pending_model_id,
+      "models_dir": str(getattr(self, "_models_dir", "") or ""),
+      "runtime_backend_kind": runtime_backend_kind,
+      "streaming_runtime_source": stream_source,
+      "streaming_runtime_available": stream_available,
+      "vision_runtime_available": vision_runtime_available,
       "generation_stop_requested": self._generation_stop_event.is_set(),
       "startup": startup,
       "memory": dict(self._memory_details or {}),
@@ -72,6 +107,8 @@ class EngineModelsMixin:
     entry = get_model_entry(model_id)
     if entry is None:
       return None
+    runtime_supports_vision = self._runtime_supports_vision()
+    catalog_supports_vision = bool(entry.supports_vision)
     return {
       "id": entry.id,
       "label": entry.label,
@@ -83,7 +120,8 @@ class EngineModelsMixin:
       "quantization": entry.quantization,
       "description": entry.description,
       "supports_tools": entry.supports_tools,
-      "supports_vision": entry.supports_vision,
+      "supports_vision": bool(catalog_supports_vision and runtime_supports_vision),
+      "supports_vision_catalog": catalog_supports_vision,
       "supports_documents": entry.supports_documents,
       "recommended_tier": entry.recommended_tier,
       "max_context": entry.max_context,
@@ -150,6 +188,7 @@ class EngineModelsMixin:
     startup = runtime.get("startup") if isinstance(runtime, dict) else {}
     startup_details = startup.get("details") if isinstance(startup, dict) and isinstance(startup.get("details"), dict) else {}
     startup_model_id = normalize_model_id(startup_details.get("model_id"), "")
+    runtime_supports_vision = self._runtime_supports_vision()
 
     payload: list[dict[str, Any]] = []
     for model in list_model_catalog_payload():
@@ -162,9 +201,12 @@ class EngineModelsMixin:
         "level": "ok",
         "reason": "",
       })
+      catalog_supports_vision = bool(model.get("supports_vision"))
       payload.append(
         {
           **model,
+          "supports_vision": bool(catalog_supports_vision and runtime_supports_vision),
+          "supports_vision_catalog": catalog_supports_vision,
           "params": params,
           "cache": model_cache,
           "compatibility": compatibility,
@@ -226,6 +268,7 @@ class EngineModelsMixin:
     active_tier = self.get_selected_tier()
     loaded_tier = self.get_loaded_tier()
     loaded_model_id = self.get_loaded_model_id()
+    runtime_supports_vision = self._runtime_supports_vision()
     result: list[dict[str, Any]] = []
     for key in ["compact", "balanced", "performance"]:
       tier = MODEL_TIERS[key]
@@ -243,7 +286,8 @@ class EngineModelsMixin:
           "model_label": model_entry.label if model_entry is not None else model_id,
           "model_loaded": tier.key == loaded_tier and model_id == loaded_model_id,
           "supports_tools": bool(model_entry and model_entry.supports_tools),
-          "supports_vision": bool(model_entry and model_entry.supports_vision),
+          "supports_vision": bool(model_entry and model_entry.supports_vision and runtime_supports_vision),
+          "supports_vision_catalog": bool(model_entry and model_entry.supports_vision),
           "supports_documents": bool(model_entry and model_entry.supports_documents),
           "repo": self.get_model_repo_for_tier(tier.key),
         }

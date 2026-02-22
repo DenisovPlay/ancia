@@ -2,6 +2,10 @@ import { normalizeTextInput } from "../ui/messageFormatter.js";
 import { ASSISTANT_PENDING_LABEL, ROLE_STYLE_MAP } from "./messageUiCore/constants.js";
 import { createMessageContentRenderer } from "./messageUiCore/contentRenderer.js";
 import { createToolRenderer } from "./messageUiCore/toolRenderer.js";
+import {
+  isImageAttachment,
+  normalizeAttachment,
+} from "./attachmentUtils.js";
 
 export { ASSISTANT_PENDING_LABEL };
 
@@ -12,11 +16,14 @@ export function createChatMessageUi({
   getActiveChatSessionId,
   normalizeToolName: normalizeToolNameExternal,
   lookupToolMeta,
+  getPluginToolRenderer,
 }) {
   const {
     renderMessageBody,
     renderPendingMessageBody,
     resolveMessageMeta,
+    normalizeStreamMode,
+    applyMetaStreamMode,
     updateMessageRowContent,
   } = createMessageContentRenderer();
   const {
@@ -28,8 +35,54 @@ export function createChatMessageUi({
   } = createToolRenderer({
     normalizeToolName: normalizeToolNameExternal,
     lookupToolMeta,
+    getPluginToolRenderer,
     renderMessageBody,
   });
+
+  function buildAttachmentListNode(items) {
+    if (!Array.isArray(items) || items.length === 0) {
+      return null;
+    }
+    const container = document.createElement("div");
+    container.className = "message-attachments";
+    container.setAttribute("data-message-attachments", "true");
+
+    for (const item of items) {
+      const card = document.createElement("section");
+      card.className = "message-attachment";
+
+      const preview = document.createElement("div");
+      preview.className = "message-attachment__preview";
+      if (isImageAttachment(item) && String(item.dataUrl || "").startsWith("data:image/")) {
+        const image = document.createElement("img");
+        image.className = "message-attachment__image";
+        image.src = item.dataUrl;
+        image.alt = item.name || "image";
+        image.loading = "lazy";
+        preview.append(image);
+      } else {
+        const fallback = document.createElement("span");
+        fallback.className = "message-attachment__badge";
+        const nameParts = String(item.name || "").split(".");
+        fallback.textContent = (nameParts.length > 1 ? nameParts.pop()?.slice(0, 4) : item.kind || "") || "file";
+        preview.append(fallback);
+      }
+
+      const content = document.createElement("div");
+      content.className = "message-attachment__content";
+
+      const title = document.createElement("p");
+      title.className = "message-attachment__name";
+      title.textContent = item.name || "file";
+
+      content.append(title);
+
+      card.append(preview, content);
+      container.append(card);
+    }
+
+    return container;
+  }
 
   function appendMessage(role, text, metaSuffix = "", options = {}) {
     if (!elements?.chatStream) {
@@ -55,6 +108,14 @@ export function createChatMessageUi({
     const pending = Boolean(options?.pending && resolvedRole === "assistant");
     const pendingLabel = String(options?.pendingLabel || ASSISTANT_PENDING_LABEL);
     const roleStyle = ROLE_STYLE_MAP[resolvedRole] || ROLE_STYLE_MAP.assistant;
+    const safeMeta = options?.meta && typeof options.meta === "object" && !Array.isArray(options.meta)
+      ? { ...options.meta }
+      : {};
+    const streamMode = normalizeStreamMode(options?.streamMode || safeMeta?.stream?.mode || "");
+    const rawAttachments = Array.isArray(safeMeta.attachments) ? safeMeta.attachments : [];
+    const messageAttachments = rawAttachments
+      .map((item, index) => normalizeAttachment(item, index))
+      .filter((item) => item.name || item.id);
     let messageId = String(options?.messageId || "").trim();
 
     const wrapper = document.createElement("article");
@@ -120,7 +181,10 @@ export function createChatMessageUi({
         body.setAttribute("data-pending", "true");
         renderPendingMessageBody(body, pendingLabel);
       } else {
-        renderMessageBody(body, text);
+        const displayText = (resolvedRole === "user" && messageAttachments.length > 0)
+          ? text.replace(/\n*вложения:\n[\s\S]*/i, "").trimEnd()
+          : text;
+        renderMessageBody(body, displayText);
       }
 
       const meta = document.createElement("p");
@@ -132,9 +196,23 @@ export function createChatMessageUi({
       } else {
         meta.textContent = metaText;
       }
+      applyMetaStreamMode(meta, resolvedRole === "assistant" && !pending ? streamMode : "");
 
       card.append(body, meta);
-      wrapper.append(card);
+
+      if (resolvedRole === "user" && messageAttachments.length > 0) {
+        const attachmentsList = buildAttachmentListNode(messageAttachments);
+        if (attachmentsList) {
+          const group = document.createElement("div");
+          group.className = "message-attach-group";
+          group.append(attachmentsList, card);
+          wrapper.append(group);
+        } else {
+          wrapper.append(card);
+        }
+      } else {
+        wrapper.append(card);
+      }
     }
 
     elements.chatStream.appendChild(wrapper);
@@ -151,6 +229,7 @@ export function createChatMessageUi({
         role: wrapper.dataset.role,
         text,
         metaSuffix,
+        meta: safeMeta,
         timestamp: safeTimestamp.toISOString(),
       });
       messageId = persisted?.id || messageId;

@@ -68,6 +68,7 @@ export function createChatStreamRenderer({
           autoScroll: false,
           timestamp: message.timestamp,
           messageId: message.id,
+          meta: message.meta && typeof message.meta === "object" ? message.meta : {},
           toolPayload: storedToolPayload || undefined,
           toolPhase: "result",
         });

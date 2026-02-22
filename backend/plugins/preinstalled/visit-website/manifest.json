@@ -1,0 +1,97 @@
+{
+  "id": "visit-website",
+  "name": "Visit Website",
+  "subtitle": "Чтение содержимого страниц",
+  "description": "Открывает URL и извлекает содержимое страницы.",
+  "homepage": "https://lmstudio.ai/danielsig/visit-website",
+  "manifest_url": "https://raw.githubusercontent.com/DenisovPlay/ancia-plugins/main/plugins/visit-website/manifest.json",
+  "repo_url": "https://github.com/DenisovPlay/ancia-plugins",
+  "package_url": "https://raw.githubusercontent.com/DenisovPlay/ancia-plugins/main/packages/visit-website-1.0.0.zip",
+  "source": "preinstalled",
+  "preinstalled": true,
+  "enabled": true,
+  "tools": [
+    {
+      "name": "web.visit.website",
+      "description": "Открывает URL и извлекает содержимое страницы.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "URL страницы"
+          },
+          "max_chars": {
+            "type": "integer",
+            "description": "Лимит символов контента",
+            "default": 6000
+          },
+          "max_links": {
+            "type": "integer",
+            "description": "Лимит ссылок",
+            "default": 20
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "additionalProperties": false
+      },
+      "runtime_meta": {
+        "display_name": "Visit Website",
+        "subtitle": "Чтение содержимого страниц",
+        "category": "web",
+        "keywords": [
+          "visit",
+          "website",
+          "url",
+          "страница",
+          "сайт",
+          "контент",
+          "браузинг"
+        ],
+        "requires_network": true,
+        "aliases": [
+          "web.visit",
+          "visit.website"
+        ],
+        "prompt": "Используй, когда нужно открыть конкретный URL и извлечь содержимое страницы."
+      },
+      "handler": {
+        "type": "python",
+        "module_file": "plugin.py",
+        "callable": "handle"
+      },
+      "llm_schema": {}
+    }
+  ],
+  "ui_extensions": [
+    {
+      "type": "style",
+      "path": "ui/tool-ui.css",
+      "url": "",
+      "load": "style"
+    },
+    {
+      "type": "script",
+      "path": "ui/tool-ui.js",
+      "url": "",
+      "load": "script"
+    }
+  ],
+  "version": "1.0.0",
+  "category": "web",
+  "keywords": [
+    "visit",
+    "website",
+    "url",
+    "страница",
+    "сайт",
+    "контент",
+    "браузинг"
+  ],
+  "locked": false,
+  "allow_update": true,
+  "requires_network": true,
+  "installed_at": "2026-02-22T19:07:54.857129+00:00"
+}

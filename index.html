@@ -21,14 +21,17 @@
 
       #app-preloader {
         position: fixed;
-        inset: 2.5rem 0 0;
+        inset: 0;
         z-index: 9999;
         display: flex;
         flex-direction: column;
         align-items: center;
         justify-content: center;
-        gap: 10px;
-        background: radial-gradient(circle at 50% 36%, rgb(91 33 182 / 0.24) 0%, transparent 42%), #090512;
+        gap: 12px;
+        background:
+          radial-gradient(circle at 50% 28%, rgb(59 130 246 / 0.26) 0%, transparent 42%),
+          radial-gradient(circle at 24% 78%, rgb(16 185 129 / 0.16) 0%, transparent 34%),
+          #050816;
         opacity: 1;
         visibility: visible;
         transition: opacity 220ms ease, visibility 220ms ease;
@@ -40,14 +43,12 @@
         pointer-events: none;
       }
 
-      #app-preloader .app-preloader__orb {
-        width: 34px;
-        height: 34px;
-        border-radius: 999px;
-        border: 2px solid rgb(212 212 216 / 0.14);
-        border-top-color: rgb(244 244 245 / 0.9);
-        border-right-color: rgb(168 85 247 / 0.7);
-        animation: critical-loader-spin 760ms linear infinite;
+      #app-preloader .app-preloader__brand {
+        margin: 4px 0 2px;
+        font-size: 13px;
+        letter-spacing: 0.28em;
+        font-weight: 700;
+        color: rgb(238 242 255 / 0.92);
       }
 
       #app-preloader .app-preloader__label {
@@ -57,9 +58,45 @@
         color: rgb(212 212 216 / 0.82);
       }
 
+      #app-preloader .app-preloader__progress-track {
+        position: relative;
+        width: min(320px, 72vw);
+        height: 4px;
+        border-radius: 999px;
+        background: rgb(148 163 184 / 0.2);
+        overflow: hidden;
+      }
+
+      #app-preloader .app-preloader__progress-fill {
+        width: 34%;
+        height: 100%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, rgb(56 189 248 / 0.9), rgb(52 211 153 / 0.95));
+        transition: width 260ms cubic-bezier(0.22, 1, 0.36, 1);
+      }
+
+      #app-preloader .app-preloader__progress-fill[data-mode="indeterminate"] {
+        animation: critical-loader-indeterminate 1.15s ease-in-out infinite;
+      }
+
       @keyframes critical-loader-spin {
         to {
           transform: rotate(360deg);
+        }
+      }
+
+      @keyframes critical-loader-indeterminate {
+        0% {
+          width: 22%;
+          transform: translateX(-110%);
+        }
+        60% {
+          width: 56%;
+          transform: translateX(42%);
+        }
+        100% {
+          width: 28%;
+          transform: translateX(220%);
         }
       }
     </style>
@@ -68,11 +105,15 @@
     <canvas id="liquid-canvas" aria-hidden="true"></canvas>
     <div class="noise-layer" aria-hidden="true"></div>
     <div id="app-preloader" class="app-preloader" aria-live="polite">
-      <div class="app-preloader__orb" aria-hidden="true"></div>
+      <p class="app-preloader__brand" aria-hidden="true">ANCIA</p>
       <p class="app-preloader__label">Загрузка интерфейса...</p>
+      <div class="app-preloader__progress-track" aria-hidden="true">
+        <div id="app-preloader-progress" class="app-preloader__progress-fill" data-mode="indeterminate"></div>
+      </div>
+      <button id="app-preloader-retry" class="hidden mt-4 rounded border border-zinc-600/30 px-4 py-2 text-xs font-semibold text-zinc-100 hover:bg-zinc-800 transition">Повторить попытку</button>
     </div>
 
-    <div class="relative h-screen overflow-hidden">
+    <div id="app-shell" class="relative h-screen overflow-hidden">
       <header id="titlebar" data-tauri-drag-region class="glass-panel !bg-zinc-500/20 border-b border-zinc-600/30 drag-region mx-auto flex h-10 w-full max-w-[1780px] items-center px-3">
         <div class="titlebar-left flex min-w-0 items-center">
           <div class="min-w-0">
@@ -134,7 +175,7 @@
         </div>
       </section>
     </div>
-    <div id="onboarding-overlay" class="onboarding-overlay bg-black/50 backdrop-blur-2xl" aria-hidden="true">
+    <div id="onboarding-overlay" class="onboarding-overlay bg-black/50 backdrop-blur-2xl" aria-hidden="true" hidden>
       <section class="onboarding-shell" role="dialog" aria-modal="true" aria-labelledby="onboarding-title" aria-describedby="onboarding-subtitle">
         <form id="onboarding-form" class="flex w-full flex-col items-center justify-center gap-0">
 

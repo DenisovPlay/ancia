@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import base64
+import binascii
+import importlib.util
 import json
 import logging
+import mimetypes
 import os
 import platform
 import re
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -20,7 +25,6 @@ try:
     build_attachment_context as build_attachment_context_fn,
     build_generation_attempts as build_generation_attempts_fn,
     build_messages as build_messages_fn,
-    build_tool_schemas as build_tool_schemas_fn,
     convert_turns_for_compat as convert_turns_for_compat_fn,
     normalize_attachment_kind as normalize_attachment_kind_fn,
     render_prompt as render_prompt_fn,
@@ -68,14 +72,13 @@ try:
   )
   from backend.schemas import MODEL_TIERS, ChatRequest, RuntimeChatContext, ToolEvent
   from backend.storage import AppStorage
-  from backend.tooling import TOOL_SCHEMAS, ToolRegistry
+  from backend.tooling import ToolRegistry
 except ModuleNotFoundError:
   from common import normalize_mood, utc_now_iso  # type: ignore
   from engine_generation_prep import (  # type: ignore
     build_attachment_context as build_attachment_context_fn,
     build_generation_attempts as build_generation_attempts_fn,
     build_messages as build_messages_fn,
-    build_tool_schemas as build_tool_schemas_fn,
     convert_turns_for_compat as convert_turns_for_compat_fn,
     normalize_attachment_kind as normalize_attachment_kind_fn,
     render_prompt as render_prompt_fn,
@@ -126,9 +129,55 @@ except ModuleNotFoundError:
   )
   from schemas import MODEL_TIERS, ChatRequest, RuntimeChatContext, ToolEvent  # type: ignore
   from storage import AppStorage  # type: ignore
-  from tooling import TOOL_SCHEMAS, ToolRegistry  # type: ignore
+  from tooling import ToolRegistry  # type: ignore
 
 LOGGER = logging.getLogger("ancia.engine")
+
+IMAGE_ANALYSIS_INTENT_PATTERN = re.compile(
+  r"("
+  r"что\s+на\s+(фото|изображени[ияе]|картинк[аеуи])|"
+  r"что\s+видно\s+на\s+(фото|изображени[ияе]|картинк[аеуи])|"
+  r"опиши\s+(фото|изображени[ея]|картинк[ауе])|"
+  r"что\s+изображен[оа]?\s+на|"
+  r"analy[sz]e\s+(the\s+)?(image|photo|picture)|"
+  r"what(?:'s| is)\s+in\s+(the\s+)?(image|photo|picture)|"
+  r"describe\s+(the\s+)?(image|photo|picture)"
+  r")",
+  flags=re.IGNORECASE,
+)
+IMAGE_REFERENCE_PATTERN = re.compile(
+  r"("
+  r"фото|фотографи[яеию]|изображени[еяию]|картинк[аеуиой]|"
+  r"скриншот|скрин|"
+  r"image|photo|picture|screenshot"
+  r")",
+  flags=re.IGNORECASE,
+)
+EXPLICIT_WEB_INTENT_PATTERN = re.compile(
+  r"("
+  r"в\s+интернет[еау]|"
+  r"найд[ии]\s+в\s+интернет[еау]|"
+  r"поищи|поиск|"
+  r"search|google|duckduckgo|web|"
+  r"сайт|url|ссылк|источник|"
+  r"visit\s+website|open\s+url"
+  r")",
+  flags=re.IGNORECASE,
+)
+GENERIC_ATTACHMENT_PROMPTS = {
+  "",
+  "проанализируй вложения пользователя",
+  "проанализируй вложения пользователя.",
+}
+VISION_UNAVAILABLE_REPLY = (
+  "Я получил изображение, но текущий backend-рантайм сейчас работает в text-only режиме "
+  "и не может анализировать содержимое фото. "
+  "Поэтому я не буду выдумывать детали изображения.\n\n"
+  "Что можно сделать сейчас:\n"
+  "- установить и подключить multimodal runtime (например, пакет mlx-vlm);\n"
+  "- или описать изображение текстом, и я помогу по этому описанию."
+)
+MAX_IMAGE_DATA_URL_CHARS = 2_000_000
 
 
 class PythonModelEngine(EngineModelsMixin):
@@ -147,12 +196,16 @@ class PythonModelEngine(EngineModelsMixin):
   def __init__(self, storage: AppStorage, *, base_system_prompt: str) -> None:
     self._storage = storage
     self._base_system_prompt = base_system_prompt
+    project_models_dir = (Path(__file__).resolve().parent / "data" / "models").resolve()
     _models_dir = (
       Path(os.getenv("ANCIA_MODELS_DIR", "")).expanduser().resolve()
       if os.getenv("ANCIA_MODELS_DIR") else
-      Path.home() / ".cache" / "ancia"
+      project_models_dir
     )
+    _models_dir.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("HF_HOME", str(_models_dir))
+    os.environ.setdefault("HF_HUB_CACHE", str((_models_dir / "hub").resolve()))
+    self._models_dir = _models_dir
     self._startup = ModelStartupState()
     self._load_thread: threading.Thread | None = None
     self._state_lock = threading.Lock()
@@ -162,8 +215,15 @@ class PythonModelEngine(EngineModelsMixin):
     self._tokenizer: Any = None
     self._generate_fn: Callable[..., Any] | None = None
     self._stream_generate_fn: Callable[..., Any] | None = None
+    self._vlm_processor: Any = None
+    self._vlm_model_config: Any = None
+    self._vlm_generate_fn: Callable[..., Any] | None = None
+    self._vlm_stream_generate_fn: Callable[..., Any] | None = None
     self._make_sampler_fn: Callable[..., Any] | None = None
     self._make_logits_processors_fn: Callable[..., Any] | None = None
+    self._runtime_backend_kind = "mlx_lm"
+    self._vision_runtime_probe_failed = False
+    self._vision_runtime_error = ""
     self._memory_details: dict[str, Any] = {}
     self._loading_tier = ""
     self._pending_tier = ""
@@ -281,8 +341,12 @@ class PythonModelEngine(EngineModelsMixin):
       self._tokenizer = None
       self._generate_fn = None
       self._stream_generate_fn = None
+      self._vlm_processor = None
+      self._vlm_generate_fn = None
+      self._vlm_stream_generate_fn = None
       self._make_sampler_fn = None
       self._make_logits_processors_fn = None
+      self._runtime_backend_kind = "mlx_lm"
     with self._state_lock:
       self._loaded_tier = ""
       self._loaded_model_id = ""
@@ -444,7 +508,7 @@ class PythonModelEngine(EngineModelsMixin):
       self._startup.set(
         status="loading",
         stage="loading_model",
-        message=f"Загружаем модель {model_label} ({target_repo})...",
+        message=f"Загружаем {model_label}...",
         details={
           "progress_percent": STARTUP_STAGE_PROGRESS["loading_model"],
           **self._memory_details,
@@ -456,45 +520,122 @@ class PythonModelEngine(EngineModelsMixin):
         },
       )
 
-      from mlx_lm import generate as mlx_generate  # type: ignore
-      from mlx_lm import load as mlx_load  # type: ignore
-      from mlx_lm.sample_utils import make_logits_processors as mlx_make_logits_processors  # type: ignore
-      from mlx_lm.sample_utils import make_sampler as mlx_make_sampler  # type: ignore
-      try:
-        from mlx_lm import stream_generate as mlx_stream_generate  # type: ignore
-      except Exception:
-        try:
-          from mlx_lm.generate import stream_generate as mlx_stream_generate  # type: ignore
-        except Exception:
-          mlx_stream_generate = None
-
-      # mlx_lm.load() пишет прогресс в stdout — при запуске через Tauri pipe
-      # может закрыться и вызвать BrokenPipeError. Перенаправляем на devnull.
+      # mlx_lm.load()/mlx_vlm.load() пишут прогресс в stdout. При запуске через Tauri pipe
+      # stdout может быть закрыт и вызывать BrokenPipeError. Перенаправляем на devnull.
       import io as _io
-      _old_stdout, _old_stderr = sys.stdout, sys.stderr
-      try:
-        sys.stdout = _io.TextIOWrapper(_io.FileIO(os.devnull, "w"), errors="replace")
-        sys.stderr = _io.TextIOWrapper(_io.FileIO(os.devnull, "w"), errors="replace")
-        model, tokenizer = mlx_load(target_repo)
-      finally:
-        sys.stdout, sys.stderr = _old_stdout, _old_stderr
-      with self._generation_lock:
-        self._model = model
-        self._tokenizer = tokenizer
-        self._generate_fn = mlx_generate
-        self._stream_generate_fn = mlx_stream_generate
-        self._make_sampler_fn = mlx_make_sampler
-        self._make_logits_processors_fn = mlx_make_logits_processors
-        self.model_repo = target_repo
-        self.model_name = model_label
+
+      use_vlm_runtime = bool(
+        target_model_entry is not None
+        and bool(getattr(target_model_entry, "supports_vision", False))
+        and self._runtime_supports_vision_inputs()
+      )
+      runtime_backend_kind = "mlx_lm"
+      runtime_warning = ""
+
+      if use_vlm_runtime:
+        try:
+          from mlx_vlm import generate as mlx_vlm_generate  # type: ignore
+          from mlx_vlm import load as mlx_vlm_load  # type: ignore
+          try:
+            from mlx_vlm import stream_generate as mlx_vlm_stream_generate  # type: ignore
+          except Exception:
+            mlx_vlm_stream_generate = None
+
+          vlm_load_target, vlm_patch_applied = self._resolve_vlm_load_target(
+            model_id=target_model_id,
+            model_repo=target_repo,
+          )
+          if not vlm_load_target:
+            vlm_load_target = target_repo
+
+          _old_stdout, _old_stderr = sys.stdout, sys.stderr
+          try:
+            sys.stdout = _io.TextIOWrapper(_io.FileIO(os.devnull, "w"), errors="replace")
+            sys.stderr = _io.TextIOWrapper(_io.FileIO(os.devnull, "w"), errors="replace")
+            model, processor = mlx_vlm_load(vlm_load_target)
+          finally:
+            sys.stdout, sys.stderr = _old_stdout, _old_stderr
+
+          tokenizer = getattr(processor, "tokenizer", None) or processor
+          with self._generation_lock:
+            self._model = model
+            self._tokenizer = tokenizer
+            self._generate_fn = None
+            self._stream_generate_fn = None
+            self._vlm_processor = processor
+            self._vlm_model_config = getattr(model, "config", None)
+            self._vlm_generate_fn = mlx_vlm_generate
+            self._vlm_stream_generate_fn = mlx_vlm_stream_generate
+            self._make_sampler_fn = None
+            self._make_logits_processors_fn = None
+            self._runtime_backend_kind = "mlx_vlm"
+            self.model_repo = target_repo
+            self.model_name = model_label
+          runtime_backend_kind = "mlx_vlm"
+          self._vision_runtime_probe_failed = False
+          self._vision_runtime_error = ""
+          if vlm_patch_applied:
+            runtime_warning = "Qwen3-VL config patch applied for mlx_vlm compatibility."
+        except Exception as vision_error:
+          runtime_warning = str(vision_error)
+          self._vision_runtime_probe_failed = True
+          self._vision_runtime_error = runtime_warning
+          LOGGER.warning(
+            "Vision runtime unavailable for %s (%s): %s",
+            target_model_id,
+            target_repo,
+            runtime_warning,
+          )
+
+      if runtime_backend_kind != "mlx_vlm":
+        from mlx_lm import generate as mlx_generate  # type: ignore
+        from mlx_lm import load as mlx_load  # type: ignore
+        from mlx_lm.sample_utils import make_logits_processors as mlx_make_logits_processors  # type: ignore
+        from mlx_lm.sample_utils import make_sampler as mlx_make_sampler  # type: ignore
+        try:
+          from mlx_lm import stream_generate as mlx_stream_generate  # type: ignore
+        except Exception:
+          try:
+            from mlx_lm.generate import stream_generate as mlx_stream_generate  # type: ignore
+          except Exception:
+            mlx_stream_generate = None
+
+        _old_stdout, _old_stderr = sys.stdout, sys.stderr
+        try:
+          sys.stdout = _io.TextIOWrapper(_io.FileIO(os.devnull, "w"), errors="replace")
+          sys.stderr = _io.TextIOWrapper(_io.FileIO(os.devnull, "w"), errors="replace")
+          model, tokenizer = mlx_load(target_repo)
+        finally:
+          sys.stdout, sys.stderr = _old_stdout, _old_stderr
+        with self._generation_lock:
+          self._model = model
+          self._tokenizer = tokenizer
+          self._generate_fn = mlx_generate
+          self._stream_generate_fn = mlx_stream_generate
+          self._vlm_processor = None
+          self._vlm_generate_fn = None
+          self._vlm_stream_generate_fn = None
+          self._make_sampler_fn = mlx_make_sampler
+          self._make_logits_processors_fn = mlx_make_logits_processors
+          self._runtime_backend_kind = "mlx_lm"
+          self.model_repo = target_repo
+          self.model_name = model_label
       with self._state_lock:
         self._loaded_tier = target_tier
         self._loaded_model_id = target_model_id
 
+      ready_message = "Модель загружена и готова к работе."
+      if (
+        target_model_entry is not None
+        and bool(getattr(target_model_entry, "supports_vision", False))
+        and runtime_backend_kind != "mlx_vlm"
+      ):
+        ready_message = "Модель загружена в text-only режиме (vision runtime недоступен)."
+
       self._startup.set(
         status="ready",
         stage="ready",
-        message="Модель загружена и готова к работе.",
+        message=ready_message,
         details={
           "progress_percent": STARTUP_STAGE_PROGRESS["ready"],
           **self._memory_details,
@@ -503,6 +644,8 @@ class PythonModelEngine(EngineModelsMixin):
           "model_id": target_model_id,
           "model_label": model_label,
           "model_repo": target_repo,
+          "runtime_backend": runtime_backend_kind,
+          "vision_runtime_warning": runtime_warning,
           "python_version": sys.version.split()[0],
           "platform": f"{platform.system()} {platform.machine()}",
         },
@@ -538,50 +681,152 @@ class PythonModelEngine(EngineModelsMixin):
       return text
     return text[: max(0, limit - 1)].rstrip() + "…"
 
+  @staticmethod
+  def _fallback_token_estimate(text: str) -> int:
+    safe = str(text or "")
+    if not safe:
+      return 0
+    return max(1, (len(safe) + 3) // 4)
+
+  def _estimate_token_count(self, text: str) -> tuple[int, str]:
+    safe_text = str(text or "")
+    if not safe_text:
+      return 0, "empty"
+
+    tokenizer = self._tokenizer
+    if tokenizer is not None:
+      try:
+        encode_fn = getattr(tokenizer, "encode", None)
+        if callable(encode_fn):
+          encoded = encode_fn(safe_text)
+          if isinstance(encoded, list):
+            return len(encoded), "tokenizer.encode"
+          if isinstance(encoded, tuple):
+            return len(encoded), "tokenizer.encode"
+          if hasattr(encoded, "__len__"):
+            return int(len(encoded)), "tokenizer.encode"
+      except Exception:
+        pass
+
+      try:
+        if callable(tokenizer):
+          encoded = tokenizer(safe_text)
+          if isinstance(encoded, dict):
+            input_ids = encoded.get("input_ids")
+            if isinstance(input_ids, list):
+              if input_ids and isinstance(input_ids[0], list):
+                return len(input_ids[0]), "tokenizer.__call__"
+              return len(input_ids), "tokenizer.__call__"
+      except Exception:
+        pass
+
+    return self._fallback_token_estimate(safe_text), "chars/4"
+
+  def get_context_window_requirements(
+    self,
+    *,
+    active_tools: set[str],
+    tool_definitions: dict[str, dict[str, Any]] | None = None,
+  ) -> dict[str, Any]:
+    safe_active_tools = {str(name or "").strip().lower() for name in active_tools if str(name or "").strip()}
+    safe_tool_definitions = tool_definitions if isinstance(tool_definitions, dict) else {}
+
+    history_budget_env = os.getenv("ANCIA_CONTEXT_MIN_HISTORY_CHARS", "").strip()
+    reserve_tokens_env = os.getenv("ANCIA_CONTEXT_MIN_RESERVE_TOKENS", "").strip()
+
+    try:
+      history_budget_chars_raw = int(history_budget_env) if history_budget_env else 3600
+    except ValueError:
+      history_budget_chars_raw = 3600
+    history_budget_chars = max(1200, min(self.MAX_HISTORY_TOTAL_CHARS, history_budget_chars_raw))
+
+    try:
+      reserve_tokens_raw = int(reserve_tokens_env) if reserve_tokens_env else 192
+    except ValueError:
+      reserve_tokens_raw = 192
+    reserve_tokens = max(64, min(768, reserve_tokens_raw))
+
+    synthetic_request = ChatRequest.model_validate(
+      {
+        "message": "",
+        "context": {
+          "chat_id": "context-window-guard",
+          "mood": "neutral",
+          "user": {
+            "name": "",
+            "context": "",
+            "language": "ru",
+            "timezone": "UTC",
+          },
+          "history": [],
+          "system_prompt": "",
+        },
+      }
+    )
+
+    system_prompt_text = build_system_prompt(
+      self._base_system_prompt,
+      synthetic_request,
+      active_tools=safe_active_tools,
+      tool_definitions=safe_tool_definitions,
+    )
+    system_prompt_tokens, token_estimation_mode = self._estimate_token_count(system_prompt_text)
+
+    history_tokens = max(64, (history_budget_chars + 3) // 4)
+    history_overhead_tokens = max(24, min(192, int(self.MAX_HISTORY_MESSAGES) * 4))
+    minimum_context_window = system_prompt_tokens + history_tokens + history_overhead_tokens + reserve_tokens
+    minimum_context_window = max(512, min(8192, minimum_context_window))
+
+    return {
+      "min_context_window": int(minimum_context_window),
+      "system_prompt_tokens": int(system_prompt_tokens),
+      "history_budget_tokens": int(history_tokens),
+      "history_budget_chars": int(history_budget_chars),
+      "history_overhead_tokens": int(history_overhead_tokens),
+      "reserve_tokens": int(reserve_tokens),
+      "token_estimation_mode": token_estimation_mode,
+      "active_tools_count": len(safe_active_tools),
+      "tokenizer_loaded": bool(self._tokenizer is not None),
+    }
+
   @classmethod
   def _summarize_tool_event(cls, event: ToolEvent) -> str:
-    if event.name == "web.search.duckduckgo":
-      query = str(event.output.get("query") or "").strip()
-      results = event.output.get("results") if isinstance(event.output, dict) else []
-      if not isinstance(results, list):
-        results = []
-      lines = [f"query={query}"] if query else []
-      for index, item in enumerate(results[:5], start=1):
-        if not isinstance(item, dict):
+    payload = event.output if isinstance(event.output, dict) else {}
+    if not payload:
+      return json.dumps(event.output, ensure_ascii=False)
+
+    if isinstance(payload.get("error"), str) and str(payload.get("error") or "").strip():
+      return f"error={str(payload.get('error') or '').strip()}"
+
+    lines: list[str] = []
+    for key, value in payload.items():
+      safe_key = str(key or "").strip()
+      if not safe_key:
+        continue
+      if isinstance(value, str):
+        text = cls._truncate_text(value, 1200)
+        if text:
+          lines.append(f"{safe_key}={text}")
+      elif isinstance(value, (int, float, bool)):
+        lines.append(f"{safe_key}={value}")
+      elif isinstance(value, list):
+        if not value:
           continue
-        title = str(item.get("title") or "").strip()
-        url = str(item.get("url") or "").strip()
-        if title or url:
-          lines.append(f"{index}. {title} — {url}".strip(" —"))
-      if not lines:
-        lines.append(json.dumps(event.output, ensure_ascii=False))
-      return "\n".join(lines)
+        if all(isinstance(item, str) for item in value[:8]):
+          items = [cls._truncate_text(str(item), 220) for item in value[:8]]
+          lines.append(f"{safe_key}=[{'; '.join(items)}]")
+        else:
+          compact_json = cls._truncate_text(json.dumps(value, ensure_ascii=False), 1400)
+          lines.append(f"{safe_key}={compact_json}")
+      elif isinstance(value, dict):
+        compact_json = cls._truncate_text(json.dumps(value, ensure_ascii=False), 1200)
+        lines.append(f"{safe_key}={compact_json}")
+      else:
+        lines.append(f"{safe_key}={value}")
 
-    if event.name == "web.visit.website":
-      title = str(event.output.get("title") or "").strip()
-      url = str(event.output.get("url") or event.output.get("requested_url") or "").strip()
-      content = cls._truncate_text(str(event.output.get("content") or "").strip(), 2800)
-      links = event.output.get("links") if isinstance(event.output, dict) else []
-      lines = []
-      if title:
-        lines.append(f"title={title}")
-      if url:
-        lines.append(f"url={url}")
-      if content:
-        lines.append(f"content={content}")
-      if isinstance(links, list) and links:
-        link_lines = [str(link).strip() for link in links[:8] if str(link).strip()]
-        if link_lines:
-          lines.append("links:\n- " + "\n- ".join(link_lines))
-      if not lines:
-        lines.append(json.dumps(event.output, ensure_ascii=False))
-      return "\n".join(lines)
-
-    return json.dumps(event.output, ensure_ascii=False)
-
-  @staticmethod
-  def _build_tool_schemas(active_tools: set[str]) -> list[dict[str, Any]]:
-    return build_tool_schemas_fn(active_tools, TOOL_SCHEMAS)
+    if lines:
+      return "\n".join(lines[:24])
+    return json.dumps(payload, ensure_ascii=False)
 
   @staticmethod
   def _convert_turns_for_compat(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -611,13 +856,484 @@ class PythonModelEngine(EngineModelsMixin):
   def _normalize_attachment_kind(kind: str) -> str:
     return normalize_attachment_kind_fn(kind)
 
+  def _has_image_attachments(self, request: ChatRequest) -> bool:
+    attachments = list(getattr(request, "attachments", None) or [])
+    for attachment in attachments:
+      item = attachment.model_dump() if hasattr(attachment, "model_dump") else dict(attachment)
+      kind = self._normalize_attachment_kind(str(item.get("kind") or "file"))
+      if kind == "image":
+        return True
+      mime_type = str(item.get("mimeType") or "").strip().lower()
+      if mime_type.startswith("image/"):
+        return True
+      data_url = str(item.get("dataUrl") or "").strip().lower()
+      if data_url.startswith("data:image/"):
+        return True
+    return False
+
+  @staticmethod
+  def _is_image_analysis_intent(user_text: str) -> bool:
+    safe_text = str(user_text or "").strip()
+    if not safe_text:
+      return False
+    return IMAGE_ANALYSIS_INTENT_PATTERN.search(safe_text) is not None
+
+  @staticmethod
+  def _is_explicit_web_intent(user_text: str) -> bool:
+    safe_text = str(user_text or "").strip()
+    if not safe_text:
+      return False
+    return EXPLICIT_WEB_INTENT_PATTERN.search(safe_text) is not None
+
+  @staticmethod
+  def _mentions_image_reference(user_text: str) -> bool:
+    safe_text = str(user_text or "").strip()
+    if not safe_text:
+      return False
+    return IMAGE_REFERENCE_PATTERN.search(safe_text) is not None
+
+  @staticmethod
+  def _is_generic_attachment_prompt(user_text: str) -> bool:
+    return str(user_text or "").strip().lower() in GENERIC_ATTACHMENT_PROMPTS
+
+  @staticmethod
+  def _auto_invoke_contains_trigger(user_text: str, trigger: str) -> bool:
+    safe_user_text = str(user_text or "").strip().lower()
+    safe_trigger = str(trigger or "").strip().lower()
+    if not safe_user_text or not safe_trigger:
+      return False
+    if len(safe_trigger) <= 3:
+      return re.search(
+        rf"(?<![a-zа-я0-9_]){re.escape(safe_trigger)}(?![a-zа-я0-9_])",
+        safe_user_text,
+        flags=re.IGNORECASE,
+      ) is not None
+    return re.search(
+      rf"(?<![a-zа-я0-9_]){re.escape(safe_trigger)}(?![a-zа-я0-9_])",
+      safe_user_text,
+      flags=re.IGNORECASE,
+    ) is not None
+
+  @staticmethod
+  def _auto_invoke_strip_prefix(value: str, prefixes: list[str]) -> str:
+    safe_value = str(value or "").strip()
+    if not safe_value:
+      return ""
+    lowered = safe_value.lower()
+    best_prefix = ""
+    for raw_prefix in prefixes:
+      safe_prefix = str(raw_prefix or "").strip().lower()
+      if not safe_prefix:
+        continue
+      if lowered.startswith(safe_prefix) and len(safe_prefix) > len(best_prefix):
+        best_prefix = safe_prefix
+    if best_prefix:
+      safe_value = safe_value[len(best_prefix):].lstrip()
+    safe_value = re.sub(r"^[\s,;:.\-—–\"'`]+", "", safe_value)
+    safe_value = re.sub(r"[\s\"'`]+$", "", safe_value)
+    return safe_value.strip()
+
   @classmethod
-  def _build_attachment_context(cls, request: ChatRequest) -> str:
+  def _build_auto_invoke_args(
+    cls,
+    user_text: str,
+    *,
+    auto_invoke: dict[str, Any],
+    input_schema: dict[str, Any],
+  ) -> dict[str, Any] | None:
+    schema = input_schema if isinstance(input_schema, dict) else {}
+    properties = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+    additional_props = bool(schema.get("additionalProperties", False))
+    args_cfg = auto_invoke.get("args") if isinstance(auto_invoke.get("args"), dict) else {}
+
+    args: dict[str, Any] = {}
+    for raw_arg_name, raw_arg_cfg in args_cfg.items():
+      arg_name = str(raw_arg_name or "").strip()
+      if not arg_name:
+        continue
+      if not additional_props and properties and arg_name not in properties:
+        continue
+      if not isinstance(raw_arg_cfg, dict):
+        continue
+      source = str(raw_arg_cfg.get("source") or "").strip().lower()
+      if source != "user_text":
+        continue
+      strip_prefixes_raw = raw_arg_cfg.get("strip_prefixes")
+      strip_prefixes = [str(item or "") for item in strip_prefixes_raw] if isinstance(strip_prefixes_raw, list) else []
+      value = cls._auto_invoke_strip_prefix(user_text, strip_prefixes)
+      if not value:
+        value = str(user_text or "").strip()
+      if value:
+        args[arg_name] = value
+
+    # Подставляем schema default для отсутствующих аргументов.
+    for prop_name, prop_schema in properties.items():
+      safe_prop_name = str(prop_name or "").strip()
+      if not safe_prop_name or safe_prop_name in args:
+        continue
+      if isinstance(prop_schema, dict) and "default" in prop_schema:
+        args[safe_prop_name] = prop_schema.get("default")
+
+    required_raw = schema.get("required")
+    required = [str(item or "").strip() for item in required_raw] if isinstance(required_raw, list) else []
+    missing_required = [name for name in required if name and name not in args]
+    if missing_required:
+      return None
+
+    if not additional_props and properties:
+      args = {
+        key: value
+        for key, value in args.items()
+        if key in properties
+      }
+    return args
+
+  def _resolve_auto_invoke_tool_call(
+    self,
+    *,
+    user_text: str,
+    active_tools: set[str],
+    tool_registry: ToolRegistry,
+  ) -> tuple[str, dict[str, Any]] | None:
+    safe_user_text = str(user_text or "").strip()
+    if not safe_user_text:
+      return None
+
+    candidates: list[tuple[str, dict[str, Any], int]] = []
+    for tool_name in sorted(active_tools):
+      if not tool_registry.has_tool(tool_name):
+        continue
+      meta = tool_registry.get_tool_meta(tool_name) if hasattr(tool_registry, "get_tool_meta") else {}
+      auto_invoke = meta.get("auto_invoke") if isinstance(meta, dict) else None
+      if not isinstance(auto_invoke, dict) or not bool(auto_invoke.get("enabled", False)):
+        continue
+      raw_triggers = auto_invoke.get("triggers")
+      triggers = [str(item or "").strip() for item in raw_triggers] if isinstance(raw_triggers, list) else []
+      triggers = [item for item in triggers if item]
+      if not triggers:
+        continue
+      if not any(self._auto_invoke_contains_trigger(safe_user_text, trigger) for trigger in triggers):
+        continue
+      input_schema = meta.get("input_schema") if isinstance(meta.get("input_schema"), dict) else {}
+      args = self._build_auto_invoke_args(
+        safe_user_text,
+        auto_invoke=auto_invoke,
+        input_schema=input_schema,
+      )
+      if args is None:
+        continue
+      strongest_trigger_len = max((len(item) for item in triggers), default=0)
+      candidates.append((tool_name, args, strongest_trigger_len))
+
+    if not candidates:
+      return None
+    candidates.sort(key=lambda item: (item[2], len(item[0])), reverse=True)
+    top_tool, top_args, _top_score = candidates[0]
+    return top_tool, top_args
+
+  @staticmethod
+  def _resolve_vision_runtime_override() -> bool | None:
+    raw = os.getenv("ANCIA_EXPERIMENTAL_ENABLE_VISION", "").strip().lower()
+    if not raw:
+      return None
+    if raw in {"1", "true", "yes", "on"}:
+      return True
+    if raw in {"0", "false", "no", "off"}:
+      return False
+    return None
+
+  @staticmethod
+  def _is_mlx_vlm_installed() -> bool:
+    try:
+      return importlib.util.find_spec("mlx_vlm") is not None
+    except Exception:
+      return False
+
+  @staticmethod
+  def _is_qwen3_vl_family(model_id: str, model_repo: str) -> bool:
+    probe = f"{model_id} {model_repo}".strip().lower().replace("_", "-")
+    return "qwen3-vl" in probe
+
+  def _resolve_vlm_load_target(self, *, model_id: str, model_repo: str) -> tuple[str, bool]:
+    """Return repo/path for mlx_vlm.load and whether config compatibility patch was applied."""
+    safe_repo = str(model_repo or "").strip()
+    if not safe_repo:
+      return safe_repo, False
+    if not self._is_qwen3_vl_family(model_id, safe_repo):
+      return safe_repo, False
+
+    try:
+      from huggingface_hub import snapshot_download  # type: ignore
+    except Exception as exc:
+      LOGGER.warning("Qwen3-VL patch skipped: snapshot_download unavailable (%s)", exc)
+      return safe_repo, False
+
+    # HF_HUB_CACHE указывает на <models_dir>/hub — именно там лежат загруженные модели.
+    # cache_dir в snapshot_download должен совпадать, иначе local_files_only=True упадёт
+    # и придётся идти в сеть.
+    hub_cache_dir = str((self._models_dir / "hub").resolve())
+    snapshot_path: Path | None = None
+    for cache_dir_candidate in [hub_cache_dir, str(self._models_dir)]:
+      try:
+        snapshot_path = Path(
+          snapshot_download(
+            repo_id=safe_repo,
+            cache_dir=cache_dir_candidate,
+            local_files_only=True,
+          )
+        )
+        break
+      except Exception:
+        continue
+
+    if snapshot_path is None:
+      LOGGER.warning("Qwen3-VL patch skipped: model not found in local cache for %s", safe_repo)
+      return safe_repo, False
+
+    config_path = snapshot_path / "config.json"
+    if not config_path.is_file():
+      return str(snapshot_path), False
+
+    try:
+      payload = json.loads(config_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+      LOGGER.warning("Qwen3-VL patch skipped: cannot read %s (%s)", config_path, exc)
+      return str(snapshot_path), False
+
+    if not isinstance(payload, dict):
+      return str(snapshot_path), False
+
+    text_config = payload.get("text_config")
+    text_rope_scaling = text_config.get("rope_scaling") if isinstance(text_config, dict) else None
+    top_rope_scaling = payload.get("rope_scaling")
+    if isinstance(top_rope_scaling, dict):
+      return str(snapshot_path), False
+    if not isinstance(text_rope_scaling, dict):
+      return str(snapshot_path), False
+
+    payload["rope_scaling"] = dict(text_rope_scaling)
+    try:
+      config_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    except Exception as exc:
+      LOGGER.warning("Qwen3-VL patch failed: cannot write %s (%s)", config_path, exc)
+      return str(snapshot_path), False
+
+    LOGGER.info("Applied Qwen3-VL rope_scaling compatibility patch: %s", config_path)
+    return str(snapshot_path), True
+
+  def _runtime_supports_vision_inputs(self) -> bool:
+    override = self._resolve_vision_runtime_override()
+    if override is not None:
+      return override
+    if self._vision_runtime_probe_failed:
+      return False
+    if not self._is_mlx_vlm_installed():
+      return False
+    selected_model_id = normalize_model_id(self.get_selected_model_id(), "")
+    loaded_model_id = normalize_model_id(self.get_loaded_model_id(), "")
+    selected_model = get_model_entry(selected_model_id)
+    selected_supports_vision = bool(selected_model and getattr(selected_model, "supports_vision", False))
+    if (
+      selected_supports_vision
+      and self.is_ready()
+      and loaded_model_id == selected_model_id
+      and self._runtime_backend_kind != "mlx_vlm"
+    ):
+      return False
+    return True
+
+  def _build_vlm_media_kwargs_variants(self, image_inputs: list[str] | None = None) -> list[dict[str, Any]]:
+    safe_images = [str(item).strip() for item in (image_inputs or []) if str(item).strip()]
+    if not safe_images:
+      return [{}]
+    single_or_many: str | list[str] = safe_images[0] if len(safe_images) == 1 else list(safe_images)
+    variants = [
+      {"image": single_or_many},
+      {"image": list(safe_images)},
+      {"images": list(safe_images)},
+    ]
+    unique: list[dict[str, Any]] = []
+    seen_keys: set[tuple[tuple[str, str], ...]] = set()
+    for variant in variants:
+      key_parts: list[tuple[str, str]] = []
+      for key, value in sorted(variant.items()):
+        if isinstance(value, list):
+          rendered = "|".join(value)
+        else:
+          rendered = str(value)
+        key_parts.append((key, rendered))
+      token = tuple(key_parts)
+      if token in seen_keys:
+        continue
+      seen_keys.add(token)
+      unique.append(variant)
+    return unique
+
+  @staticmethod
+  def _attachment_to_dict(attachment: Any) -> dict[str, Any]:
+    if hasattr(attachment, "model_dump"):
+      return attachment.model_dump()
+    if isinstance(attachment, dict):
+      return dict(attachment)
+    return {}
+
+  @staticmethod
+  def _decode_image_data_url_to_temp_file(data_url: str, *, file_name_hint: str = "") -> str:
+    safe_data_url = str(data_url or "").strip()
+    if not safe_data_url.startswith("data:image/"):
+      return ""
+    if len(safe_data_url) > MAX_IMAGE_DATA_URL_CHARS:
+      return ""
+    try:
+      header, payload = safe_data_url.split(",", 1)
+    except ValueError:
+      return ""
+    if ";base64" not in header.lower():
+      return ""
+    mime_part = header[5:].split(";", 1)[0].strip().lower()
+    if not mime_part.startswith("image/"):
+      return ""
+    try:
+      raw_bytes = base64.b64decode(payload, validate=False)
+    except (ValueError, binascii.Error):
+      return ""
+    if not raw_bytes:
+      return ""
+    guessed_suffix = mimetypes.guess_extension(mime_part) or ""
+    if not guessed_suffix:
+      lower_hint = str(file_name_hint or "").strip().lower()
+      if "." in lower_hint:
+        guessed_suffix = f".{lower_hint.rsplit('.', 1)[-1][:8]}"
+    if not guessed_suffix:
+      guessed_suffix = ".img"
+    with tempfile.NamedTemporaryFile(
+      mode="wb",
+      suffix=guessed_suffix,
+      prefix="ancia-vision-",
+      delete=False,
+    ) as handle:
+      handle.write(raw_bytes)
+      return handle.name
+
+  def _resolve_request_image_inputs(self, request: ChatRequest) -> tuple[list[str], list[str]]:
+    attachments = list(getattr(request, "attachments", None) or [])
+    inputs: list[str] = []
+    temp_files: list[str] = []
+    for attachment in attachments[:6]:
+      item = self._attachment_to_dict(attachment)
+      kind = self._normalize_attachment_kind(str(item.get("kind") or "file"))
+      mime_type = str(item.get("mimeType") or "").strip().lower()
+      data_url = str(item.get("dataUrl") or "").strip()
+      if kind != "image" and not mime_type.startswith("image/"):
+        continue
+      path = self._decode_image_data_url_to_temp_file(
+        data_url,
+        file_name_hint=str(item.get("name") or ""),
+      )
+      if not path:
+        continue
+      inputs.append(path)
+      temp_files.append(path)
+    return inputs, temp_files
+
+  @staticmethod
+  def _cleanup_temp_files(paths: list[str]) -> None:
+    for path in paths:
+      safe_path = str(path or "").strip()
+      if not safe_path:
+        continue
+      try:
+        os.remove(safe_path)
+      except OSError:
+        continue
+
+  def _should_short_circuit_image_analysis(self, *, request: ChatRequest, plan: GenerationPlan) -> bool:
+    if not self._has_image_attachments(request):
+      return False
+    if self._supports_selected_model_vision():
+      return False
+    safe_query = str(getattr(plan, "user_text", "") or "").strip()
+    if self._is_generic_attachment_prompt(safe_query):
+      return True
+    if self._is_image_analysis_intent(safe_query):
+      return True
+    if self._mentions_image_reference(safe_query):
+      return True
+    return False
+
+  def _filter_active_tools_for_request(
+    self,
+    *,
+    request: ChatRequest,
+    plan: GenerationPlan,
+    tool_registry: ToolRegistry,
+    active_tools: set[str],
+  ) -> set[str]:
+    safe_active_tools = {str(name or "").strip().lower() for name in active_tools if str(name or "").strip()}
+    if not safe_active_tools:
+      return set()
+    has_images = self._has_image_attachments(request)
+    if not has_images:
+      return safe_active_tools
+    if not self._supports_selected_model_vision():
+      safe_query = str(getattr(plan, "user_text", "") or "").strip()
+      if (
+        self._is_generic_attachment_prompt(safe_query)
+        or self._is_image_analysis_intent(safe_query)
+        or self._mentions_image_reference(safe_query)
+      ):
+        LOGGER.info(
+          "Image turn detected on text-only runtime: disabling all tools query=%s dropped=%s",
+          safe_query[:64],
+          sorted(safe_active_tools),
+        )
+        return set()
+      return safe_active_tools
+    safe_query = str(getattr(plan, "user_text", "") or "").strip()
+    if not self._is_image_analysis_intent(safe_query):
+      is_generic_attachment_prompt = self._is_generic_attachment_prompt(safe_query)
+      if not is_generic_attachment_prompt and not self._mentions_image_reference(safe_query):
+        return safe_active_tools
+    # Для "что на фото/изображении" по умолчанию отключаем инструменты полностью:
+    # модель должна сначала анализировать вложенное изображение напрямую, а не уходить в tool-calling.
+    if not self._is_explicit_web_intent(safe_query):
+      LOGGER.info(
+        "Vision turn detected: disabling all tools for direct image analysis query=%s dropped=%s",
+        safe_query[:64],
+        sorted(safe_active_tools),
+      )
+      return set()
+
+    # Если пользователь явно просит веб-поиск/источники, оставляем только web/network-инструменты.
+    filtered_tools: set[str] = set()
+    dropped_tools: list[str] = []
+    for name in sorted(safe_active_tools):
+      meta = tool_registry.get_tool_meta(name) if hasattr(tool_registry, "get_tool_meta") else {}
+      requires_network = bool(meta.get("requires_network", False))
+      category = str(meta.get("category") or "").strip().lower()
+      if requires_network or category == "web" or name.startswith("web."):
+        filtered_tools.add(name)
+        continue
+      dropped_tools.append(name)
+
+    if dropped_tools:
+      LOGGER.info(
+        "Vision turn with explicit web intent: disabling non-web tools query=%s dropped=%s",
+        safe_query[:64],
+        dropped_tools,
+      )
+    return filtered_tools
+
+  def _supports_selected_model_vision(self) -> bool:
+    selected_model = get_model_entry(self.get_selected_model_id())
+    catalog_support = bool(selected_model and getattr(selected_model, "supports_vision", False))
+    return catalog_support and self._runtime_supports_vision_inputs()
+
+  def _build_attachment_context(self, request: ChatRequest) -> str:
     return build_attachment_context_fn(
       request,
-      truncate_text_fn=cls._truncate_text,
-      get_model_entry_fn=get_model_entry,
-      normalize_model_id_fn=normalize_model_id,
+      truncate_text_fn=self._truncate_text,
+      supports_vision=self._supports_selected_model_vision(),
     )
 
   def _build_messages(
@@ -625,30 +1341,114 @@ class PythonModelEngine(EngineModelsMixin):
     request: ChatRequest,
     turns: list[dict[str, Any]] | None = None,
     active_tools: set[str] | None = None,
+    tool_definitions: dict[str, dict[str, Any]] | None = None,
   ) -> list[dict[str, Any]]:
     return build_messages_fn(
       request,
       base_system_prompt=self._base_system_prompt,
       active_tools=active_tools or set(),
+      tool_definitions=tool_definitions or {},
       turns=turns,
       build_system_prompt_fn=build_system_prompt,
       truncate_text_fn=self._truncate_text,
       build_attachment_context_fn=self._build_attachment_context,
+      supports_vision=self._supports_selected_model_vision(),
       max_history_messages=self.MAX_HISTORY_MESSAGES,
       max_history_total_chars=self.MAX_HISTORY_TOTAL_CHARS,
       max_history_entry_chars=self.MAX_HISTORY_ENTRY_CHARS,
+    )
+
+  def _render_vlm_prompt(
+    self,
+    messages: list[dict[str, Any]],
+    *,
+    tool_schemas: dict[str, dict[str, Any]],
+    active_tools: set[str],
+  ) -> str:
+    """Рендерит промпт для mlx_vlm с корректными image-токенами."""
+    processor = self._vlm_processor
+    model_config = self._vlm_model_config
+
+    num_images = 0
+    for msg in messages:
+      content = msg.get("content")
+      if isinstance(content, list):
+        for block in content:
+          if isinstance(block, dict) and block.get("type") == "image_url":
+            num_images += 1
+
+    if num_images > 0 and model_config is not None:
+      try:
+        from mlx_vlm.prompt_utils import apply_chat_template as vlm_apply_chat_template  # type: ignore
+        raw_config = model_config if isinstance(model_config, dict) else model_config.__dict__
+        result = vlm_apply_chat_template(
+          processor,
+          raw_config,
+          messages,
+          num_images=num_images,
+          add_generation_prompt=True,
+        )
+        if isinstance(result, str) and result.strip():
+          return result
+      except Exception as exc:
+        LOGGER.debug("vlm apply_chat_template failed, falling back: %s", exc)
+
+    # Фолбэк: processor.apply_chat_template (Qwen2-VL и аналоги)
+    try:
+      if num_images > 0 and hasattr(processor, "apply_chat_template"):
+        result = processor.apply_chat_template(
+          messages,
+          tokenize=False,
+          add_generation_prompt=True,
+        )
+        if isinstance(result, str) and result.strip():
+          return result
+    except Exception as exc:
+      LOGGER.debug("processor.apply_chat_template failed, falling back: %s", exc)
+
+    # Если ничего не сработало или нет картинок, рендерим как текст
+    text_messages: list[dict[str, Any]] = []
+    for msg in messages:
+      content = msg.get("content")
+      if isinstance(content, list):
+        text_parts: list[str] = []
+        for block in content:
+          if isinstance(block, dict):
+            if block.get("type") == "text":
+              text_val = str(block.get("text") or "").strip()
+              if text_val:
+                text_parts.append(text_val)
+        text_messages.append({**msg, "content": "\n".join(text_parts).strip()})
+      else:
+        text_messages.append(msg)
+
+    return render_prompt_fn(
+      text_messages,
+      tokenizer=processor,
+      active_tools=active_tools,
+      tool_schemas=tool_schemas,
     )
 
   def _render_prompt(
     self,
     messages: list[dict[str, Any]],
     active_tools: set[str] | None = None,
+    tool_registry: ToolRegistry | None = None,
   ) -> str:
+    tool_schema_map = {}
+    if tool_registry is not None and hasattr(tool_registry, "build_llm_schema_map"):
+      tool_schema_map = tool_registry.build_llm_schema_map(active_tools or set())
+    if self._runtime_backend_kind == "mlx_vlm" and self._vlm_processor is not None:
+      return self._render_vlm_prompt(
+        messages,
+        tool_schemas=tool_schema_map,
+        active_tools=active_tools or set(),
+      )
     return render_prompt_fn(
       messages,
       tokenizer=self._tokenizer,
       active_tools=active_tools or set(),
-      tool_schemas=TOOL_SCHEMAS,
+      tool_schemas=tool_schema_map,
     )
 
   def _build_generation_attempts(self, prompt: str, plan: GenerationPlan) -> list[dict[str, Any]]:
@@ -690,6 +1490,34 @@ class PythonModelEngine(EngineModelsMixin):
       return False
     kwargs.pop(key, None)
     return True
+
+  @staticmethod
+  def _is_non_fatal_stream_error(error: Exception) -> bool:
+    if isinstance(error, BrokenPipeError):
+      return True
+    if isinstance(error, OSError):
+      error_no = getattr(error, "errno", None)
+      if error_no in {32, 104}:
+        return True
+    safe_message = str(error or "").strip().lower()
+    return "broken pipe" in safe_message or "errno 32" in safe_message
+
+  def _disable_stream_generate_fn_unlocked(self, *, vlm: bool, reason: Exception) -> None:
+    if vlm:
+      if self._vlm_stream_generate_fn is None:
+        return
+      self._vlm_stream_generate_fn = None
+      backend_label = "mlx_vlm"
+    else:
+      if self._stream_generate_fn is None:
+        return
+      self._stream_generate_fn = None
+      backend_label = "mlx_lm"
+    LOGGER.warning(
+      "Disabling %s stream_generate and falling back to non-stream generation: %s",
+      backend_label,
+      reason,
+    )
 
   @staticmethod
   def _normalize_for_dedupe(value: str) -> str:
@@ -766,13 +1594,145 @@ class PythonModelEngine(EngineModelsMixin):
   def _resolve_stream_delta(payload_text: str, emitted_text: str) -> str:
     return resolve_stream_delta_fn(payload_text, emitted_text)
 
-  def _iter_generation_chunks(self, prompt: str, plan: GenerationPlan) -> Generator[str, None, None]:
+  def _iter_generation_chunks(
+    self,
+    prompt: str,
+    plan: GenerationPlan,
+    *,
+    image_inputs: list[str] | None = None,
+  ) -> Generator[str, None, None]:
     with self._generation_lock:
       self._generation_stop_event.clear()
-      if self._model is None or self._tokenizer is None or self._generate_fn is None:
+      if self._model is None or self._tokenizer is None:
         raise RuntimeError(self.get_unavailable_message())
 
       attempts = self._build_generation_attempts(prompt, plan)
+      is_vlm_backend = bool(
+        self._runtime_backend_kind == "mlx_vlm"
+        and self._vlm_generate_fn is not None
+        and self._vlm_processor is not None
+      )
+      if is_vlm_backend:
+        media_variants = self._build_vlm_media_kwargs_variants(image_inputs)
+        if self._vlm_stream_generate_fn is not None:
+          stream_last_error: Exception | None = None
+          for base_kwargs in attempts:
+            prompt_value = str(base_kwargs.get("prompt") or prompt)
+            generation_kwargs = {
+              key: value
+              for key, value in base_kwargs.items()
+              if key != "prompt"
+            }
+            for media_kwargs in media_variants:
+              kwargs = dict(generation_kwargs)
+              kwargs.update(media_kwargs)
+              while True:
+                response_chunks: list[str] = []
+                generated_text = ""
+                try:
+                  stream_iterable = self._vlm_stream_generate_fn(
+                    self._model,
+                    self._vlm_processor,
+                    prompt_value,
+                    **kwargs,
+                  )
+                  for payload in stream_iterable:
+                    if self._generation_stop_event.is_set():
+                      raise RuntimeError("Генерация остановлена пользователем.")
+                    text = self._extract_stream_text(payload)
+                    if not text:
+                      continue
+                    delta = self._resolve_stream_delta(text, generated_text)
+                    if not delta:
+                      continue
+                    response_chunks.append(delta)
+                    generated_text += delta
+                    yield delta
+                    if self._is_repetition_runaway(generated_text):
+                      break
+
+                  if response_chunks:
+                    return
+                  stream_last_error = RuntimeError("Поток генерации вернул пустой ответ.")
+                  break
+                except TypeError as exc:
+                  if response_chunks:
+                    raise RuntimeError(f"Ошибка потоковой генерации vision-модели: {exc}") from exc
+                  if self._drop_unexpected_kwarg(kwargs, exc):
+                    continue
+                  stream_last_error = exc
+                  break
+                except Exception as exc:
+                  if self._generation_stop_event.is_set() or "Генерация остановлена пользователем." in str(exc):
+                    raise RuntimeError("Генерация остановлена пользователем.") from exc
+                  if self._is_non_fatal_stream_error(exc):
+                    stream_last_error = exc
+                    break
+                  if isinstance(exc, RuntimeError):
+                    raise
+                  raise RuntimeError(f"Ошибка потоковой генерации vision-модели: {exc}") from exc
+          if stream_last_error is not None:
+            # Переходим к non-stream fallback, если stream API недоступен.
+            self._disable_stream_generate_fn_unlocked(vlm=True, reason=stream_last_error)
+
+        output: Any = ""
+        last_error: Exception | None = None
+        generated = False
+        for base_kwargs in attempts:
+          prompt_value = str(base_kwargs.get("prompt") or prompt)
+          generation_kwargs = {
+            key: value
+            for key, value in base_kwargs.items()
+            if key != "prompt"
+          }
+          for media_kwargs in media_variants:
+            kwargs = dict(generation_kwargs)
+            kwargs.update(media_kwargs)
+            if self._generation_stop_event.is_set():
+              raise RuntimeError("Генерация остановлена пользователем.")
+            while True:
+              try:
+                output = self._vlm_generate_fn(
+                  self._model,
+                  self._vlm_processor,
+                  prompt_value,
+                  **kwargs,
+                )
+                last_error = None
+                generated = True
+                break
+              except TypeError as exc:
+                if self._drop_unexpected_kwarg(kwargs, exc):
+                  continue
+                last_error = exc
+                break
+              except Exception as exc:
+                raise RuntimeError(f"Ошибка генерации vision-модели: {exc}") from exc
+            if generated:
+              break
+          if generated:
+            break
+
+        if not generated:
+          if last_error is not None:
+            raise RuntimeError(f"Несовместимый API mlx_vlm.generate: {last_error}")
+          raise RuntimeError("Vision-модель не вернула ответ.")
+
+        raw_output = self._extract_stream_text(output)
+        if not raw_output and output is not None:
+          raw_output = str(output)
+        reply = self._compact_repetitions(str(raw_output or "").strip())
+        if not reply:
+          raise RuntimeError("Vision-модель вернула пустой ответ.")
+        if self._generation_stop_event.is_set():
+          raise RuntimeError("Генерация остановлена пользователем.")
+        # Non-stream fallback: отдаём ответ единым блоком без имитации токенов.
+        yield reply
+        return
+
+      if self._generate_fn is None:
+        raise RuntimeError(self.get_unavailable_message())
+
       if self._stream_generate_fn is not None:
         stream_last_error: Exception | None = None
         for base_kwargs in attempts:
@@ -813,10 +1773,17 @@ class PythonModelEngine(EngineModelsMixin):
               stream_last_error = exc
               break
             except Exception as exc:
+              if self._generation_stop_event.is_set() or "Генерация остановлена пользователем." in str(exc):
+                raise RuntimeError("Генерация остановлена пользователем.") from exc
+              if self._is_non_fatal_stream_error(exc):
+                stream_last_error = exc
+                break
+              if isinstance(exc, RuntimeError):
+                raise
               raise RuntimeError(f"Ошибка потоковой генерации модели: {exc}") from exc
         if stream_last_error is not None:
           # Переходим к non-stream fallback, если stream API недоступен.
-          pass
+          self._disable_stream_generate_fn_unlocked(vlm=False, reason=stream_last_error)
 
       output = ""
       last_error: Exception | None = None
@@ -849,13 +1816,19 @@ class PythonModelEngine(EngineModelsMixin):
       reply = self._compact_repetitions(str(output or "").strip())
       if not reply:
         raise RuntimeError("Модель вернула пустой ответ.")
-      for chunk in self._chunk_text_for_streaming(reply):
-        if self._generation_stop_event.is_set():
-          raise RuntimeError("Генерация остановлена пользователем.")
-        yield chunk
+      if self._generation_stop_event.is_set():
+        raise RuntimeError("Генерация остановлена пользователем.")
+      # Non-stream fallback: отдаём ответ единым блоком без имитации токенов.
+      yield reply
 
-  def _run_generation(self, prompt: str, plan: GenerationPlan) -> str:
-    chunks = [chunk for chunk in self._iter_generation_chunks(prompt, plan)]
+  def _run_generation(
+    self,
+    prompt: str,
+    plan: GenerationPlan,
+    *,
+    image_inputs: list[str] | None = None,
+  ) -> str:
+    chunks = [chunk for chunk in self._iter_generation_chunks(prompt, plan, image_inputs=image_inputs)]
     reply = "".join(chunks).strip()
     if not reply:
       raise RuntimeError("Модель вернула пустой ответ.")
@@ -985,11 +1958,19 @@ class PythonModelEngine(EngineModelsMixin):
     user_text = request.message.strip()
     context_mood = normalize_mood(str(request.context.mood or ""), "neutral")
     ui = getattr(request.context, "ui", None)
-    context_window_override = _read_int(getattr(ui, "contextWindow", None), min_value=256, max_value=32768)
-    max_tokens_override = _read_int(getattr(ui, "maxTokens", None), min_value=16, max_value=4096)
-    temperature_override = _read_float(getattr(ui, "temperature", None), min_value=0.0, max_value=2.0)
-    top_p_override = _read_float(getattr(ui, "topP", None), min_value=0.0, max_value=1.0)
-    top_k_override = _read_int(getattr(ui, "topK", None), min_value=1, max_value=400)
+    allow_ui_model_overrides = os.getenv("ANCIA_ALLOW_UI_MODEL_PARAM_OVERRIDES", "").strip() == "1"
+    if allow_ui_model_overrides:
+      context_window_override = _read_int(getattr(ui, "contextWindow", None), min_value=256, max_value=32768)
+      max_tokens_override = _read_int(getattr(ui, "maxTokens", None), min_value=16, max_value=4096)
+      temperature_override = _read_float(getattr(ui, "temperature", None), min_value=0.0, max_value=2.0)
+      top_p_override = _read_float(getattr(ui, "topP", None), min_value=0.0, max_value=1.0)
+      top_k_override = _read_int(getattr(ui, "topK", None), min_value=1, max_value=400)
+    else:
+      context_window_override = None
+      max_tokens_override = None
+      temperature_override = None
+      top_p_override = None
+      top_k_override = None
     if context_window_override is None:
       context_window_override = int(model_params.get("context_window") or tier.max_context)
     if max_tokens_override is None:
@@ -1098,128 +2079,229 @@ class PythonModelEngine(EngineModelsMixin):
     plan: GenerationPlan,
     stream_final_reply: bool = False,
   ) -> Generator[Any, None, ModelResult]:
+    if self._should_short_circuit_image_analysis(request=request, plan=plan):
+      LOGGER.info(
+        "Short-circuiting image analysis on text-only runtime chat=%s model=%s",
+        runtime.chat_id,
+        self.get_selected_model_id(),
+      )
+      return self._build_result_from_reply(
+        plan,
+        VISION_UNAVAILABLE_REPLY,
+        tool_events=[],
+        fallback_mood="warning",
+      )
+
     turns: list[dict[str, Any]] = []
     tool_events: list[ToolEvent] = []
     latest_reply = ""
     latest_mood = ""
-    tools_are_allowed = bool(active_tools)
-
-    for round_index in range(self.MAX_TOOL_CALL_ROUNDS):
-      generation_active_tools = active_tools if tools_are_allowed else set()
-      messages = self._build_messages(request, turns or None, generation_active_tools)
-      prompt = self._render_prompt(messages, generation_active_tools)
-      should_stream_this_round = stream_final_reply and not generation_active_tools
-      round_plan = plan
-      if tools_are_allowed:
-        base_max_tokens = int(plan.max_tokens_override or 256)
-        constrained_max_tokens = max(48, min(160, base_max_tokens))
-        base_temperature = float(plan.temperature_override if plan.temperature_override is not None else plan.tier.temperature)
-        constrained_temperature = max(0.0, min(0.35, base_temperature))
-        round_plan = GenerationPlan(
-          tier=plan.tier,
-          user_text=plan.user_text,
-          context_mood=plan.context_mood,
-          active_tools=plan.active_tools,
-          context_window_override=plan.context_window_override,
-          max_tokens_override=constrained_max_tokens,
-          temperature_override=constrained_temperature,
-          top_p_override=plan.top_p_override,
-          top_k_override=plan.top_k_override,
-        )
-
-      if should_stream_this_round:
-        streamed_preview = ""
-        raw_reply = ""
-        for chunk in self._iter_generation_chunks(prompt, round_plan):
-          raw_reply += chunk
-          preview = self._sanitize_stream_preview(raw_reply, final=False)
-          if len(preview) > len(streamed_preview):
-            delta = preview[len(streamed_preview):]
-            if delta:
-              yield delta
-            streamed_preview = preview
-        reply = raw_reply.strip()
-        preview_final = self._sanitize_stream_preview(reply, final=True)
-        if len(preview_final) > len(streamed_preview):
-          tail_delta = preview_final[len(streamed_preview):]
-          if tail_delta:
-            yield tail_delta
-      else:
-        reply = self._run_generation(prompt, round_plan)
-
-      requested_mood, reply_no_mood = self._extract_reply_mood_directive(reply)
-      if requested_mood:
-        latest_mood = requested_mood
-
-      clean_reply, model_tool_calls = self._extract_tool_calls_from_reply(reply_no_mood)
-      if clean_reply:
-        latest_reply = clean_reply
-
-      if model_tool_calls:
-        LOGGER.info(
-          "Parsed tool calls round=%s chat=%s: %s",
-          round_index + 1,
-          runtime.chat_id,
-          [name for name, _ in model_tool_calls],
-        )
-
-      if not tools_are_allowed or not model_tool_calls:
-        final = clean_reply or latest_reply or "Не удалось сформировать ответ."
-        return self._build_result_from_reply(
-          plan, final, tool_events=tool_events, fallback_mood=latest_mood,
-        )
-
-      call_entries: list[tuple[str, str, dict[str, Any]]] = []
-      tool_calls_payload: list[dict[str, Any]] = []
-      for ci, (name, args) in enumerate(model_tool_calls[: self.MAX_TOOL_CALLS_PER_ROUND]):
-        cid = f"r{round_index + 1}-c{ci + 1}"
-        call_entries.append((cid, name, args))
-        tool_calls_payload.append({
-          "id": cid, "type": "function",
-          "function": {"name": name, "arguments": json.dumps(args, ensure_ascii=False)},
-        })
-
-      turns.append({"role": "assistant", "content": clean_reply or "", "tool_calls": tool_calls_payload})
-
-      for ci, (cid, name, args) in enumerate(call_entries):
-        tool_meta = tool_registry.get_tool_meta(name) if hasattr(tool_registry, "get_tool_meta") else {}
-        display_name = str(tool_meta.get("display_name") or name or "Инструмент").strip() or "Инструмент"
-        yield {"kind": "tool_start", "payload": self._build_tool_start_payload(
-          name=name, display_name=display_name, args=args, round_index=round_index, call_index=ci,
-        )}
-        if name in active_tools and tool_registry.has_tool(name):
-          ev = self._execute_tool_event(tool_registry, runtime, name=name, args=args)
-        elif tool_registry.has_tool(name):
-          ev = ToolEvent(
-            name=name or "unknown",
-            status="error",
-            output={"error": f"Инструмент '{name}' отключен в настройках плагинов или недоступен в автономном режиме."},
-          )
-        else:
-          ev = ToolEvent(
-            name=name or "unknown",
-            status="error",
-            output={"error": f"Инструмент '{name}' не зарегистрирован в backend."},
-          )
-        LOGGER.info(
-          "Tool call completed round=%s chat=%s name=%s status=%s",
-          round_index + 1,
-          runtime.chat_id,
-          name,
-          ev.status,
-        )
-        tool_events.append(ev)
-        yield {"kind": "tool_result", "payload": self._build_tool_result_payload(
-          event=ev, display_name=display_name, args=args, round_index=round_index, call_index=ci,
-        )}
-        turns.append({"role": "tool", "tool_call_id": cid, "name": name, "content": self._summarize_tool_event(ev)})
-      # После хотя бы одного раунда tool-calling следующая генерация должна дать финальный ответ.
-      tools_are_allowed = False
-
-    final = latest_reply or "Не удалось завершить вызов инструментов."
-    return self._build_result_from_reply(
-      plan, final, tool_events=tool_events, fallback_mood=latest_mood,
+    effective_active_tools = self._filter_active_tools_for_request(
+      request=request,
+      plan=plan,
+      tool_registry=tool_registry,
+      active_tools=active_tools,
     )
+    tools_are_allowed = bool(effective_active_tools)
+    image_inputs: list[str] = []
+    temp_image_files: list[str] = []
+    if self._supports_selected_model_vision():
+      image_inputs, temp_image_files = self._resolve_request_image_inputs(request)
+
+    try:
+      for round_index in range(self.MAX_TOOL_CALL_ROUNDS):
+        generation_active_tools = effective_active_tools if tools_are_allowed else set()
+        tool_definitions = (
+          tool_registry.build_tool_definition_map(generation_active_tools)
+          if hasattr(tool_registry, "build_tool_definition_map")
+          else {}
+        )
+        messages = self._build_messages(
+          request,
+          turns or None,
+          generation_active_tools,
+          tool_definitions=tool_definitions,
+        )
+        prompt = self._render_prompt(
+          messages,
+          generation_active_tools,
+          tool_registry=tool_registry,
+        )
+        # Стримим ответ в каждом раунде: sanitize_stream_preview скрывает tool-call
+        # управляющие блоки, поэтому пользователь видит только человекочитаемый текст.
+        should_stream_this_round = bool(stream_final_reply)
+        round_plan = plan
+        if tools_are_allowed:
+          base_max_tokens = int(plan.max_tokens_override or 256)
+          constrained_max_tokens = max(48, min(160, base_max_tokens))
+          base_temperature = float(plan.temperature_override if plan.temperature_override is not None else plan.tier.temperature)
+          constrained_temperature = max(0.0, min(0.35, base_temperature))
+          round_plan = GenerationPlan(
+            tier=plan.tier,
+            user_text=plan.user_text,
+            context_mood=plan.context_mood,
+            active_tools=plan.active_tools,
+            context_window_override=plan.context_window_override,
+            max_tokens_override=constrained_max_tokens,
+            temperature_override=constrained_temperature,
+            top_p_override=plan.top_p_override,
+            top_k_override=plan.top_k_override,
+          )
+
+        if should_stream_this_round:
+          streamed_preview = ""
+          raw_reply = ""
+          for chunk in self._iter_generation_chunks(prompt, round_plan, image_inputs=image_inputs):
+            raw_reply += chunk
+            preview = self._sanitize_stream_preview(raw_reply, final=False)
+            if len(preview) > len(streamed_preview):
+              delta = preview[len(streamed_preview):]
+              if delta:
+                yield delta
+              streamed_preview = preview
+          reply = raw_reply.strip()
+          preview_final = self._sanitize_stream_preview(reply, final=True)
+          if len(preview_final) > len(streamed_preview):
+            tail_delta = preview_final[len(streamed_preview):]
+            if tail_delta:
+              yield tail_delta
+        else:
+          reply = self._run_generation(prompt, round_plan, image_inputs=image_inputs)
+
+        requested_mood, reply_no_mood = self._extract_reply_mood_directive(reply)
+        if requested_mood:
+          latest_mood = requested_mood
+
+        clean_reply, model_tool_calls = self._extract_tool_calls_from_reply(reply_no_mood)
+        if clean_reply:
+          latest_reply = clean_reply
+
+        if model_tool_calls:
+          LOGGER.info(
+            "Parsed tool calls round=%s chat=%s: %s",
+            round_index + 1,
+            runtime.chat_id,
+            [name for name, _ in model_tool_calls],
+          )
+
+        if not tools_are_allowed or not model_tool_calls:
+          if tools_are_allowed and not model_tool_calls:
+            auto_call = self._resolve_auto_invoke_tool_call(
+              user_text=str(getattr(plan, "user_text", "") or ""),
+              active_tools=effective_active_tools,
+              tool_registry=tool_registry,
+            )
+            if auto_call is not None:
+              auto_name, auto_args = auto_call
+              auto_meta = tool_registry.get_tool_meta(auto_name) if hasattr(tool_registry, "get_tool_meta") else {}
+              auto_display_name = str(auto_meta.get("display_name") or auto_name or "Инструмент").strip() or "Инструмент"
+              LOGGER.info(
+                "Auto-invoking tool due to plugin trigger chat=%s tool=%s args=%s",
+                runtime.chat_id,
+                auto_name,
+                json.dumps(auto_args, ensure_ascii=False),
+              )
+              yield {"kind": "tool_start", "payload": self._build_tool_start_payload(
+                name=auto_name,
+                display_name=auto_display_name,
+                args=auto_args,
+                round_index=round_index,
+                call_index=0,
+              )}
+              auto_event = self._execute_tool_event(tool_registry, runtime, name=auto_name, args=auto_args)
+              tool_events.append(auto_event)
+              yield {"kind": "tool_result", "payload": self._build_tool_result_payload(
+                event=auto_event,
+                display_name=auto_display_name,
+                args=auto_args,
+                round_index=round_index,
+                call_index=0,
+              )}
+              auto_cid = f"r{round_index + 1}-auto-1"
+              turns.append({
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                  "id": auto_cid,
+                  "type": "function",
+                  "function": {
+                    "name": auto_name,
+                    "arguments": json.dumps(auto_args, ensure_ascii=False),
+                  },
+                }],
+              })
+              turns.append({
+                "role": "tool",
+                "tool_call_id": auto_cid,
+                "name": auto_name,
+                "content": self._summarize_tool_event(auto_event),
+              })
+              tools_are_allowed = False
+              latest_reply = ""
+              continue
+          final = clean_reply or latest_reply or "Не удалось сформировать ответ."
+          return self._build_result_from_reply(
+            plan, final, tool_events=tool_events, fallback_mood=latest_mood,
+          )
+
+        call_entries: list[tuple[str, str, dict[str, Any]]] = []
+        tool_calls_payload: list[dict[str, Any]] = []
+        for ci, (name, args) in enumerate(model_tool_calls[: self.MAX_TOOL_CALLS_PER_ROUND]):
+          canonical_name = (
+            tool_registry.resolve_tool_name(name)
+            if hasattr(tool_registry, "resolve_tool_name")
+            else name
+          )
+          cid = f"r{round_index + 1}-c{ci + 1}"
+          call_entries.append((cid, canonical_name, args))
+          tool_calls_payload.append({
+            "id": cid, "type": "function",
+            "function": {"name": canonical_name, "arguments": json.dumps(args, ensure_ascii=False)},
+          })
+
+        turns.append({"role": "assistant", "content": clean_reply or "", "tool_calls": tool_calls_payload})
+
+        for ci, (cid, name, args) in enumerate(call_entries):
+          tool_meta = tool_registry.get_tool_meta(name) if hasattr(tool_registry, "get_tool_meta") else {}
+          display_name = str(tool_meta.get("display_name") or name or "Инструмент").strip() or "Инструмент"
+          yield {"kind": "tool_start", "payload": self._build_tool_start_payload(
+            name=name, display_name=display_name, args=args, round_index=round_index, call_index=ci,
+          )}
+          if name in effective_active_tools and tool_registry.has_tool(name):
+            ev = self._execute_tool_event(tool_registry, runtime, name=name, args=args)
+          elif tool_registry.has_tool(name):
+            ev = ToolEvent(
+              name=name or "unknown",
+              status="error",
+              output={"error": f"Инструмент '{name}' отключен в настройках плагинов или недоступен в автономном режиме."},
+            )
+          else:
+            ev = ToolEvent(
+              name=name or "unknown",
+              status="error",
+              output={"error": f"Инструмент '{name}' не зарегистрирован в backend."},
+            )
+          LOGGER.info(
+            "Tool call completed round=%s chat=%s name=%s status=%s",
+            round_index + 1,
+            runtime.chat_id,
+            name,
+            ev.status,
+          )
+          tool_events.append(ev)
+          yield {"kind": "tool_result", "payload": self._build_tool_result_payload(
+            event=ev, display_name=display_name, args=args, round_index=round_index, call_index=ci,
+          )}
+          turns.append({"role": "tool", "tool_call_id": cid, "name": name, "content": self._summarize_tool_event(ev)})
+        # После хотя бы одного раунда tool-calling следующая генерация должна дать финальный ответ.
+        tools_are_allowed = False
+
+      final = latest_reply or "Не удалось завершить вызов инструментов."
+      return self._build_result_from_reply(
+        plan, final, tool_events=tool_events, fallback_mood=latest_mood,
+      )
+    finally:
+      self._cleanup_temp_files(temp_image_files)
 
   def _resolve_with_model_tool_calls(
     self,
@@ -1306,9 +2388,4 @@ class PythonModelEngine(EngineModelsMixin):
 
     if result is None:
       raise RuntimeError("Не удалось получить итог генерации.")
-    if not streamed_directly:
-      for delta in self._chunk_text_for_streaming(result.reply):
-        if not delta:
-          continue
-        yield delta
     return result

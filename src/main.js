@@ -3,6 +3,8 @@ import { StatefulLiquidBackground } from "./background.js";
 import { chatPageTemplate, createChatFeature } from "./chats.js";
 import { createModelsFeature, modelsPageTemplate } from "./models.js";
 import { createPluginsFeature, pluginsPageTemplate } from "./plugins.js";
+import { syncPluginUiExtensions as syncPluginUiExtensionsRuntime } from "./plugins.uiExtensions.js";
+import { getPluginUiRuntime } from "./plugins.uiRuntime.js";
 import {
   BACKEND_STATUS,
   ROUTE_BACKGROUND_STATE,
@@ -90,8 +92,13 @@ hydratePrimaryRouteIcons({
   routeLabelByTarget: ROUTE_LABEL_BY_TARGET,
 });
 
-const setPreloaderStatus = (message) => {
-  updatePreloaderStatus(elements.preloaderLabel, message);
+const setPreloaderStatus = (message, progressPercent = null) => {
+  updatePreloaderStatus(
+    elements.preloaderLabel,
+    message,
+    elements.preloaderProgress,
+    progressPercent,
+  );
 };
 
 async function waitForBackendStartup() {
@@ -137,6 +144,7 @@ const {
 });
 
 const runtimeConfig = loadRuntimeConfig();
+const pluginUiRuntime = getPluginUiRuntime();
 const backendClient = new BackendClient({
   baseUrl: runtimeConfig.backendUrl,
   apiKey: runtimeConfig.apiKey,
@@ -260,6 +268,13 @@ pluginsFeature = createPluginsFeature({
   elements,
   pushToast,
   backendClient,
+  syncPluginUiExtensions: () => syncPluginUiExtensionsRuntime({
+    backendClient,
+    pushToast,
+    onActivePluginIds: (pluginIds) => {
+      pluginUiRuntime.pruneInactivePluginRenderers(pluginIds);
+    },
+  }),
 });
 
 modelsFeature = createModelsFeature({
@@ -275,6 +290,7 @@ chatFeature = createChatFeature({
   elements,
   runtimeConfig,
   backendClient,
+  getPluginToolRenderer: (toolName) => pluginUiRuntime.getToolRenderer(toolName),
   background,
   normalizeRoute,
   getRouteFromHash,
@@ -362,10 +378,13 @@ chatFeature?.initialize();
 modelsFeature?.initialize();
 settingsFeature?.initialize();
 pluginsFeature?.initialize();
+pluginUiRuntime.onChange(() => {
+  chatFeature?.rerenderMessages?.();
+});
 syncMobilePanels();
 applyRoute(getRouteFromHash(), { animate: false });
 
-void runAppStartup({
+const startupPromise = runAppStartup({
   elements,
   runtimeConfig,
   BACKEND_STATUS,
@@ -378,6 +397,16 @@ void runAppStartup({
   hidePreloader,
   onboardingController,
   getSettingsFeature: () => settingsFeature,
+});
+
+void startupPromise.finally(() => {
+  void syncPluginUiExtensionsRuntime({
+    backendClient,
+    pushToast: null,
+    onActivePluginIds: (pluginIds) => {
+      pluginUiRuntime.pruneInactivePluginRenderers(pluginIds);
+    },
+  });
 });
 
 startTokenCounter({

@@ -4,9 +4,34 @@ import json
 import os
 from typing import Any, Callable
 
+MAX_IMAGE_DATA_URL_CHARS = 2_000_000
+
 
 def build_tool_schemas(active_tools: set[str], tool_schemas: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
-  return [tool_schemas[name] for name in active_tools if name in tool_schemas]
+  return [tool_schemas[name] for name in sorted(active_tools) if name in tool_schemas]
+
+
+def _message_content_to_text(content: Any) -> str:
+  if isinstance(content, str):
+    return content
+  if isinstance(content, list):
+    chunks: list[str] = []
+    for item in content:
+      if isinstance(item, dict):
+        block_type = str(item.get("type") or "").strip().lower()
+        if block_type == "text":
+          text_value = str(item.get("text") or "").strip()
+          if text_value:
+            chunks.append(text_value)
+          continue
+        if block_type == "image_url":
+          chunks.append("[Изображение]")
+          continue
+      raw_value = str(item or "").strip()
+      if raw_value:
+        chunks.append(raw_value)
+    return "\n".join(chunks).strip()
+  return str(content or "").strip()
 
 
 def convert_turns_for_compat(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -15,7 +40,7 @@ def convert_turns_for_compat(messages: list[dict[str, Any]]) -> list[dict[str, A
   for msg in messages:
     role = msg.get("role", "user")
     if role == "tool":
-      content = str(msg.get("content") or "")
+      content = _message_content_to_text(msg.get("content"))
       result.append({"role": "user", "content": f"[Результат инструмента]\n{content}"})
     elif role == "assistant" and msg.get("tool_calls"):
       calls_text = "\n".join(
@@ -23,10 +48,16 @@ def convert_turns_for_compat(messages: list[dict[str, Any]]) -> list[dict[str, A
         for tc in (msg.get("tool_calls") or [])
         if isinstance(tc, dict) and isinstance(tc.get("function"), dict)
       )
-      content = str(msg.get("content") or "").strip()
+      content = _message_content_to_text(msg.get("content"))
       result.append({"role": "assistant", "content": f"{content}\n{calls_text}".strip()})
     else:
-      result.append(msg)
+      content = msg.get("content")
+      if isinstance(content, list):
+        normalized = dict(msg)
+        normalized["content"] = _message_content_to_text(content)
+        result.append(normalized)
+      else:
+        result.append(msg)
   return result
 
 
@@ -41,8 +72,7 @@ def build_attachment_context(
   request: Any,
   *,
   truncate_text_fn: Callable[[str, int], str],
-  get_model_entry_fn: Callable[[str], Any | None],
-  normalize_model_id_fn: Callable[[str | None, str], str],
+  supports_vision: bool,
 ) -> str:
   attachments = list(getattr(request, "attachments", None) or [])
   if not attachments:
@@ -51,10 +81,6 @@ def build_attachment_context(
   lines: list[str] = ["Вложения пользователя:"]
   total_text_budget = 9000
   used_budget = 0
-  ui_context = getattr(getattr(request, "context", None), "ui", None)
-  selected_model_id = normalize_model_id_fn(getattr(ui_context, "modelId", ""), "")
-  selected_model = get_model_entry_fn(selected_model_id) if selected_model_id else None
-  supports_vision = bool(selected_model and getattr(selected_model, "supports_vision", False))
 
   for index, attachment in enumerate(attachments[:10], start=1):
     item = attachment.model_dump() if hasattr(attachment, "model_dump") else dict(attachment)
@@ -81,19 +107,85 @@ def build_attachment_context(
 
     if kind == "image":
       data_url = str(item.get("dataUrl") or "").strip()
+      is_embedded_image = data_url.startswith("data:image/")
+      if is_embedded_image and len(data_url) > MAX_IMAGE_DATA_URL_CHARS:
+        lines.append(
+          "Изображение приложено, но размер слишком большой для прямой передачи в vision-модель. "
+          "Отправь более лёгкую версию файла."
+        )
+        continue
       if supports_vision:
-        lines.append("Изображение приложено. Модель vision-capable: можно использовать визуальный анализ.")
-        if data_url and used_budget < total_text_budget:
-          remaining = max(0, total_text_budget - used_budget)
-          excerpt = truncate_text_fn(data_url, max(420, min(1800, remaining)))
-          used_budget += len(excerpt)
-          lines.append("```text")
-          lines.append(f"image_data_url={excerpt}")
-          lines.append("```")
+        lines.append("Изображение приложено. Доступен визуальный анализ.")
+        lines.append(
+          "Если вопрос про это изображение, анализируй его напрямую: "
+          "не трактуй имя файла как URL и не запускай инструменты без явной просьбы пользователя."
+        )
       else:
-        lines.append("Изображение приложено. Текущая модель text-only, требуется описание изображения текстом.")
+        lines.append(
+          "Изображение приложено, но текущий runtime не умеет визуально анализировать фото. "
+          "Не выдумывай содержание изображения; честно сообщи, что vision-анализ недоступен."
+        )
 
   return "\n".join(lines).strip()
+
+
+def _resolve_image_blocks(
+  request: Any,
+  *,
+  truncate_text_fn: Callable[[str, int], str],
+  supports_vision: bool,
+) -> list[dict[str, Any]]:
+  if not supports_vision:
+    return []
+  attachments = list(getattr(request, "attachments", None) or [])
+  image_blocks: list[dict[str, Any]] = []
+  for attachment in attachments[:6]:
+    item = attachment.model_dump() if hasattr(attachment, "model_dump") else dict(attachment)
+    kind = normalize_attachment_kind(str(item.get("kind") or "file"))
+    if kind != "image":
+      continue
+    data_url = str(item.get("dataUrl") or "").strip()
+    if not data_url.startswith("data:image/"):
+      continue
+    if len(data_url) > MAX_IMAGE_DATA_URL_CHARS:
+      continue
+    image_blocks.append(
+      {
+        "type": "image_url",
+        "image_url": {
+          "url": data_url,
+        },
+      }
+    )
+  return image_blocks
+
+
+def _build_user_message_content(
+  *,
+  user_text: str,
+  attachment_context: str,
+  image_blocks: list[dict[str, Any]],
+) -> str | list[dict[str, Any]]:
+  merged_text = user_text
+  if attachment_context:
+    merged_text = f"{merged_text}\n\n{attachment_context}".strip()
+
+  if not image_blocks:
+    return merged_text
+
+  text_block = merged_text.strip() or "Проанализируй вложенные изображения и ответь на запрос пользователя."
+  text_block = (
+    f"{text_block}\n\n"
+    "Важно: для задач вида «что на фото/изображении» сначала используй визуальный анализ вложения. "
+    "Не превращай имя файла во внешний URL и не вызывай инструменты, если пользователь явно этого не просил."
+  ).strip()
+  return [
+    {
+      "type": "text",
+      "text": text_block,
+    },
+    *image_blocks,
+  ]
 
 
 def build_messages(
@@ -101,10 +193,12 @@ def build_messages(
   *,
   base_system_prompt: str,
   active_tools: set[str],
+  tool_definitions: dict[str, dict[str, Any]] | None,
   turns: list[dict[str, Any]] | None,
   build_system_prompt_fn: Callable[..., str],
   truncate_text_fn: Callable[[str, int], str],
   build_attachment_context_fn: Callable[[Any], str],
+  supports_vision: bool,
   max_history_messages: int,
   max_history_total_chars: int,
   max_history_entry_chars: int,
@@ -114,6 +208,7 @@ def build_messages(
     base_system_prompt,
     request,
     active_tools=active_tools,
+    tool_definitions=tool_definitions or {},
   )
   if system_prompt.strip():
     messages.append({"role": "system", "content": system_prompt.strip()})
@@ -141,9 +236,17 @@ def build_messages(
 
   user_text = str(getattr(request, "message", "") or "").strip()
   attachment_context = build_attachment_context_fn(request)
-  if attachment_context:
-    user_text = f"{user_text}\n\n{attachment_context}".strip()
-  messages.append({"role": "user", "content": user_text})
+  image_blocks = _resolve_image_blocks(
+    request,
+    truncate_text_fn=truncate_text_fn,
+    supports_vision=supports_vision,
+  )
+  user_content = _build_user_message_content(
+    user_text=user_text,
+    attachment_context=attachment_context,
+    image_blocks=image_blocks,
+  )
+  messages.append({"role": "user", "content": user_content})
 
   if turns:
     messages.extend(turns)
@@ -191,7 +294,7 @@ def render_prompt(
   blocks: list[str] = []
   for message in messages:
     role = message.get("role", "user")
-    content = message.get("content") or ""
+    content = _message_content_to_text(message.get("content"))
     blocks.append(f"[{role}]\n{content}")
   blocks.append("[assistant]")
   return "\n\n".join(blocks)

@@ -261,35 +261,15 @@ export function applyDevicePreset(baseConfig = {}, presetId = "auto", availableM
     ...presetConfig,
     devicePreset: safePreset,
     modelId: selectedModelId,
+    modelContextWindow: null,
+    modelMaxTokens: null,
+    modelTemperature: null,
+    modelTopP: null,
+    modelTopK: null,
   });
 }
 
 export function normalizeRuntimeConfig(partial = {}) {
-  const normalizeOptionalInt = (value, min, max, fallback = null) => {
-    if (value === "" || value == null) {
-      return fallback;
-    }
-    const parsed = Number.parseInt(String(value), 10);
-    if (!Number.isFinite(parsed) || parsed <= 0) {
-      return fallback;
-    }
-    return clamp(parsed, min, max);
-  };
-
-  const normalizeOptionalFloat = (value, min, max, fallback = null) => {
-    if (value === "" || value == null) {
-      return fallback;
-    }
-    const parsed = Number.parseFloat(String(value));
-    if (!Number.isFinite(parsed)) {
-      return fallback;
-    }
-    if (parsed < min || parsed > max) {
-      return fallback;
-    }
-    return parsed;
-  };
-
   const config = {
     ...DEFAULT_RUNTIME_CONFIG,
     ...(partial || {}),
@@ -301,11 +281,12 @@ export function normalizeRuntimeConfig(partial = {}) {
   config.timeoutMs = clamp(Number(config.timeoutMs || DEFAULT_RUNTIME_CONFIG.timeoutMs), 500, 120000);
   config.modelId = normalizeModelId(config.modelId);
   config.devicePreset = normalizeDevicePreset(config.devicePreset);
-  config.modelContextWindow = normalizeOptionalInt(config.modelContextWindow, 256, 32768, null);
-  config.modelMaxTokens = normalizeOptionalInt(config.modelMaxTokens, 16, 4096, null);
-  config.modelTemperature = normalizeOptionalFloat(config.modelTemperature, 0, 2, null);
-  config.modelTopP = normalizeOptionalFloat(config.modelTopP, 0, 1, null);
-  config.modelTopK = normalizeOptionalInt(config.modelTopK, 1, 400, null);
+  // Источник параметров генерации только в БД бэкенда на странице "Модели".
+  config.modelContextWindow = null;
+  config.modelMaxTokens = null;
+  config.modelTemperature = null;
+  config.modelTopP = null;
+  config.modelTopK = null;
   config.autoReconnect = Boolean(config.autoReconnect);
   config.bootMood = String(config.bootMood || DEFAULT_RUNTIME_CONFIG.bootMood).toLowerCase();
   config.defaultTransitionMs = clamp(
