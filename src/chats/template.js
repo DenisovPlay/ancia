@@ -8,7 +8,7 @@ export const chatPageTemplate = `
     <button
       id="chat-new-session-button"
       type="button"
-      class="icon-button active:scale-95 mb-3 rounded-lg border border-zinc-700 bg-zinc-100 px-3 py-1.5 text-sm font-medium text-zinc-900 transition hover:bg-zinc-200"
+      class="icon-button active:scale-95 duration-300 mb-3 rounded-lg border border-zinc-700 bg-zinc-100 px-3 py-1.5 text-sm font-medium text-zinc-900 transition hover:bg-zinc-200"
     >
       ${icon("chat-plus")}
       <span>Новый чат</span>
@@ -22,7 +22,7 @@ export const chatPageTemplate = `
           type="button"
           aria-label="Очистить активную сессию"
           title="Очистить активную сессию"
-          class="border border-zinc-800 icon-button active:scale-95 h-6 w-6 rounded-md text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+          class="border border-zinc-800 icon-button active:scale-95 duration-300 h-6 w-6 rounded-md text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
         >
           ${icon("trash")}
         </button>
@@ -31,7 +31,7 @@ export const chatPageTemplate = `
           type="button"
           aria-label="Фильтр"
           title="Фильтр"
-          class="border border-zinc-800 icon-button active:scale-95 h-6 w-6 rounded-md text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+          class="border border-zinc-800 icon-button active:scale-95 duration-300 h-6 w-6 rounded-md text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
         >
           ${icon("filter")}
         </button>
@@ -53,7 +53,7 @@ export const chatPageTemplate = `
           aria-controls="panel-left"
           aria-expanded="false"
           title="Сессии"
-          class="icon-button backdrop-blur-sm bg-zinc-900/80 active:scale-95 h-8 w-8 rounded-lg border border-zinc-800 text-zinc-400 transition hover:bg-zinc-800 hover:text-zinc-200 xl:hidden"
+          class="icon-button backdrop-blur-sm bg-zinc-900/80 active:scale-95 duration-300 h-8 w-8 rounded-lg border border-zinc-800 text-zinc-400 transition hover:bg-zinc-800 hover:text-zinc-200 xl:hidden"
         >
           ${icon("sessions")}
         </button>
@@ -64,7 +64,7 @@ export const chatPageTemplate = `
           aria-controls="panel-right"
           aria-expanded="false"
           title="Инспектор"
-          class="icon-button backdrop-blur-sm bg-zinc-900/80 active:scale-95 h-8 w-8 rounded-lg border border-zinc-800 text-zinc-400 transition hover:bg-zinc-800 hover:text-zinc-200 2xl:hidden"
+          class="icon-button backdrop-blur-sm bg-zinc-900/80 active:scale-95 duration-300 h-8 w-8 rounded-lg border border-zinc-800 text-zinc-400 transition hover:bg-zinc-800 hover:text-zinc-200 2xl:hidden"
         >
           ${icon("inspector")}
         </button>
@@ -88,7 +88,7 @@ export const chatPageTemplate = `
           id="composer-submit"
           type="submit"
           aria-label="Отправить сообщение"
-          class="icon-button flex-shrink-0 flex items-center justify-center active:scale-95 rounded-lg border border-zinc-700 bg-zinc-100 h-9 w-9 text-sm font-medium text-zinc-950 transition hover:bg-zinc-200 mb-0.5"
+          class="icon-button flex-shrink-0 flex items-center justify-center active:scale-95 duration-300 rounded-lg border border-zinc-700 bg-zinc-100 h-9 w-9 text-sm font-medium text-zinc-950 transition hover:bg-zinc-200 mb-0.5"
         >
           ${icon("send")}
         </button>
@@ -99,7 +99,7 @@ export const chatPageTemplate = `
           type="button"
           aria-label="Добавить вложение"
           title="Добавить вложение"
-          class="icon-button active:scale-95 h-7 w-7 rounded-md border border-zinc-800 bg-transparent text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300 transition"
+          class="icon-button active:scale-95 duration-300 h-7 w-7 rounded-md border border-zinc-800 bg-transparent text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
         >
           ${icon("attach")}
         </button>

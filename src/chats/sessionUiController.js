@@ -38,7 +38,7 @@ export function createChatSessionUiController({
     button.dataset.active = String(isActive);
     button.dataset.sessionId = session.id;
     button.dataset.sessionTitle = session.title;
-    button.className = "route-pill active:scale-95 w-full rounded-lg border p-2.5 text-left transition";
+    button.className = "route-pill active:scale-95 duration-300 w-full rounded-lg border p-2.5 text-left";
     button.setAttribute("aria-pressed", String(isActive));
 
     const title = document.createElement("p");

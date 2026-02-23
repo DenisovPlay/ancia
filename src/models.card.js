@@ -111,7 +111,7 @@ export function renderModelCard(model) {
     ? `Локально: ${model.cache.size_human || "готово"}`
     : "Не установлена";
 
-  const btnBase = "icon-button active:scale-95 rounded-lg border px-2.5 py-1 text-xs transition";
+  const btnBase = "icon-button active:scale-95 duration-300 rounded-lg border px-2.5 py-1 text-xs";
   const btnDefault = `${btnBase} border-zinc-800 bg-zinc-900 text-zinc-300 hover:bg-zinc-800`;
   const btnAccent = `${btnBase} border-sky-900/50 bg-sky-950/40 text-sky-300 hover:bg-sky-950/60`;
 
@@ -142,7 +142,7 @@ export function renderModelCard(model) {
   }
 
   const homepageHtml = model.homepage
-    ? `<a href="${escapeHtml(model.homepage)}" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1 text-xs text-zinc-500 hover:text-zinc-300 transition">${icon("globe", "ui-icon-sm")} источник</a>`
+    ? `<a href="${escapeHtml(model.homepage)}" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1 text-xs text-zinc-500 hover:text-zinc-300">${icon("globe", "ui-icon-sm")} источник</a>`
     : "";
 
   return `
@@ -178,7 +178,7 @@ export function renderModelCard(model) {
         ${actionHtml}
         <div class="flex items-center gap-1.5 ml-auto">
           ${homepageHtml}
-          ${isInstalled ? `<button type="button" data-model-action="open-params" class="icon-button text-xs text-zinc-500 hover:text-zinc-300 transition">${icon("settings", "ui-icon-sm")} параметры</button>` : ""}
+          ${isInstalled ? `<button type="button" data-model-action="open-params" class="icon-button text-xs text-zinc-500 hover:text-zinc-300">${icon("settings", "ui-icon-sm")} параметры</button>` : ""}
         </div>
       </div>
     </article>

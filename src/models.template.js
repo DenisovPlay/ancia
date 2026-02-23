@@ -13,10 +13,10 @@ export const modelsPageTemplate = `
       class="rounded-lg border border-zinc-800 bg-zinc-950 p-2.5 text-sm text-zinc-200 outline-none transition focus:border-zinc-600"
     />
     <div class="mt-3 space-y-1.5">
-      <button type="button" data-model-filter="all" data-active="true" class="route-pill flex items-center gap-2.5 p-2.5 active:scale-95 w-full rounded-lg border border-zinc-800 text-left text-sm transition">
+      <button type="button" data-model-filter="all" data-active="true" class="route-pill flex items-center gap-2.5 p-2.5 active:scale-95 duration-300 w-full rounded-lg border border-zinc-800 text-left text-sm">
         <span class="icon-button justify-start">${icon("models", "ui-icon-lg")}<span>Все модели</span></span>
       </button>
-      <button type="button" data-model-filter="installed" data-active="false" class="route-pill flex items-center gap-2.5 p-2.5 active:scale-95 w-full rounded-lg border border-zinc-800 text-left text-sm transition">
+      <button type="button" data-model-filter="installed" data-active="false" class="route-pill flex items-center gap-2.5 p-2.5 active:scale-95 duration-300 w-full rounded-lg border border-zinc-800 text-left text-sm">
         <span class="icon-button justify-start">${icon("models-installed", "ui-icon-lg")}<span>Установленные</span></span>
       </button>
     </div>
@@ -44,14 +44,14 @@ export const modelsPageTemplate = `
           aria-controls="model-aside"
           aria-expanded="false"
           title="Фильтр"
-          class="icon-button active:scale-95 h-8 w-8 rounded-lg border border-zinc-800 bg-zinc-900 text-zinc-400 transition hover:bg-zinc-800 hover:text-zinc-200 xl:hidden"
+          class="icon-button active:scale-95 duration-300 h-8 w-8 rounded-lg border border-zinc-800 bg-zinc-900 text-zinc-400 transition hover:bg-zinc-800 hover:text-zinc-200 xl:hidden"
         >
           ${icon("categories")}
         </button>
         <button
           type="button"
           data-models-action="refresh"
-          class="icon-button active:scale-95 rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-sm text-zinc-300 transition hover:bg-zinc-800"
+          class="icon-button active:scale-95 duration-300 rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-sm text-zinc-300 transition hover:bg-zinc-800"
         >
           ${icon("refresh")}
           <span>Обновить список</span>
@@ -59,7 +59,7 @@ export const modelsPageTemplate = `
         <button
           type="button"
           data-models-action="refresh-catalog"
-          class="icon-button active:scale-95 rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-sm text-zinc-300 transition hover:bg-zinc-800"
+          class="icon-button active:scale-95 duration-300 rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-sm text-zinc-300 transition hover:bg-zinc-800"
         >
           ${icon("huggingface")}
           <span>Найти на HF</span>
@@ -68,8 +68,8 @@ export const modelsPageTemplate = `
     </div>
 
     <div class="mb-2 flex flex-wrap gap-1.5 xl:hidden">
-      <button type="button" data-model-filter="all" data-active="true" class="route-pill active:scale-95 rounded-lg border px-2.5 py-1 text-xs transition">Все</button>
-      <button type="button" data-model-filter="installed" data-active="false" class="route-pill active:scale-95 rounded-lg border px-2.5 py-1 text-xs transition">Установленные</button>
+      <button type="button" data-model-filter="all" data-active="true" class="route-pill active:scale-95 duration-300 rounded-lg border px-2.5 py-1 text-xs">Все</button>
+      <button type="button" data-model-filter="installed" data-active="false" class="route-pill active:scale-95 duration-300 rounded-lg border px-2.5 py-1 text-xs">Установленные</button>
     </div>
 
     <article id="models-runtime-banner" class="hidden mb-2 rounded-lg border border-sky-900/40 bg-sky-950/30 p-2.5">

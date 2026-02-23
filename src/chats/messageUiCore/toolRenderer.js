@@ -357,7 +357,7 @@ export function createToolRenderer({
     const expandBtn = document.createElement("button");
     expandBtn.type = "button";
     expandBtn.disabled = false;
-    expandBtn.className = "tool-expand-btn icon-button active:scale-95 h-7 w-7 rounded-md border border-zinc-800 bg-zinc-900 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200";
+    expandBtn.className = "tool-expand-btn icon-button active:scale-95 duration-300 h-7 w-7 rounded-md border border-zinc-800 bg-zinc-900 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200";
     expandBtn.setAttribute("aria-label", "Подробности");
     expandBtn.setAttribute("aria-expanded", "false");
     expandBtn.innerHTML = icon("chevron-down");

@@ -91,7 +91,7 @@ export function renderPluginCard(plugin) {
   const versionText = plugin.version.startsWith("v") ? plugin.version : `v${plugin.version}`;
   const docsUrl = plugin.homepage || plugin.repoUrl;
   const homepageLink = docsUrl
-    ? `<a href="${escapeHtml(docsUrl)}" target="_blank" rel="noreferrer" class="text-xs text-zinc-500 hover:text-zinc-300 transition">${plugin.homepage ? "Открыть страницу" : "Открыть репозиторий"}</a>`
+    ? `<a href="${escapeHtml(docsUrl)}" target="_blank" rel="noreferrer" class="text-xs text-zinc-500 hover:text-zinc-300">${plugin.homepage ? "Открыть страницу" : "Открыть репозиторий"}</a>`
     : `<span class="text-xs text-zinc-600">Системный плагин</span>`;
 
   const canToggle = isInstalled && !plugin.locked;
@@ -100,7 +100,7 @@ export function renderPluginCard(plugin) {
   const canInstall = !isInstalled && plugin.canInstall;
   const canUninstall = isInstalled && plugin.canUninstall;
 
-  const btnCls = "active:scale-95 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-1 text-xs text-zinc-300 hover:bg-zinc-800";
+  const btnCls = "active:scale-95 duration-300 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-1 text-xs text-zinc-300 hover:bg-zinc-800";
   const btnDisabled = "opacity-50 cursor-not-allowed";
 
   const actionsHtml = !isInstalled

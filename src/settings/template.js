@@ -20,19 +20,19 @@ export const settingsPageTemplate = `
 
     <nav class="mt-3 space-y-1.5" aria-label="Пункты настроек">
       <button type="button" data-settings-section-target="personalization" data-active="true"
-        class="route-pill flex items-center gap-2.5 p-2.5 active:scale-95 w-full rounded-lg border border-zinc-800 text-left text-sm transition">
+        class="route-pill flex items-center gap-2.5 p-2.5 active:scale-95 duration-300 w-full rounded-lg border border-zinc-800 text-left text-sm">
         <span class="icon-button justify-start">${icon("personalization", "ui-icon-lg")}<span>Персонализация</span></span>
       </button>
       <button type="button" data-settings-section-target="interface" data-active="false"
-        class="route-pill flex items-center gap-2.5 p-2.5 active:scale-95 w-full rounded-lg border border-zinc-800 text-left text-sm transition">
+        class="route-pill flex items-center gap-2.5 p-2.5 active:scale-95 duration-300 w-full rounded-lg border border-zinc-800 text-left text-sm">
         <span class="icon-button justify-start">${icon("interface", "ui-icon-lg")}<span>Интерфейс</span></span>
       </button>
       <button type="button" data-settings-section-target="developer" data-active="false"
-        class="route-pill flex items-center gap-2.5 p-2.5 active:scale-95 w-full rounded-lg border border-zinc-800 text-left text-sm transition">
+        class="route-pill flex items-center gap-2.5 p-2.5 active:scale-95 duration-300 w-full rounded-lg border border-zinc-800 text-left text-sm">
         <span class="icon-button justify-start">${icon("developers", "ui-icon-lg")}<span>Разработчик</span></span>
       </button>
       <button type="button" data-settings-section-target="about" data-active="false"
-        class="route-pill flex items-center gap-2.5 p-2.5 active:scale-95 w-full rounded-lg border border-zinc-800 text-left text-sm transition">
+        class="route-pill flex items-center gap-2.5 p-2.5 active:scale-95 duration-300 w-full rounded-lg border border-zinc-800 text-left text-sm">
         <span class="icon-button justify-start">${icon("info", "ui-icon-lg")}<span>О приложении</span></span>
       </button>
     </nav>
@@ -49,11 +49,11 @@ export const settingsPageTemplate = `
           Есть изменения
         </span>
         <button type="button" data-open-settings-aside aria-label="Разделы" aria-controls="settings-aside" aria-expanded="false" title="Разделы"
-          class="icon-button active:scale-95 h-8 w-8 rounded-lg border border-zinc-800 bg-zinc-900 text-zinc-400 transition hover:bg-zinc-800 hover:text-zinc-200 xl:hidden">
+          class="icon-button active:scale-95 duration-300 h-8 w-8 rounded-lg border border-zinc-800 bg-zinc-900 text-zinc-400 transition hover:bg-zinc-800 hover:text-zinc-200 xl:hidden">
           ${icon("categories")}
         </button>
         <button id="settings-save-config" type="button" aria-keyshortcuts="Control+S Meta+S"
-          class="icon-button active:scale-95 rounded-lg border border-zinc-600 bg-zinc-100 px-3 py-1.5 text-sm font-medium text-zinc-950 transition hover:bg-zinc-200">
+          class="icon-button active:scale-95 duration-300 rounded-lg border border-zinc-600 bg-zinc-100 px-3 py-1.5 text-sm font-medium text-zinc-950 transition hover:bg-zinc-200">
           ${icon("save")}
           <span>Сохранить</span>
         </button>
@@ -113,7 +113,7 @@ export const settingsPageTemplate = `
               <option value="">Сканируем...</option>
             </select>
             <button id="settings-ui-font-refresh" type="button"
-              class="icon-button active:scale-95 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-2 text-zinc-400 transition hover:bg-zinc-800">
+              class="icon-button active:scale-95 duration-300 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-2 text-zinc-400 transition hover:bg-zinc-800">
               ${icon("refresh")}
             </button>
           </div>
@@ -192,7 +192,7 @@ export const settingsPageTemplate = `
             <p id="settings-connection-meta" class="text-xs text-zinc-600">Сервер не проверялся</p>
           </div>
           <button id="settings-test-connection" type="button"
-            class="icon-button active:scale-95 rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-xs text-zinc-300 transition hover:bg-zinc-800">
+            class="icon-button active:scale-95 duration-300 rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-xs text-zinc-300 transition hover:bg-zinc-800">
             ${icon("inspector")}
             <span>Проверить</span>
           </button>
@@ -218,7 +218,7 @@ export const settingsPageTemplate = `
         </div>
         <div class="px-3.5 py-2.5 flex justify-end">
           <button id="settings-reset-all" type="button"
-            class="icon-button active:scale-95 rounded-lg border border-red-900/50 bg-red-950/40 px-3 py-1.5 text-xs text-red-400 transition hover:bg-red-950/60">
+            class="icon-button active:scale-95 duration-300 rounded-lg border border-red-900/50 bg-red-950/40 px-3 py-1.5 text-xs text-red-400 transition hover:bg-red-950/60">
             ${icon("trash")}
             <span>Сбросить все настройки</span>
           </button>

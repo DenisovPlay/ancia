@@ -6,19 +6,19 @@ export const pluginsPageTemplate = `
     class="page-aside bg-zinc-950/60 backdrop-blur-sm fixed inset-y-0 left-0 z-10 flex w-[80vw] max-w-[260px] -translate-x-[112%] flex-col p-3 pt-10 opacity-0 pointer-events-none transition-transform duration-200 xl:relative xl:z-10 xl:h-full xl:min-h-0 xl:w-full xl:max-w-full xl:translate-x-0 xl:opacity-100 xl:pointer-events-auto xl:pt-3"
   >
     <div class="space-y-1.5">
-      <button type="button" data-plugin-filter="all" data-active="true" class="route-pill flex items-center gap-2.5 p-2.5 active:scale-95 w-full rounded-lg border border-zinc-800 text-left text-sm transition">
+      <button type="button" data-plugin-filter="all" data-active="true" class="route-pill flex items-center gap-2.5 p-2.5 active:scale-95 duration-300 w-full rounded-lg border border-zinc-800 text-left text-sm">
         <span class="icon-button justify-start">${icon("grid", "ui-icon-lg")}<span>Все</span></span>
       </button>
-      <button type="button" data-plugin-filter="installed" data-active="false" class="route-pill flex items-center gap-2.5 p-2.5 active:scale-95 w-full rounded-lg border border-zinc-800 text-left text-sm transition">
+      <button type="button" data-plugin-filter="installed" data-active="false" class="route-pill flex items-center gap-2.5 p-2.5 active:scale-95 duration-300 w-full rounded-lg border border-zinc-800 text-left text-sm">
         <span class="icon-button justify-start">${icon("check-circle", "ui-icon-lg")}<span>Установленные</span></span>
       </button>
-      <button type="button" data-plugin-filter="agent" data-active="false" class="route-pill flex items-center gap-2.5 p-2.5 active:scale-95 w-full rounded-lg border border-zinc-800 text-left text-sm transition">
+      <button type="button" data-plugin-filter="agent" data-active="false" class="route-pill flex items-center gap-2.5 p-2.5 active:scale-95 duration-300 w-full rounded-lg border border-zinc-800 text-left text-sm">
         <span class="icon-button justify-start">${icon("bot", "ui-icon-lg")}<span>Агент</span></span>
       </button>
-      <button type="button" data-plugin-filter="web" data-active="false" class="route-pill flex items-center gap-2.5 p-2.5 active:scale-95 w-full rounded-lg border border-zinc-800 text-left text-sm transition">
+      <button type="button" data-plugin-filter="web" data-active="false" class="route-pill flex items-center gap-2.5 p-2.5 active:scale-95 duration-300 w-full rounded-lg border border-zinc-800 text-left text-sm">
         <span class="icon-button justify-start">${icon("globe", "ui-icon-lg")}<span>Веб</span></span>
       </button>
-      <button type="button" data-plugin-filter="system" data-active="false" class="route-pill flex items-center gap-2.5 p-2.5 active:scale-95 w-full rounded-lg border border-zinc-800 text-left text-sm transition">
+      <button type="button" data-plugin-filter="system" data-active="false" class="route-pill flex items-center gap-2.5 p-2.5 active:scale-95 duration-300 w-full rounded-lg border border-zinc-800 text-left text-sm">
         <span class="icon-button justify-start">${icon("settings", "ui-icon-lg")}<span>Система</span></span>
       </button>
     </div>
@@ -46,14 +46,14 @@ export const pluginsPageTemplate = `
           aria-controls="plugin-aside"
           aria-expanded="false"
           title="Категории"
-          class="icon-button active:scale-95 h-8 w-8 rounded-lg border border-zinc-800 bg-zinc-900 text-zinc-400 transition hover:bg-zinc-800 hover:text-zinc-200 xl:hidden"
+          class="icon-button active:scale-95 duration-300 h-8 w-8 rounded-lg border border-zinc-800 bg-zinc-900 text-zinc-400 transition hover:bg-zinc-800 hover:text-zinc-200 xl:hidden"
         >
           ${icon("categories")}
         </button>
         <button
           type="button"
           data-plugins-action="refresh"
-          class="icon-button active:scale-95 rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-sm text-zinc-300 transition hover:bg-zinc-800"
+          class="icon-button active:scale-95 duration-300 rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-sm text-zinc-300 transition hover:bg-zinc-800"
         >
           ${icon("refresh")}
           <span>Обновить список</span>
@@ -62,11 +62,11 @@ export const pluginsPageTemplate = `
     </div>
 
     <div class="mb-2 flex flex-wrap gap-1.5 xl:hidden">
-      <button type="button" data-plugin-filter="all" data-active="true" class="route-pill active:scale-95 rounded-lg border px-2.5 py-1 text-xs transition">Все</button>
-      <button type="button" data-plugin-filter="installed" data-active="false" class="route-pill active:scale-95 rounded-lg border px-2.5 py-1 text-xs transition">Установленные</button>
-      <button type="button" data-plugin-filter="agent" data-active="false" class="route-pill active:scale-95 rounded-lg border px-2.5 py-1 text-xs transition">Агент</button>
-      <button type="button" data-plugin-filter="web" data-active="false" class="route-pill active:scale-95 rounded-lg border px-2.5 py-1 text-xs transition">Веб</button>
-      <button type="button" data-plugin-filter="system" data-active="false" class="route-pill active:scale-95 rounded-lg border px-2.5 py-1 text-xs transition">Система</button>
+      <button type="button" data-plugin-filter="all" data-active="true" class="route-pill active:scale-95 duration-300 rounded-lg border px-2.5 py-1 text-xs">Все</button>
+      <button type="button" data-plugin-filter="installed" data-active="false" class="route-pill active:scale-95 duration-300 rounded-lg border px-2.5 py-1 text-xs">Установленные</button>
+      <button type="button" data-plugin-filter="agent" data-active="false" class="route-pill active:scale-95 duration-300 rounded-lg border px-2.5 py-1 text-xs">Агент</button>
+      <button type="button" data-plugin-filter="web" data-active="false" class="route-pill active:scale-95 duration-300 rounded-lg border px-2.5 py-1 text-xs">Веб</button>
+      <button type="button" data-plugin-filter="system" data-active="false" class="route-pill active:scale-95 duration-300 rounded-lg border px-2.5 py-1 text-xs">Система</button>
     </div>
 
     <section id="plugins-grid" class="chat-scroll grid flex-1 min-h-0 auto-rows-max gap-2 overflow-auto pb-2 md:grid-cols-2 2xl:grid-cols-3">
