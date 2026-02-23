@@ -6,6 +6,7 @@ export function createRuntimeConfigController({
   updateRuntimeBadges,
   applyInterfacePreferences,
   getSettingsFeature,
+  getChatFeature,
   getPluginsFeature,
   getOnboardingController,
   loadOnboardingState,
@@ -30,6 +31,7 @@ export function createRuntimeConfigController({
     updateRuntimeBadges();
     applyInterfacePreferences();
     getSettingsFeature()?.onRuntimeConfigApplied();
+    getChatFeature()?.syncComposerState?.();
     if (previousConfig.autonomousMode !== runtimeConfig.autonomousMode) {
       void getPluginsFeature()?.reload?.();
     }

@@ -979,14 +979,6 @@ def register_api_routes(
         if loaded_model_id_after_ready:
           stream_model_id = loaded_model_id_after_ready
           stream_model_label = resolve_model_display_name(stream_model_id)
-          if assistant_message_id is not None:
-            upsert_assistant_message(
-              assistant_stream_text,
-              model_label=stream_model_label,
-              mood=incoming_mood,
-              streaming=True,
-              extra_meta={"tool_events": []},
-            )
 
         result: Any = None
         queue: queue_lib.Queue[tuple[str, Any]] = queue_lib.Queue()
@@ -1116,12 +1108,6 @@ def register_api_routes(
             delta_chars += len(safe_delta)
             if first_delta_at is None:
               first_delta_at = time.perf_counter()
-            upsert_assistant_message(
-              assistant_stream_text,
-              model_label=stream_model_label,
-              mood=incoming_mood,
-              streaming=True,
-            )
             yield _format_sse("delta", {"text": safe_delta})
             continue
 

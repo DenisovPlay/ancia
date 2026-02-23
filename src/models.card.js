@@ -36,6 +36,7 @@ export function normalizeModelCardPayload(rawModel) {
     supportsTools: rawModel.supports_tools !== false,
     supportsVision: Boolean(rawModel.supports_vision),
     supportsDocuments: rawModel.supports_documents !== false,
+    maxContext: asNumberOrNull(rawModel.max_context),
     selected: Boolean(rawModel.selected),
     loaded: Boolean(rawModel.loaded),
     loading: Boolean(rawModel.loading),

@@ -32,6 +32,9 @@ DEFAULT_RUNTIME_CONFIG: dict[str, Any] = {
   "uiFontFamily": "",
   "uiShowInspector": True,
   "autonomousMode": False,
+  "contextGuardPluginEnabled": True,
+  "contextGuardAutoCompress": True,
+  "contextGuardShowChatEvents": True,
 }
 
 DEFAULT_ONBOARDING_STATE: dict[str, Any] = {
@@ -55,6 +58,9 @@ class SettingsService:
         if key in payload:
           result[key] = payload[key]
     result["autonomousMode"] = bool(result.get("autonomousMode", False))
+    result["contextGuardPluginEnabled"] = bool(result.get("contextGuardPluginEnabled", True))
+    result["contextGuardAutoCompress"] = bool(result.get("contextGuardAutoCompress", True))
+    result["contextGuardShowChatEvents"] = bool(result.get("contextGuardShowChatEvents", True))
     return result
 
   def sanitize_onboarding_state(self, payload: Any) -> dict[str, Any]:

@@ -308,18 +308,20 @@ def build_generation_attempts(
 ) -> list[dict[str, Any]]:
   tier = plan.tier
   effective_context_window = int(plan.context_window_override or tier.max_context)
-  effective_context_window = max(256, min(32768, effective_context_window))
-  context_cap = max(96, min(2048, effective_context_window // 8))
+  effective_context_window = max(256, min(262144, effective_context_window))
+  # Не ограничиваем выдачу жёстким потолком 4k: даём максимум в рамках окна контекста.
+  reserve_for_prompt = max(96, min(4096, effective_context_window // 6))
+  context_cap = max(96, min(131072, effective_context_window - reserve_for_prompt))
   default_cap_by_tier = {
-    "compact": 220,
-    "balanced": 320,
-    "performance": 420,
+    "compact": 320,
+    "balanced": 640,
+    "performance": 1024,
   }
   default_cap = default_cap_by_tier.get(tier.key, 320)
   env_cap_raw = os.getenv("ANCIA_MODEL_MAX_TOKENS", "").strip()
   if env_cap_raw:
     try:
-      default_cap = max(64, min(1024, int(env_cap_raw)))
+      default_cap = max(64, min(131072, int(env_cap_raw)))
     except ValueError:
       pass
   max_tokens = max(64, min(context_cap, default_cap))

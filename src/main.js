@@ -37,7 +37,7 @@ import {
 import { createRouteNavigationController } from "./app/routeNavigation.js";
 import { createOnboardingController } from "./app/onboardingController.js";
 import { bindPanelOpenActions } from "./app/panelBindings.js";
-import { installRuntimeApis, startTokenCounter } from "./app/runtimeApis.js";
+import { installRuntimeApis } from "./app/runtimeApis.js";
 import { createRuntimeUiController } from "./app/runtimeUiController.js";
 import { createRuntimeConfigController } from "./app/runtimeConfigController.js";
 import { clearFieldValidation, isValidTimezone } from "./app/formValidation.js";
@@ -50,6 +50,7 @@ import {
   createRouteHelpers,
   applyPlatformMarker,
 } from "./app/domBootstrap.js";
+import { applySeasonalLogos } from "./app/seasonalLogo.js";
 
 const ROUTE_TRANSITION_MS = 180;
 const PRELOADER_MIN_MS = 320;
@@ -67,15 +68,9 @@ mountPageTemplates({
   pluginsTemplate: pluginsPageTemplate,
   settingsTemplate: settingsPageTemplate,
 });
+applySeasonalLogos();
 
 const preloaderStartMs = performance.now();
-
-const formatTokenCount = (value) => {
-  if (value >= 1000) {
-    return `${(value / 1000).toFixed(1)}k`;
-  }
-  return String(value);
-};
 
 const {
   elements,
@@ -229,6 +224,7 @@ const runtimeConfigController = createRuntimeConfigController({
   updateRuntimeBadges,
   applyInterfacePreferences,
   getSettingsFeature: () => settingsFeature,
+  getChatFeature: () => chatFeature,
   getPluginsFeature: () => pluginsFeature,
   getOnboardingController: () => onboardingController,
   loadOnboardingState,
@@ -289,6 +285,7 @@ modelsFeature = createModelsFeature({
   getModelLabelById,
   pushToast,
   isMotionEnabled,
+  getChatFeature: () => chatFeature,
 });
 
 chatFeature = createChatFeature({
@@ -412,11 +409,6 @@ void startupPromise.finally(() => {
       pluginUiRuntime.pruneInactivePluginRenderers(pluginIds);
     },
   });
-});
-
-startTokenCounter({
-  tokenNode: elements.tokenCount,
-  formatValue: formatTokenCount,
 });
 
 installRuntimeApis({

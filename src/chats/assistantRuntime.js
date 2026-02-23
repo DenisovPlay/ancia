@@ -116,7 +116,37 @@ export function createChatAssistantRuntime({
     return "модель";
   }
 
-  function buildBackendChatPayload(userText, chatId, attachments = []) {
+  function normalizeHistoryOverrideEntries(entries = [], limit = backendHistoryMaxMessages) {
+    if (!Array.isArray(entries) || entries.length === 0) {
+      return [];
+    }
+    const safeLimit = Math.max(2, Math.min(24, Number(limit) || backendHistoryMaxMessages || 12));
+    const trimmed = entries
+      .slice(-safeLimit)
+      .map((entry) => {
+        const roleRaw = String(entry?.role || "").trim().toLowerCase();
+        const role = ["user", "assistant", "system"].includes(roleRaw) ? roleRaw : "";
+        if (!role) {
+          return null;
+        }
+        let text = normalizeTextInput(String(entry?.text || "")).trim();
+        if (!text) {
+          return null;
+        }
+        if (text.length > 1200) {
+          text = `${text.slice(0, 1199).trimEnd()}…`;
+        }
+        return {
+          role,
+          text,
+          timestamp: entry?.timestamp || null,
+        };
+      })
+      .filter(Boolean);
+    return trimmed;
+  }
+
+  function buildBackendChatPayload(userText, chatId, attachments = [], { historyOverride = null } = {}) {
     const activeChatId = String(chatId || getActiveChatSessionId?.() || "");
     const targetChatSession = getChatSessionById(activeChatId);
     const safeAttachments = Array.isArray(attachments)
@@ -132,6 +162,11 @@ export function createChatAssistantRuntime({
         } : null))
         .filter(Boolean)
       : [];
+
+    const sanitizedHistoryOverride = normalizeHistoryOverrideEntries(historyOverride, backendHistoryMaxMessages);
+    const historyPayload = sanitizedHistoryOverride.length > 0
+      ? sanitizedHistoryOverride
+      : getChatHistoryForBackend(backendHistoryMaxMessages);
 
     return {
       message: userText,
@@ -158,7 +193,7 @@ export function createChatAssistantRuntime({
           topP: null,
           topK: null,
         },
-        history: getChatHistoryForBackend(backendHistoryMaxMessages),
+        history: historyPayload,
       },
     };
   }
@@ -186,7 +221,15 @@ export function createChatAssistantRuntime({
   async function requestAssistantReply(
     userText,
     chatId = getActiveChatSessionId?.(),
-    { onPartial, onToolEvent, onModel, onStatusUpdate, signal, attachments = [] } = {},
+    {
+      onPartial,
+      onToolEvent,
+      onModel,
+      onStatusUpdate,
+      signal,
+      attachments = [],
+      historyOverride = null,
+    } = {},
   ) {
     let streamedText = "";
     let streamError = "";
@@ -238,7 +281,12 @@ export function createChatAssistantRuntime({
 
     try {
       updateConnectionState(BACKEND_STATUS.checking, "Отправка запроса /chat/stream ...");
-      const requestPayload = buildBackendChatPayload(userText, chatId, attachments);
+      const requestPayload = buildBackendChatPayload(
+        userText,
+        chatId,
+        attachments,
+        { historyOverride },
+      );
 
       await backendClient.sendMessageStream(requestPayload, {
         signal,
@@ -333,7 +381,9 @@ export function createChatAssistantRuntime({
         || /broken pipe|errno\s*32/i.test(streamErrorMessage);
       if (isStreamTransportIssue) {
         try {
-          const payload = await backendClient.sendMessage(buildBackendChatPayload(userText, chatId, attachments));
+          const payload = await backendClient.sendMessage(
+            buildBackendChatPayload(userText, chatId, attachments, { historyOverride }),
+          );
           const parsed = parseBackendResponse(payload, "Бэкенд вернул пустой ответ.");
           if (Array.isArray(parsed.toolEvents)) {
             parsed.toolEvents.forEach((toolEvent, index) => {

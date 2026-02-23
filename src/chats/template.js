@@ -93,7 +93,7 @@ export const chatPageTemplate = `
           ${icon("send")}
         </button>
       </div>
-      <div class="flex items-center gap-1.5 pt-1 mt-1.5">
+      <div class="flex items-center justify-between gap-1.5 pt-1 mt-1.5">
         <button
           id="composer-attach-button"
           type="button"
@@ -102,6 +102,37 @@ export const chatPageTemplate = `
           class="icon-button active:scale-95 duration-300 h-7 w-7 rounded-md border border-zinc-800 bg-transparent text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
         >
           ${icon("attach")}
+        </button>
+        <button
+          id="composer-context-indicator"
+          type="button"
+          aria-label="Использование контекста"
+          title="Использование контекста"
+          class="composer-context-indicator"
+        >
+          <span id="composer-context-ring" class="composer-context-ring" aria-hidden="true">
+            <span class="composer-context-ring__inner"></span>
+          </span>
+          <span id="composer-context-label" class="composer-context-label">0%</span>
+          <span id="composer-context-popover" class="composer-context-popover" role="tooltip" aria-hidden="true">
+            <span class="composer-context-popover__title">Контекст</span>
+            <span class="composer-context-popover__row">
+              <span class="composer-context-popover__key">Занято</span>
+              <span id="composer-context-used" class="composer-context-popover__value">—</span>
+            </span>
+            <span class="composer-context-popover__row">
+              <span class="composer-context-popover__key">Максимум</span>
+              <span id="composer-context-max" class="composer-context-popover__value">—</span>
+            </span>
+            <span class="composer-context-popover__row">
+              <span class="composer-context-popover__key">История чата</span>
+              <span id="composer-context-history" class="composer-context-popover__value">—</span>
+            </span>
+            <span class="composer-context-popover__row">
+              <span class="composer-context-popover__key">Системный промпт</span>
+              <span id="composer-context-system" class="composer-context-popover__value">—</span>
+            </span>
+          </span>
         </button>
       </div>
       <input

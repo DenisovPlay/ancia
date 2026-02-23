@@ -76,6 +76,7 @@ export function createModelsFeature({
   getModelLabelById,
   pushToast,
   isMotionEnabled,
+  getChatFeature,
 }) {
   const gridNode = document.querySelector("#models-grid");
   const emptyStateNode = document.querySelector("#models-empty-state");
@@ -134,6 +135,7 @@ export function createModelsFeature({
     allFilterButtons.forEach((button) => {
       const isActive = button.dataset.modelFilter === filterValue;
       button.setAttribute("aria-pressed", String(isActive));
+      button.setAttribute("data-active", String(isActive));
     });
     applyFilters();
   }
@@ -264,6 +266,7 @@ export function createModelsFeature({
     isMotionEnabled,
     onSaved: async () => {
       await loadModels({ silent: true });
+      getChatFeature?.()?.syncComposerState?.({ forceContextRefresh: true });
     },
   });
 

@@ -29,6 +29,7 @@ export function createComposerGenerationController({
   persistChatMessage,
   ASSISTANT_PENDING_LABEL,
   composerAttachments,
+  contextGuard,
 }) {
   let activeGeneration = null;
 
@@ -274,9 +275,15 @@ export function createComposerGenerationController({
     updateConnectionState(BACKEND_STATUS.idle, "Генерация сброшена после обновления интерфейса");
   }
 
-  function syncState() {
+  function syncState({ forceContextRefresh = false } = {}) {
     resetDetachedActiveGenerationIfNeeded();
     const rawValue = elements.composerInput?.value || "";
+    const attachmentsSnapshot = composerAttachments.hasAny() ? composerAttachments.snapshot() : [];
+    contextGuard?.sync({
+      draftText: rawValue,
+      attachments: attachmentsSnapshot,
+      forceContextRefresh,
+    });
     const hasText = rawValue.trim().length > 0;
     const hasAttachments = composerAttachments.hasAny();
     const stopMode = isGenerationActiveForChat();
@@ -380,10 +387,14 @@ export function createComposerGenerationController({
     }
 
     const userMessageText = effectiveText;
-
-    ensureSessionForOutgoingMessage(userMessageText);
+    const requestSessionId = String(
+      ensureSessionForOutgoingMessage(userMessageText)
+      || getActiveChatSessionId()
+      || "",
+    );
     appendMessage("user", userMessageText, "", {
       persist: true,
+      chatId: requestSessionId,
       meta: hasAttachments ? { attachments: attachmentsSnapshot } : {},
     });
     if (elements.composerInput) {
@@ -392,7 +403,63 @@ export function createComposerGenerationController({
     composerAttachments.clear();
     syncState();
 
-    const requestSessionId = getActiveChatSessionId() || ensureSessionForOutgoingMessage(userMessageText);
+    const contextPlan = await contextGuard?.prepareRequest({
+      draftText: "",
+      attachments: attachmentsSnapshot,
+    });
+    const historyOverride = Array.isArray(contextPlan?.historyOverride)
+      ? contextPlan.historyOverride
+      : null;
+    if (contextPlan?.compressed && historyOverride) {
+      const beforeUsage = contextPlan.previousUsage?.usedTokens || contextPlan.usage?.usedTokens || 0;
+      const afterUsage = contextPlan.usage?.usedTokens || 0;
+      const usageLimit = contextPlan.usage?.contextWindow || 0;
+      const unresolvedOverflow = !Boolean(contextPlan.resolvedOverflow);
+      const details = [
+        `Контекст переполнен: ${beforeUsage.toLocaleString("ru-RU")} / ${usageLimit.toLocaleString("ru-RU")} токенов.`,
+        `История сжата: ${contextPlan.sourceMessages} -> ${contextPlan.targetMessages} сообщений.`,
+        `Экономия: ${(contextPlan.savedTokens || 0).toLocaleString("ru-RU")} токенов.`,
+      ];
+      if (!unresolvedOverflow) {
+        details.push(`После сжатия: ${afterUsage.toLocaleString("ru-RU")} / ${usageLimit.toLocaleString("ru-RU")}.`);
+      } else {
+        details.push(`После сжатия: ${afterUsage.toLocaleString("ru-RU")} / ${usageLimit.toLocaleString("ru-RU")} (переполнение не снято полностью).`);
+      }
+
+      if (unresolvedOverflow) {
+        pushToast(
+          "Контекст всё ещё переполнен после сжатия. Ответ может быть короче или с потерей деталей.",
+          { tone: "warning", durationMs: 3600 },
+        );
+      }
+
+      if (runtimeConfig.contextGuardShowChatEvents) {
+        appendMessage("tool", "context_guard.compress", "system plugin • сжатие контекста", {
+          persist: false,
+          chatId: requestSessionId,
+          toolPayload: {
+            name: "context_guard.compress",
+            display_name: "Context Guard",
+            status: unresolvedOverflow ? "warning" : "ok",
+            badge: unresolvedOverflow
+              ? {
+                label: "переполнение не снято",
+                tone: "warning",
+              }
+              : null,
+            args: { query: "автосжатие контекста" },
+            text: details.join("\n"),
+          },
+          toolPhase: "result",
+        });
+      }
+    } else if (contextPlan?.overflowed) {
+      pushToast(
+        "Контекст переполнен, но автосжатие не смогло уменьшить историю.",
+        { tone: "warning", durationMs: 3200 },
+      );
+    }
+
     const savedMood = getChatSessionMood(requestSessionId) || "neutral";
 
     applyTransientMood(requestSessionId, "waiting", 420);
@@ -520,6 +587,7 @@ export function createComposerGenerationController({
       const reply = await requestAssistantReply(effectiveText, requestSessionId, {
         signal: abortController.signal,
         attachments: attachmentsSnapshot,
+        historyOverride,
         onStatusUpdate: (statusMsg) => {
           if (activeGeneration && activeGeneration.id === generationId) {
             activeGeneration.latestMetaSuffix = statusMsg;

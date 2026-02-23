@@ -86,12 +86,13 @@ npm run backend:sidecar     # сборка backend sidecar (PyInstaller)
 
 ## Инструменты и плагины
 
-Предустановленные плагины находятся в `backend/preinstalled_plugins.py`:
+Предустановленные плагины находятся в `backend/plugins/preinstalled/`:
 
 - `web.search.duckduckgo`
 - `web.visit.website`
 - `system.time`
 - `chat.set_mood`
+- `python.run`
 
 Плагины управляются через API и могут устанавливаться из реестра (`/plugins/registry`, `/plugins/install`).
 В автономном режиме сетевые инструменты блокируются.

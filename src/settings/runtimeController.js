@@ -40,6 +40,17 @@ export function createSettingsRuntimeController({
     if (elements.settingsAutonomousMode) {
       elements.settingsAutonomousMode.checked = Boolean(source.autonomousMode);
     }
+    if (elements.settingsContextGuardEnabled) {
+      elements.settingsContextGuardEnabled.checked = Boolean(source.contextGuardPluginEnabled);
+    }
+    if (elements.settingsContextAutoCompress) {
+      elements.settingsContextAutoCompress.checked = Boolean(source.contextGuardAutoCompress);
+      elements.settingsContextAutoCompress.disabled = !Boolean(source.contextGuardPluginEnabled);
+    }
+    if (elements.settingsContextChatEvents) {
+      elements.settingsContextChatEvents.checked = Boolean(source.contextGuardShowChatEvents);
+      elements.settingsContextChatEvents.disabled = !Boolean(source.contextGuardPluginEnabled);
+    }
     if (elements.settingsBootMood) {
       elements.settingsBootMood.value = source.bootMood;
     }
@@ -88,6 +99,9 @@ export function createSettingsRuntimeController({
       timeoutMs: elements.settingsTimeoutMs?.value,
       autoReconnect: elements.settingsAutoReconnect?.checked,
       autonomousMode: elements.settingsAutonomousMode?.checked,
+      contextGuardPluginEnabled: elements.settingsContextGuardEnabled?.checked,
+      contextGuardAutoCompress: elements.settingsContextAutoCompress?.checked,
+      contextGuardShowChatEvents: elements.settingsContextChatEvents?.checked,
       bootMood: elements.settingsBootMood?.value,
       defaultTransitionMs: elements.settingsDefaultTransition?.value,
       userName: elements.settingsUserName?.value,

@@ -29,6 +29,17 @@ def normalize_tool_name(raw_name: str, *, payload: dict[str, Any] | None = None)
   return ""
 
 
+def _looks_like_python_tool_name(name: str) -> bool:
+  safe_name = str(name or "").strip().lower()
+  if not safe_name:
+    return False
+  if safe_name.startswith("python."):
+    return True
+  if safe_name in {"code.python", "tool.python"}:
+    return True
+  return False
+
+
 def _collect_fallback_args(payload: dict[str, Any], function_payload: dict[str, Any]) -> dict[str, Any]:
   if not isinstance(payload, dict):
     payload = {}
@@ -63,6 +74,9 @@ def normalize_tool_call_payload(payload: dict[str, Any]) -> tuple[str, dict[str,
     or function_payload.get("name")
     or ""
   ).strip()
+  name = normalize_tool_name(raw_name, payload=payload)
+  if not name:
+    return None
 
   args_candidate = payload.get("args")
   if args_candidate is None:
@@ -90,16 +104,30 @@ def normalize_tool_call_payload(payload: dict[str, Any]) -> tuple[str, dict[str,
       try:
         parsed_args = json.loads(raw_args)
       except json.JSONDecodeError:
-        return None
-      if isinstance(parsed_args, dict):
-        args = dict(parsed_args)
+        if _looks_like_python_tool_name(name):
+          args = {"code": raw_args}
+        else:
+          return None
       else:
-        return None
+        if isinstance(parsed_args, dict):
+          args = dict(parsed_args)
+        elif _looks_like_python_tool_name(name) and isinstance(parsed_args, str):
+          args = {"code": parsed_args}
+        elif (
+          _looks_like_python_tool_name(name)
+          and isinstance(parsed_args, list)
+          and all(isinstance(item, str) for item in parsed_args)
+        ):
+          args = {"code": "\n".join(str(item) for item in parsed_args)}
+        else:
+          return None
+  elif (
+    _looks_like_python_tool_name(name)
+    and isinstance(args_candidate, list)
+    and all(isinstance(item, str) for item in args_candidate)
+  ):
+    args = {"code": "\n".join(str(item) for item in args_candidate)}
   else:
-    return None
-
-  name = normalize_tool_name(raw_name, payload=payload)
-  if not name:
     return None
 
   normalized_args = _normalize_tool_args(name, args, payload, function_payload)

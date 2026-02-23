@@ -2,19 +2,29 @@ import { createModalOverlayManager } from "./ui/modalOverlayManager.js";
 
 const MODEL_PARAM_PRESETS = [
   { id: "balanced", label: "Сбалансированный", temperature: 0.7, top_p: 0.9, top_k: 40, max_tokens: 512, context_window: 4096 },
-  { id: "creative", label: "Творческий", temperature: 1.1, top_p: 0.97, top_k: 60, max_tokens: 768, context_window: 4096 },
+  { id: "creative", label: "Творческий", temperature: 1.1, top_p: 0.97, top_k: 60, max_tokens: 1024, context_window: 6144 },
   { id: "precise", label: "Точный", temperature: 0.15, top_p: 0.7, top_k: 20, max_tokens: 512, context_window: 4096 },
   { id: "fast", label: "Быстрый", temperature: 0.5, top_p: 0.85, top_k: 30, max_tokens: 256, context_window: 2048 },
-  { id: "extended", label: "Длинные", temperature: 0.7, top_p: 0.9, top_k: 40, max_tokens: 2048, context_window: 8192 },
-  { id: "code", label: "Код", temperature: 0.2, top_p: 0.75, top_k: 20, max_tokens: 1024, context_window: 8192 },
+  { id: "extended", label: "Длинные", temperature: 0.7, top_p: 0.9, top_k: 40, max_tokens: 3072, context_window: 16384 },
+  { id: "code", label: "Код", temperature: 0.2, top_p: 0.75, top_k: 20, max_tokens: 2048, context_window: 12288 },
 ];
 const DEFAULT_MODEL_PARAMS = {
   temperature: 0.7,
   top_p: 0.9,
   top_k: 40,
-  max_tokens: 512,
-  context_window: 4096,
+  max_tokens: 768,
+  context_window: 8192,
 };
+const MAX_CONTEXT_WINDOW_LIMIT = 262144;
+const MAX_TOKENS_LIMIT = 131072;
+
+function clampNumber(value, min, max) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return min;
+  }
+  return Math.max(min, Math.min(max, parsed));
+}
 
 function buildMpmField(name, label, min, max, step, value) {
   return `
@@ -79,6 +89,14 @@ export function createModelParamsController({
       max_tokens: resolveParam("max_tokens"),
       context_window: resolveParam("context_window"),
     };
+    const modelMaxContext = Number(model?.maxContext);
+    const contextWindowMaxRaw = Number.isFinite(modelMaxContext) && modelMaxContext > 0
+      ? clampNumber(modelMaxContext, 256, MAX_CONTEXT_WINDOW_LIMIT)
+      : 65536;
+    const contextWindowMax = Math.floor(contextWindowMaxRaw);
+    const maxTokensMax = Math.floor(clampNumber(contextWindowMax, 16, MAX_TOKENS_LIMIT));
+    const initialContextWindow = Math.floor(clampNumber(initialParams.context_window, 256, contextWindowMax));
+    const initialMaxTokens = Math.floor(clampNumber(initialParams.max_tokens, 16, maxTokensMax));
     if (modalTitle) {
       modalTitle.textContent = `${model.label} — параметры`;
     }
@@ -94,8 +112,8 @@ export function createModelParamsController({
         ${buildMpmField("temperature", "Temperature", 0, 2, 0.05, initialParams.temperature)}
         ${buildMpmField("top_p", "Top-p", 0, 1, 0.05, initialParams.top_p)}
         ${buildMpmField("top_k", "Top-k", 1, 400, 1, initialParams.top_k)}
-        ${buildMpmField("max_tokens", "Max tokens", 16, 4096, 16, initialParams.max_tokens)}
-        ${buildMpmField("context_window", "Context window", 256, 32768, 256, initialParams.context_window)}
+        ${buildMpmField("max_tokens", "Max tokens", 16, maxTokensMax, 16, initialMaxTokens)}
+        ${buildMpmField("context_window", "Context window", 256, contextWindowMax, 256, initialContextWindow)}
       </div>`;
 
     modalBody.querySelectorAll(".mpm-field__range").forEach((rangeElement) => {
@@ -117,10 +135,15 @@ export function createModelParamsController({
         modalBody.querySelectorAll(".mpm-preset-btn").forEach((button) => button.classList.remove("is-active"));
         presetButton.classList.add("is-active");
         const setField = (name, value) => {
+          const clampedValue = name === "max_tokens"
+            ? clampNumber(value, 16, maxTokensMax)
+            : name === "context_window"
+              ? clampNumber(value, 256, contextWindowMax)
+              : value;
           const numberInput = modalBody.querySelector(`[data-mpm="${name}"]`);
           const rangeInput = modalBody.querySelector(`[data-mpm-range="${name}"]`);
-          if (numberInput instanceof HTMLInputElement) numberInput.value = String(value);
-          if (rangeInput instanceof HTMLInputElement) rangeInput.value = String(value);
+          if (numberInput instanceof HTMLInputElement) numberInput.value = String(clampedValue);
+          if (rangeInput instanceof HTMLInputElement) rangeInput.value = String(clampedValue);
         };
         if (preset.temperature !== undefined) setField("temperature", preset.temperature);
         if (preset.top_p !== undefined) setField("top_p", preset.top_p);

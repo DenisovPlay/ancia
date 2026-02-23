@@ -509,7 +509,7 @@ fn try_spawn_release_backend(
 }
 
 fn wait_for_backend_ready(
-    child: &mut Child,
+    state: &BackendProcessState,
     host: &str,
     port: u16,
     timeout: Duration,
@@ -525,15 +525,13 @@ fn wait_for_backend_ready(
             }
             BackendProbeState::Unreachable => {}
         }
-        if let Ok(Some(status)) = child.try_wait() {
+        if !state.running() {
             let hint = if cfg!(debug_assertions) {
                 " (подсказка: активируй venv и установи `pip install -r requirements.txt`)"
             } else {
                 ""
             };
-            return Err(format!(
-                "backend exited immediately with status {status}{hint}"
-            ));
+            return Err(format!("backend exited during startup{hint}"));
         }
         std::thread::sleep(BACKEND_STARTUP_POLL_INTERVAL);
     }
@@ -625,7 +623,7 @@ fn start_backend_if_needed(
 
     let app_data_dir = resolve_app_data_dir(app);
 
-    let mut child = if cfg!(debug_assertions) {
+    let child = if cfg!(debug_assertions) {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let project_root = manifest_dir
             .parent()
@@ -659,6 +657,10 @@ fn start_backend_if_needed(
         }
     };
 
+    // Store the child immediately so shutdown handlers can always terminate it,
+    // even if the user closes the app while backend is still booting.
+    state.store_child(child);
+
     state.set_startup_status_with_endpoint(
         "starting",
         "Ожидаем готовность backend...",
@@ -666,40 +668,15 @@ fn start_backend_if_needed(
         selected_port,
     );
     if let Err(error) = wait_for_backend_ready(
-        &mut child,
+        state,
         &host,
         selected_port,
         BACKEND_STARTUP_WAIT_TIMEOUT,
     ) {
+        state.stop();
         state.set_startup_status_with_endpoint("error", error.clone(), &host, selected_port);
         return Err(error);
     }
-
-    // Handle startup races: another Ancia backend may have bound the port first.
-    std::thread::sleep(Duration::from_millis(120));
-    if let Ok(Some(status)) = child.try_wait() {
-        if is_backend_healthy(&host, selected_port) {
-            state.set_startup_status_with_endpoint(
-                "ready",
-                format!(
-                    "Локальный backend уже активен на {}.",
-                    backend_url(&host, selected_port)
-                ),
-                &host,
-                selected_port,
-            );
-            eprintln!(
-                "[ancia] backend startup race resolved: using existing backend on {}",
-                backend_url(&host, selected_port)
-            );
-            return Ok(());
-        }
-        let error_text = format!("backend exited during startup with status {status}");
-        state.set_startup_status_with_endpoint("error", error_text.clone(), &host, selected_port);
-        return Err(error_text);
-    }
-
-    state.store_child(child);
     state.set_startup_status_with_endpoint(
         "ready",
         format!(
@@ -780,7 +757,10 @@ fn main() {
         })
         .on_window_event(|window, event| {
             if window.label() == "main"
-                && matches!(event, tauri::WindowEvent::CloseRequested { .. })
+                && matches!(
+                    event,
+                    tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed
+                )
             {
                 let state = window.state::<BackendProcessState>();
                 state.stop();
@@ -792,6 +772,15 @@ fn main() {
             open_in_browser,
             show_main_window
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            if matches!(
+                event,
+                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+            ) {
+                let state = app_handle.state::<BackendProcessState>();
+                state.stop();
+            }
+        });
 }

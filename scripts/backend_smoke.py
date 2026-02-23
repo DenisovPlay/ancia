@@ -61,7 +61,7 @@ def main() -> int:
   else:
     plugin_items = plugins_payload.json().get("plugins", [])
     plugin_ids = sorted([str(item.get("id") or "") for item in plugin_items if isinstance(item, dict)])
-    required_ids = {"duckduckgo", "visit-website", "system-time", "chat-mood"}
+    required_ids = {"duckduckgo", "visit-website", "system-time", "chat-mood", "python-run"}
     missing_required = sorted(required_ids.difference(set(plugin_ids)))
     if missing_required:
       print(f"[FAIL] required plugins missing: {missing_required}; got={plugin_ids}")
@@ -146,6 +146,23 @@ def main() -> int:
     failed = True
   if inline_cleaned.strip():
     print(f"[WARN] inline cleaned text is not empty: {inline_cleaned!r}")
+
+  python_args_string_sample = (
+    '{"name":"python.run","arguments":"```python\\nprint(1 + 1)\\n```"}'
+  )
+  python_cleaned, python_calls = PythonModelEngine._extract_tool_calls_from_reply(python_args_string_sample)
+  if not python_calls or python_calls[0][0] != "python.run":
+    print(f"[FAIL] python string-args parser: {python_calls}")
+    failed = True
+  else:
+    python_args = python_calls[0][1] if isinstance(python_calls[0][1], dict) else {}
+    if "code" not in python_args:
+      print(f"[FAIL] python string-args parser missed code field: {python_calls[0]}")
+      failed = True
+    else:
+      print(f"[OK] python string-args parser -> {python_calls[0]}")
+  if python_cleaned.strip():
+    print(f"[WARN] python cleaned text is not empty: {python_cleaned!r}")
 
   if failed:
     print("SMOKE RESULT: FAILED")

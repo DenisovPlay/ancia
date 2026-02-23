@@ -483,6 +483,7 @@ const composerController = createChatComposerController({
   resolveModelMetaSuffix,
   ensureSessionForOutgoingMessage,
   getActiveChatSessionId: () => activeChatSessionId,
+  getChatHistoryForBackend,
   getChatSessionMood,
   applyTransientMood,
   setChatSessionMood,
@@ -491,7 +492,7 @@ const composerController = createChatComposerController({
   persistChatMessage,
   ASSISTANT_PENDING_LABEL,
 });
-syncComposerState = () => composerController.syncState();
+syncComposerState = (options = {}) => composerController.syncState(options);
 composerController.bind();
 
 
@@ -572,6 +573,7 @@ return {
   closeContextMenu,
   isContextMenuOpen,
   applyContextualBackground,
+  syncComposerState,
   syncChatStoreFromBackend,
   normalizeBackgroundStateName,
   resolveContextBackgroundMood,

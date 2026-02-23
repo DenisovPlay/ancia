@@ -5,6 +5,9 @@ import shutil
 from pathlib import Path
 from typing import Any, Callable
 
+MAX_CONTEXT_WINDOW_LIMIT = 262_144
+MAX_COMPLETION_TOKENS_LIMIT = 131_072
+
 
 class EngineModelStorage:
   def __init__(
@@ -28,11 +31,29 @@ class EngineModelStorage:
     self._format_bytes_fn = format_bytes_fn
     self._get_loaded_model_id_fn = get_loaded_model_id_fn
 
-  def default_model_params(self, tier_key: str) -> dict[str, Any]:
+  def _resolve_model_context_limit(self, model_id: str, tier_key: str) -> int:
     tier = self._model_tiers.get(tier_key) or self._model_tiers["compact"]
+    safe_model_id = self._normalize_model_id_fn(model_id, "")
+    model_entry = self._get_model_entry_fn(safe_model_id) if safe_model_id else None
+    raw_limit = int(getattr(model_entry, "max_context", 0) or tier.max_context or 8192)
+    return max(256, min(MAX_CONTEXT_WINDOW_LIMIT, raw_limit))
+
+  def default_model_params(self, tier_key: str, *, model_id: str = "") -> dict[str, Any]:
+    tier = self._model_tiers.get(tier_key) or self._model_tiers["compact"]
+    context_limit = self._resolve_model_context_limit(model_id, tier_key)
+    default_max_tokens_by_tier = {
+      "compact": 512,
+      "balanced": 768,
+      "performance": 1024,
+    }
+    default_max_tokens = default_max_tokens_by_tier.get(tier.key, 640)
+    default_max_tokens = max(
+      64,
+      min(default_max_tokens, context_limit, MAX_COMPLETION_TOKENS_LIMIT),
+    )
     return {
-      "context_window": int(tier.max_context),
-      "max_tokens": 320 if tier.key == "performance" else 256,
+      "context_window": int(context_limit),
+      "max_tokens": int(default_max_tokens),
       "temperature": float(tier.temperature),
       "top_p": 0.9,
       "top_k": 40,
@@ -44,8 +65,15 @@ class EngineModelStorage:
       return {}
     return payload
 
-  def normalize_model_params_payload(self, params: dict[str, Any], tier_key: str) -> dict[str, Any]:
-    defaults = self.default_model_params(tier_key)
+  def normalize_model_params_payload(
+    self,
+    params: dict[str, Any],
+    tier_key: str,
+    *,
+    model_id: str = "",
+  ) -> dict[str, Any]:
+    defaults = self.default_model_params(tier_key, model_id=model_id)
+    context_limit = self._resolve_model_context_limit(model_id, tier_key)
     out = dict(defaults)
     if not isinstance(params, dict):
       return out
@@ -64,8 +92,22 @@ class EngineModelStorage:
         return fallback
       return max(minimum, min(maximum, parsed))
 
-    out["context_window"] = _int_value(params.get("context_window"), 256, 32768, defaults["context_window"])
-    out["max_tokens"] = _int_value(params.get("max_tokens"), 16, 4096, defaults["max_tokens"])
+    out["context_window"] = _int_value(
+      params.get("context_window"),
+      256,
+      context_limit,
+      defaults["context_window"],
+    )
+    max_tokens_limit = max(
+      16,
+      min(MAX_COMPLETION_TOKENS_LIMIT, int(out["context_window"])),
+    )
+    out["max_tokens"] = _int_value(
+      params.get("max_tokens"),
+      16,
+      max_tokens_limit,
+      min(defaults["max_tokens"], max_tokens_limit),
+    )
     out["temperature"] = _float_value(params.get("temperature"), 0.0, 2.0, defaults["temperature"])
     out["top_p"] = _float_value(params.get("top_p"), 0.0, 1.0, defaults["top_p"])
     out["top_k"] = _int_value(params.get("top_k"), 1, 400, defaults["top_k"])
@@ -74,17 +116,25 @@ class EngineModelStorage:
   def get_model_params(self, model_id: str, *, tier_key: str = "compact") -> dict[str, Any]:
     safe_model_id = self._normalize_model_id_fn(model_id, "")
     if not safe_model_id:
-      return self.default_model_params(tier_key)
+      return self.default_model_params(tier_key, model_id=model_id)
     params_map = self.load_model_params_map()
     raw_model_params = params_map.get(safe_model_id, {})
-    return self.normalize_model_params_payload(raw_model_params, tier_key)
+    return self.normalize_model_params_payload(
+      raw_model_params,
+      tier_key,
+      model_id=safe_model_id,
+    )
 
   def set_model_params(self, model_id: str, params: dict[str, Any], *, tier_key: str = "compact") -> dict[str, Any]:
     safe_model_id = self._normalize_model_id_fn(model_id, "")
     if not safe_model_id:
       raise ValueError("Unsupported model id")
     params_map = self.load_model_params_map()
-    normalized = self.normalize_model_params_payload(params, tier_key)
+    normalized = self.normalize_model_params_payload(
+      params,
+      tier_key,
+      model_id=safe_model_id,
+    )
     params_map[safe_model_id] = normalized
     self._storage.set_setting_json(self._model_params_setting_key, params_map)
     return normalized

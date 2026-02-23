@@ -216,6 +216,9 @@ export const DEFAULT_RUNTIME_CONFIG = {
   uiShowInspector: true,
   autonomousMode: false,
   modelSupportsVision: false,
+  contextGuardPluginEnabled: true,
+  contextGuardAutoCompress: true,
+  contextGuardShowChatEvents: true,
 };
 
 export function clamp(value, min, max) {
@@ -314,6 +317,9 @@ export function normalizeRuntimeConfig(partial = {}) {
   config.uiShowInspector = Boolean(config.uiShowInspector);
   config.autonomousMode = Boolean(config.autonomousMode);
   config.modelSupportsVision = Boolean(config.modelSupportsVision);
+  config.contextGuardPluginEnabled = Boolean(config.contextGuardPluginEnabled ?? true);
+  config.contextGuardAutoCompress = Boolean(config.contextGuardAutoCompress ?? true);
+  config.contextGuardShowChatEvents = Boolean(config.contextGuardShowChatEvents ?? true);
   return config;
 }
 

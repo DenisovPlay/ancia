@@ -224,6 +224,16 @@ export class BackendClient {
     });
   }
 
+  async getModelContextRequirements(modelId = "") {
+    const safeModelId = String(modelId || "").trim();
+    const query = safeModelId
+      ? `?model_id=${encodeURIComponent(safeModelId)}`
+      : "";
+    return this.request(`/models/context-requirements${query}`, {
+      method: "GET",
+    });
+  }
+
   async listPlugins() {
     return this.request("/plugins", { method: "GET" });
   }

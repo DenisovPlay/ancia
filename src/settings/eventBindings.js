@@ -98,6 +98,16 @@ export function createSettingsEventBindings({
       });
     });
 
+    elements.settingsContextGuardEnabled?.addEventListener("change", () => {
+      if (elements.settingsContextAutoCompress instanceof HTMLInputElement) {
+        elements.settingsContextAutoCompress.disabled = !Boolean(elements.settingsContextGuardEnabled?.checked);
+      }
+      if (elements.settingsContextChatEvents instanceof HTMLInputElement) {
+        elements.settingsContextChatEvents.disabled = !Boolean(elements.settingsContextGuardEnabled?.checked);
+      }
+      syncSettingsDirtyState();
+    });
+
     bindSettingsFieldListeners();
   }
 

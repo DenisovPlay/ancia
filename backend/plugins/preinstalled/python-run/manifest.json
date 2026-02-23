@@ -1,0 +1,99 @@
+{
+  "id": "python-run",
+  "name": "Python Runner",
+  "subtitle": "Выполнение Python-кода",
+  "description": "Запускает Python-код в изолированном процессе и возвращает stdout/stderr/result.",
+  "homepage": "",
+  "manifest_url": "",
+  "repo_url": "",
+  "package_url": "",
+  "source": "preinstalled",
+  "preinstalled": true,
+  "enabled": true,
+  "tools": [
+    {
+      "name": "python.run",
+      "description": "Запускает Python-код в изолированном процессе и возвращает stdout/stderr/result.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Python-код: plain text или fenced-блок ```python ... ```."
+          },
+          "timeout_sec": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 30,
+            "default": 8,
+            "description": "Лимит выполнения в секундах."
+          },
+          "max_output_chars": {
+            "type": "integer",
+            "minimum": 500,
+            "maximum": 24000,
+            "default": 6000,
+            "description": "Максимальный размер stdout/stderr/traceback."
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "additionalProperties": false
+      },
+      "runtime_meta": {
+        "display_name": "Python Runner",
+        "subtitle": "Выполнение Python-кода",
+        "category": "system",
+        "keywords": [
+          "python",
+          "code",
+          "sandbox",
+          "exec",
+          "вычисления",
+          "скрипт"
+        ],
+        "requires_network": false,
+        "aliases": [
+          "python.exec",
+          "python.execute",
+          "code.python"
+        ],
+        "prompt": "Используй для точных расчётов, проверки формул и быстрого выполнения безопасного Python-кода. Передавай аргумент code (plain/fenced). Инструмент не поддерживает input()/stdin и запрещает доступ к файлам/системе/сети. Возвращает stdout/stderr, result_repr (последнее выражение) и traceback при ошибке."
+      },
+      "handler": {
+        "type": "python",
+        "module_file": "plugin.py",
+        "callable": "handle"
+      },
+      "llm_schema": {}
+    }
+  ],
+  "ui_extensions": [
+    {
+      "type": "style",
+      "path": "ui/tool-ui.css",
+      "url": "",
+      "load": "style"
+    },
+    {
+      "type": "script",
+      "path": "ui/tool-ui.js",
+      "url": "",
+      "load": "script"
+    }
+  ],
+  "version": "1.0.0",
+  "category": "system",
+  "keywords": [
+    "python",
+    "code",
+    "sandbox",
+    "exec",
+    "вычисления",
+    "скрипт"
+  ],
+  "locked": false,
+  "allow_update": false,
+  "requires_network": false
+}

@@ -220,10 +220,35 @@ export function createToolRenderer({
     if (status === "running") {
       return '<svg class="ui-icon tool-spinner" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="2" stroke-dasharray="28 16" stroke-linecap="round"/></svg>';
     }
+    if (status === "warning") {
+      return icon("info");
+    }
     if (status === "error") {
       return icon("x-mark");
     }
     return icon("check");
+  }
+
+  function resolveToolBadge(payload) {
+    if (!payload || typeof payload !== "object") {
+      return null;
+    }
+    const badge = payload.badge;
+    if (!badge || typeof badge !== "object") {
+      return null;
+    }
+    const label = normalizeText(String(badge.label || ""));
+    if (!label) {
+      return null;
+    }
+    const toneRaw = String(badge.tone || "neutral").trim().toLowerCase();
+    const tone = ["warning", "error", "success", "info", "neutral"].includes(toneRaw)
+      ? toneRaw
+      : "neutral";
+    return {
+      label,
+      tone,
+    };
   }
 
   function formatGenericObjectOutput(output) {
@@ -346,7 +371,18 @@ export function createToolRenderer({
     const nameEl = document.createElement("span");
     nameEl.className = "tool-call-name";
     nameEl.textContent = resolvedDisplayName;
-    info.append(nameEl);
+    const head = document.createElement("div");
+    head.className = "tool-call-head";
+    head.append(nameEl);
+    const badge = resolveToolBadge(payload);
+    if (badge) {
+      const badgeEl = document.createElement("span");
+      badgeEl.className = `tool-call-badge tool-call-badge--${badge.tone}`;
+      badgeEl.textContent = badge.label;
+      badgeEl.setAttribute("data-tool-badge", "true");
+      head.append(badgeEl);
+    }
+    info.append(head);
     if (queryPreview) {
       const qEl = document.createElement("span");
       qEl.className = "tool-call-query";
@@ -423,6 +459,25 @@ export function createToolRenderer({
       if (toolNameNode instanceof HTMLElement) {
         toolNameNode.textContent = displayName;
       }
+    }
+    const existingBadge = row.querySelector("[data-tool-badge='true']");
+    const badge = resolveToolBadge(payload);
+    if (badge) {
+      if (existingBadge instanceof HTMLElement) {
+        existingBadge.className = `tool-call-badge tool-call-badge--${badge.tone}`;
+        existingBadge.textContent = badge.label;
+      } else {
+        const head = row.querySelector(".tool-call-head");
+        if (head instanceof HTMLElement) {
+          const badgeEl = document.createElement("span");
+          badgeEl.className = `tool-call-badge tool-call-badge--${badge.tone}`;
+          badgeEl.textContent = badge.label;
+          badgeEl.setAttribute("data-tool-badge", "true");
+          head.append(badgeEl);
+        }
+      }
+    } else if (existingBadge instanceof HTMLElement) {
+      existingBadge.remove();
     }
 
     const queryPreview = resolveToolQueryPreview(name, args, output, payload);

@@ -1,5 +1,6 @@
 import { createComposerAttachmentsManager } from "./composerAttachments.js";
 import { createComposerGenerationController } from "./composerGeneration.js";
+import { createContextGuardController } from "./contextGuard.js";
 
 export function createChatComposerController({
   elements,
@@ -21,6 +22,7 @@ export function createChatComposerController({
   resolveModelMetaSuffix,
   ensureSessionForOutgoingMessage,
   getActiveChatSessionId,
+  getChatHistoryForBackend,
   getChatSessionMood,
   applyTransientMood,
   setChatSessionMood,
@@ -96,6 +98,12 @@ export function createChatComposerController({
     persistChatMessage,
     ASSISTANT_PENDING_LABEL,
     composerAttachments,
+    contextGuard: createContextGuardController({
+      elements,
+      runtimeConfig,
+      backendClient,
+      getChatHistoryForBackend,
+    }),
   });
 
   const {

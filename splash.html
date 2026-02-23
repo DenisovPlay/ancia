@@ -81,11 +81,58 @@
       <main class="splash" aria-live="polite">
         <section class="card">
           <div class="logo-wrap">
-            <img src="/ancia.png" alt="Ancia" class="logo" />
+            <img src="/ancia.png" alt="Ancia" class="logo" data-seasonal-logo />
           </div>
-          <p class="label">Запуск...</p>
+          <p class="label" data-seasonal-greeting>Запуск...</p>
         </section>
       </main>
     </div>
+    <script>
+      (() => {
+        const holidays = [
+          { month: 2, day: 23, logo: "/23_feb_outline.png", greeting: "защищаем Отечество!" },
+          { month: 3, day: 8, logo: "/8march_outline.png", greeting: "с 8 марта!" },
+          { month: 5, day: 9, logo: "/9may_outline.png", greeting: "Помним победу!" },
+          { month: 12, day: 25, logo: "/xmas_ny_outline.png", greeting: "с новым годом!" },
+          { month: 1, day: 1, logo: "/xmas_ny_outline.png", greeting: "с новым годом!" },
+          { month: 1, day: 7, logo: "/xmas_ny_outline.png", greeting: "с новым годом!" },
+        ];
+        const dayMs = 24 * 60 * 60 * 1000;
+        const now = new Date();
+        const stampNow = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+
+        const resolveSeasonalState = () => {
+          const year = now.getFullYear();
+          for (const holiday of holidays) {
+            for (const candidateYear of [year - 1, year, year + 1]) {
+              const stampHoliday = Date.UTC(candidateYear, holiday.month - 1, holiday.day);
+              const diff = Math.round((stampNow - stampHoliday) / dayMs);
+              if (Math.abs(diff) <= 1) {
+                return {
+                  logo: holiday.logo,
+                  greeting: holiday.greeting,
+                };
+              }
+            }
+          }
+          return {
+            logo: "/ancia.png",
+            greeting: "Запуск...",
+          };
+        };
+
+        const seasonalState = resolveSeasonalState();
+        document.querySelectorAll("img[data-seasonal-logo]").forEach((node) => {
+          if (node instanceof HTMLImageElement) {
+            node.src = seasonalState.logo;
+          }
+        });
+        document.querySelectorAll("[data-seasonal-greeting]").forEach((node) => {
+          if (node instanceof HTMLElement) {
+            node.textContent = seasonalState.greeting;
+          }
+        });
+      })();
+    </script>
   </body>
 </html>

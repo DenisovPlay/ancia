@@ -192,6 +192,8 @@ class PythonModelEngine(EngineModelsMixin):
   MAX_HISTORY_ENTRY_CHARS = 900
   MAX_TOOL_CALL_ROUNDS = 4
   MAX_TOOL_CALLS_PER_ROUND = 4
+  MAX_CONTEXT_WINDOW_LIMIT = 262_144
+  MAX_COMPLETION_TOKENS_LIMIT = 131_072
 
   def __init__(self, storage: AppStorage, *, base_system_prompt: str) -> None:
     self._storage = storage
@@ -1077,11 +1079,25 @@ class PythonModelEngine(EngineModelsMixin):
 
     history_tokens = max(64, (history_budget_chars + 3) // 4)
     history_overhead_tokens = max(24, min(192, int(self.MAX_HISTORY_MESSAGES) * 4))
+    selected_model_id = self.get_selected_model_id()
+    selected_model_entry = get_model_entry(selected_model_id)
+    model_context_limit = max(
+      512,
+      min(
+        self.MAX_CONTEXT_WINDOW_LIMIT,
+        int(
+          getattr(selected_model_entry, "max_context", 0)
+          or MODEL_TIERS[self.get_selected_tier()].max_context
+          or 8192
+        ),
+      ),
+    )
     minimum_context_window = system_prompt_tokens + history_tokens + history_overhead_tokens + reserve_tokens
-    minimum_context_window = max(512, min(8192, minimum_context_window))
+    minimum_context_window = max(512, min(model_context_limit, minimum_context_window))
 
     return {
       "min_context_window": int(minimum_context_window),
+      "model_context_limit": int(model_context_limit),
       "system_prompt_tokens": int(system_prompt_tokens),
       "history_budget_tokens": int(history_tokens),
       "history_budget_chars": int(history_budget_chars),
@@ -2270,9 +2286,29 @@ class PythonModelEngine(EngineModelsMixin):
     context_mood = normalize_mood(str(request.context.mood or ""), "neutral")
     ui = getattr(request.context, "ui", None)
     allow_ui_model_overrides = os.getenv("ANCIA_ALLOW_UI_MODEL_PARAM_OVERRIDES", "").strip() == "1"
+    model_context_limit = max(
+      512,
+      min(
+        self.MAX_CONTEXT_WINDOW_LIMIT,
+        int(getattr(selected_model_entry, "max_context", 0) or tier.max_context or 8192),
+      ),
+    )
+    model_completion_limit = max(
+      64,
+      min(self.MAX_COMPLETION_TOKENS_LIMIT, model_context_limit),
+    )
+
     if allow_ui_model_overrides:
-      context_window_override = _read_int(getattr(ui, "contextWindow", None), min_value=256, max_value=32768)
-      max_tokens_override = _read_int(getattr(ui, "maxTokens", None), min_value=16, max_value=4096)
+      context_window_override = _read_int(
+        getattr(ui, "contextWindow", None),
+        min_value=256,
+        max_value=model_context_limit,
+      )
+      max_tokens_override = _read_int(
+        getattr(ui, "maxTokens", None),
+        min_value=16,
+        max_value=model_completion_limit,
+      )
       temperature_override = _read_float(getattr(ui, "temperature", None), min_value=0.0, max_value=2.0)
       top_p_override = _read_float(getattr(ui, "topP", None), min_value=0.0, max_value=1.0)
       top_k_override = _read_int(getattr(ui, "topK", None), min_value=1, max_value=400)
@@ -2286,6 +2322,8 @@ class PythonModelEngine(EngineModelsMixin):
       context_window_override = int(model_params.get("context_window") or tier.max_context)
     if max_tokens_override is None:
       max_tokens_override = int(model_params.get("max_tokens") or 256)
+    context_window_override = max(256, min(model_context_limit, int(context_window_override or model_context_limit)))
+    max_tokens_override = max(16, min(model_completion_limit, int(max_tokens_override or 256)))
     if temperature_override is None:
       temperature_override = float(model_params.get("temperature") or tier.temperature)
     if top_p_override is None:
@@ -2604,8 +2642,6 @@ class PythonModelEngine(EngineModelsMixin):
             event=ev, display_name=display_name, args=args, round_index=round_index, call_index=ci,
           )}
           turns.append({"role": "tool", "tool_call_id": cid, "name": name, "content": self._summarize_tool_event(ev)})
-        # После хотя бы одного раунда tool-calling следующая генерация должна дать финальный ответ.
-        tools_are_allowed = False
 
       final = latest_reply or "Не удалось завершить вызов инструментов."
       return self._build_result_from_reply(

@@ -1,3 +1,5 @@
+import { resolveSeasonalLogoPath } from "../app/seasonalLogo.js";
+
 const CHAT_STREAM_SWITCH_OUT_MS = 110;
 const CHAT_STREAM_SWITCH_IN_MS = 210;
 const CHAT_HISTORY_STAGGER_MS = 18;
@@ -22,7 +24,7 @@ export function createChatStreamRenderer({
     const title = `
   <div data-chat-empty="true" class="w-full h-full flex items-center justify-center">
     <div class="flex flex-col items-center gap-4 text-center">
-      <img src="/ancia.png" alt="Ancia" class="h-14 w-14 rounded-xl border border-zinc-800 object-cover opacity-80">
+      <img src="${resolveSeasonalLogoPath()}" alt="Ancia" class="h-14 w-14 rounded-xl border border-zinc-800 object-cover opacity-80">
       <div class="flex flex-col gap-1.5">
         <span class="text-xl font-semibold text-zinc-300 tracking-tight">Привет, что у тебя сегодня?</span>
         <span class="text-sm text-zinc-600">Напиши любой вопрос.</span>

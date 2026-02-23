@@ -1,0 +1,8 @@
+[data-tool-plugin-id="python-run"] .tool-call-status-icon {
+  color: #a7f3d0;
+}
+
+[data-tool-plugin-id="python-run"] .tool-call-card {
+  border-color: rgba(16, 185, 129, 0.32);
+  background: linear-gradient(120deg, rgba(8, 48, 34, 0.72), rgba(16, 30, 33, 0.72));
+}
