@@ -216,21 +216,23 @@ export class BackendClient {
     });
   }
 
-  async updateModelParams(modelId, payload = {}) {
+  async updateModelParams(modelId, payload = {}, { timeoutMs = 30000 } = {}) {
     const safeModelId = encodePathSegment(modelId);
     return this.request(`/models/${safeModelId}/params`, {
       method: "PATCH",
       body: payload || {},
+      timeoutMs: Number(timeoutMs || 30000),
     });
   }
 
-  async getModelContextRequirements(modelId = "") {
+  async getModelContextRequirements(modelId = "", { timeoutMs = 20000 } = {}) {
     const safeModelId = String(modelId || "").trim();
     const query = safeModelId
       ? `?model_id=${encodeURIComponent(safeModelId)}`
       : "";
     return this.request(`/models/context-requirements${query}`, {
       method: "GET",
+      timeoutMs: Number(timeoutMs || 20000),
     });
   }
 

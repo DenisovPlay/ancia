@@ -130,8 +130,13 @@ class EngineModelStorage:
     if not safe_model_id:
       raise ValueError("Unsupported model id")
     params_map = self.load_model_params_map()
+    existing_params = params_map.get(safe_model_id, {})
+    merged_params = {
+      **(existing_params if isinstance(existing_params, dict) else {}),
+      **(params if isinstance(params, dict) else {}),
+    }
     normalized = self.normalize_model_params_payload(
-      params,
+      merged_params,
       tier_key,
       model_id=safe_model_id,
     )

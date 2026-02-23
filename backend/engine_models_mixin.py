@@ -47,7 +47,23 @@ class EngineModelsMixin:
     stream_available = False
     generation_lock = getattr(self, "_generation_lock", None)
     if generation_lock is not None:
-      with generation_lock:
+      acquired = False
+      try:
+        acquired = bool(generation_lock.acquire(blocking=False))
+      except TypeError:
+        acquired = bool(generation_lock.acquire(False))
+      if acquired:
+        try:
+          if runtime_backend_kind == "mlx_vlm":
+            stream_available = bool(getattr(self, "_vlm_stream_generate_fn", None))
+            stream_source = "mlx_vlm.stream_generate"
+          else:
+            stream_available = bool(getattr(self, "_stream_generate_fn", None))
+            stream_source = "mlx_lm.stream_generate"
+        finally:
+          generation_lock.release()
+      else:
+        # Не блокируем API-поток, если прямо сейчас идёт генерация.
         if runtime_backend_kind == "mlx_vlm":
           stream_available = bool(getattr(self, "_vlm_stream_generate_fn", None))
           stream_source = "mlx_vlm.stream_generate"

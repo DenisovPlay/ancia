@@ -81,6 +81,10 @@ export const chatPageTemplate = `
           id="composer-input"
           rows="3"
           aria-label="Поле ввода сообщения"
+          spellcheck="false"
+          autocorrect="off"
+          autocapitalize="off"
+          autocomplete="off"
           placeholder="Спросите что-нибудь…"
           class="flex-1 resize-none text-sm text-zinc-200 outline-none bg-transparent focus:ring-none focus:outline-none placeholder:text-zinc-600 min-h-[4.25rem] py-1"
         ></textarea>
@@ -106,8 +110,6 @@ export const chatPageTemplate = `
         <button
           id="composer-context-indicator"
           type="button"
-          aria-label="Использование контекста"
-          title="Использование контекста"
           class="composer-context-indicator"
         >
           <span id="composer-context-ring" class="composer-context-ring" aria-hidden="true">

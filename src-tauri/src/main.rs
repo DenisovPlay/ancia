@@ -454,7 +454,9 @@ fn try_spawn_dev_backend(
             .current_dir(project_root)
             .env("ANCIA_BACKEND_HOST", host)
             .env("ANCIA_BACKEND_PORT", port.to_string())
-            .env("PYTHONUNBUFFERED", "1");
+            .env("PYTHONUNBUFFERED", "1")
+            .env_remove("MallocStackLogging")
+            .env_remove("MallocStackLoggingNoCompact");
 
         if let Some(dir) = app_data_dir {
             command.env("ANCIA_BACKEND_DATA_DIR", dir);
@@ -499,7 +501,9 @@ fn try_spawn_release_backend(
     let mut command = Command::new(&sidecar_path);
     command
         .env("ANCIA_BACKEND_HOST", host)
-        .env("ANCIA_BACKEND_PORT", port.to_string());
+        .env("ANCIA_BACKEND_PORT", port.to_string())
+        .env_remove("MallocStackLogging")
+        .env_remove("MallocStackLoggingNoCompact");
 
     if let Some(dir) = app_data_dir {
         command.env("ANCIA_BACKEND_DATA_DIR", dir);

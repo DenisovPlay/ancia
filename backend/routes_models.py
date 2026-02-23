@@ -189,7 +189,6 @@ def register_model_routes(
       "model_id": safe_model_id,
       "params": params,
       "context_window_requirements": context_limits,
-      "models_payload": build_models_payload(),
     }
 
   @app.get("/models/context-requirements")

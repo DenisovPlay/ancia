@@ -262,6 +262,7 @@ export function createComposerGenerationController({
     const generation = activeGeneration;
     activeGeneration = null;
     generation.abortController?.abort();
+    contextGuard?.clearPendingAssistantText?.();
     if (runtimeConfig.mode === "backend") {
       void backendClient.stopChatGeneration().catch(() => {});
       if (isBackendRuntimeEnabled()) {
@@ -343,6 +344,7 @@ export function createComposerGenerationController({
     }
 
     pruneTransientAssistantDuplicates(generation.chatId || getActiveChatSessionId());
+    contextGuard?.clearPendingAssistantText?.();
     syncState();
     updateConnectionState(BACKEND_STATUS.idle, "Генерация остановлена");
     if (!silent) {
@@ -490,6 +492,7 @@ export function createComposerGenerationController({
       latestMetaSuffix: streamMetaSuffix,
       stoppedByUser: false,
     };
+    contextGuard?.setPendingAssistantText?.("");
     syncState();
 
     let latestPartial = "";
@@ -692,6 +695,7 @@ export function createComposerGenerationController({
         },
         onPartial: (partialText) => {
           latestPartial = normalizeTextInput(partialText);
+          contextGuard?.setPendingAssistantText?.(latestPartial);
           if (activeGeneration && activeGeneration.id === generationId) {
             activeGeneration.latestText = latestPartial;
             activeGeneration.latestMetaSuffix = streamMetaSuffix;
@@ -813,6 +817,7 @@ export function createComposerGenerationController({
     } finally {
       if (!activeGeneration || activeGeneration.id === generationId) {
         activeGeneration = null;
+        contextGuard?.clearPendingAssistantText?.();
         if (requestSessionId) {
           pruneTransientAssistantDuplicates(requestSessionId);
         }

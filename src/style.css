@@ -280,16 +280,56 @@ body.app-ready .app-preloader {
 
 .composer-context-indicator {
   position: relative;
+  isolation: isolate;
+  overflow: visible;
   display: inline-flex;
   align-items: center;
   gap: 0.45rem;
   padding: 0.16rem 0.45rem 0.16rem 0.2rem;
   border-radius: 0.5rem;
   border: 1px solid rgb(63 63 70);
-  background: rgb(24 24 27 / 0.75);
+  background:
+    linear-gradient(180deg, rgb(24 24 27 / 0.92), rgb(9 9 11 / 0.86));
   color: rgb(161 161 170);
+  box-shadow:
+    inset 0 0 0 1px rgb(39 39 42 / 0.45),
+    0 4px 14px rgb(0 0 0 / 0.24);
   opacity: 1;
   cursor: default;
+  transition:
+    border-color 220ms ease,
+    color 220ms ease,
+    background 220ms ease,
+    box-shadow 260ms ease,
+    transform 180ms ease;
+}
+
+.composer-context-indicator::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(
+    100deg,
+    transparent 0%,
+    rgb(255 255 255 / 0.08) 45%,
+    transparent 100%
+  );
+  transform: translateX(-120%);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.composer-context-indicator > * {
+  position: relative;
+  z-index: 1;
+}
+
+#composer-context-indicator:hover,
+#composer-context-indicator:focus-visible {
+  box-shadow:
+    inset 0 0 0 1px rgb(63 63 70 / 0.5),
+    0 8px 18px rgb(0 0 0 / 0.32);
 }
 
 #composer-context-indicator:disabled {
@@ -310,6 +350,8 @@ body.app-ready .app-preloader {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  box-shadow: inset 0 0 0 1px rgb(63 63 70 / 0.55);
+  transition: background 280ms cubic-bezier(0.22, 1, 0.36, 1), transform 220ms ease;
 }
 
 .composer-context-ring__inner {
@@ -323,8 +365,10 @@ body.app-ready .app-preloader {
 .composer-context-label {
   font-family: var(--app-mono-font-stack);
   font-size: 0.65rem;
+  font-variant-numeric: tabular-nums;
   letter-spacing: 0.02em;
   color: inherit;
+  transition: opacity 180ms ease, letter-spacing 180ms ease, transform 180ms ease;
 }
 
 .composer-context-popover {
@@ -394,9 +438,25 @@ body.app-ready .app-preloader {
   transform: translateY(0);
 }
 
+#composer-context-indicator[data-level="ok"] {
+  border-color: rgb(74 222 128 / 0.28);
+  color: rgb(134 239 172);
+}
+
+#composer-context-indicator[data-level="ok"] .composer-context-ring {
+  background:
+    conic-gradient(
+      rgb(74 222 128) calc(var(--ctx-ratio) * 1%),
+      rgb(63 63 70 / 0.5) 0
+    );
+}
+
 #composer-context-indicator[data-level="warn"] {
-  border-color: rgb(245 158 11 / 0.45);
+  border-color: rgb(245 158 11 / 0.5);
   color: rgb(251 191 36);
+  box-shadow:
+    inset 0 0 0 1px rgb(245 158 11 / 0.2),
+    0 6px 16px rgb(245 158 11 / 0.18);
 }
 
 #composer-context-indicator[data-level="warn"] .composer-context-ring {
@@ -407,9 +467,16 @@ body.app-ready .app-preloader {
     );
 }
 
+#composer-context-indicator[data-level="warn"]:not([data-loading="true"]) {
+  animation: context-warn-pulse 1.9s ease-in-out infinite;
+}
+
 #composer-context-indicator[data-level="critical"] {
-  border-color: rgb(248 113 113 / 0.45);
+  border-color: rgb(248 113 113 / 0.54);
   color: rgb(248 113 113);
+  box-shadow:
+    inset 0 0 0 1px rgb(248 113 113 / 0.22),
+    0 8px 20px rgb(248 113 113 / 0.2);
 }
 
 #composer-context-indicator[data-level="critical"] .composer-context-ring {
@@ -420,8 +487,14 @@ body.app-ready .app-preloader {
     );
 }
 
+#composer-context-indicator[data-level="critical"]:not([data-loading="true"]) {
+  animation: context-critical-pulse 1.25s ease-in-out infinite;
+}
+
 #composer-context-indicator[data-level="off"] {
   color: rgb(113 113 122);
+  border-color: rgb(63 63 70);
+  box-shadow: none;
 }
 
 #composer-context-indicator[data-level="off"] .composer-context-ring {
@@ -430,14 +503,22 @@ body.app-ready .app-preloader {
 
 #composer-context-indicator[data-loading="true"] {
   border-style: dashed;
+  border-color: rgb(113 113 122 / 0.65);
+  animation: none;
 }
 
 #composer-context-indicator[data-loading="true"] .composer-context-ring {
-  animation: spin 0.92s linear infinite;
+  animation: spin 0.9s linear infinite, context-loading-breathe 1.15s ease-in-out infinite;
 }
 
 #composer-context-indicator[data-loading="true"] .composer-context-label {
   opacity: 0.86;
+  letter-spacing: 0.08em;
+}
+
+#composer-context-indicator[data-loading="true"]::before {
+  opacity: 0.22;
+  animation: context-sheen 1.6s linear infinite;
 }
 
 /* ── Panels ──────────────────────────────────────────────────── */
@@ -1592,6 +1673,26 @@ body.reduce-motion *::after {
 @keyframes slide-in-left {
   from { opacity: 0; transform: translateX(-10px); }
   to   { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes context-sheen {
+  from { transform: translateX(-120%); }
+  to { transform: translateX(140%); }
+}
+
+@keyframes context-loading-breathe {
+  0%, 100% { opacity: 0.9; }
+  50% { opacity: 0.58; }
+}
+
+@keyframes context-warn-pulse {
+  0%, 100% { box-shadow: inset 0 0 0 1px rgb(245 158 11 / 0.16), 0 6px 16px rgb(245 158 11 / 0.12); }
+  50% { box-shadow: inset 0 0 0 1px rgb(245 158 11 / 0.28), 0 10px 24px rgb(245 158 11 / 0.22); }
+}
+
+@keyframes context-critical-pulse {
+  0%, 100% { box-shadow: inset 0 0 0 1px rgb(248 113 113 / 0.2), 0 8px 20px rgb(248 113 113 / 0.16); }
+  50% { box-shadow: inset 0 0 0 1px rgb(248 113 113 / 0.34), 0 14px 28px rgb(248 113 113 / 0.28); }
 }
 
 /* legacy keyframe aliases for JS references */

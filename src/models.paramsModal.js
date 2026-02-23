@@ -57,6 +57,9 @@ export function createModelParamsController({
 
   let modelId = "";
   let eventsBound = false;
+  let saveInFlight = false;
+  let currentContextWindowMax = MAX_CONTEXT_WINDOW_LIMIT;
+  let currentMaxTokensMax = MAX_TOKENS_LIMIT;
 
   function closeModelParamsModal({ skipAnimation = false } = {}) {
     if (!modalOverlay.hasSupport()) {
@@ -95,6 +98,8 @@ export function createModelParamsController({
       : 65536;
     const contextWindowMax = Math.floor(contextWindowMaxRaw);
     const maxTokensMax = Math.floor(clampNumber(contextWindowMax, 16, MAX_TOKENS_LIMIT));
+    currentContextWindowMax = contextWindowMax;
+    currentMaxTokensMax = maxTokensMax;
     const initialContextWindow = Math.floor(clampNumber(initialParams.context_window, 256, contextWindowMax));
     const initialMaxTokens = Math.floor(clampNumber(initialParams.max_tokens, 16, maxTokensMax));
     if (modalTitle) {
@@ -116,15 +121,68 @@ export function createModelParamsController({
         ${buildMpmField("context_window", "Context window", 256, contextWindowMax, 256, initialContextWindow)}
       </div>`;
 
+    const maxTokensNumberInput = modalBody.querySelector('[data-mpm="max_tokens"]');
+    const maxTokensRangeInput = modalBody.querySelector('[data-mpm-range="max_tokens"]');
+    const contextWindowNumberInput = modalBody.querySelector('[data-mpm="context_window"]');
+    const contextWindowRangeInput = modalBody.querySelector('[data-mpm-range="context_window"]');
+
+    const syncMaxTokensCap = ({ clampCurrent = true } = {}) => {
+      const rawContextWindow = Number(
+        contextWindowNumberInput instanceof HTMLInputElement
+          ? contextWindowNumberInput.value
+          : contextWindowRangeInput instanceof HTMLInputElement
+            ? contextWindowRangeInput.value
+            : initialContextWindow,
+      );
+      const safeContextWindow = Number.isFinite(rawContextWindow)
+        ? Math.floor(clampNumber(rawContextWindow, 256, contextWindowMax))
+        : initialContextWindow;
+      const dynamicMaxTokensLimit = Math.floor(clampNumber(safeContextWindow, 16, maxTokensMax));
+      if (maxTokensNumberInput instanceof HTMLInputElement) {
+        maxTokensNumberInput.max = String(dynamicMaxTokensLimit);
+      }
+      if (maxTokensRangeInput instanceof HTMLInputElement) {
+        maxTokensRangeInput.max = String(dynamicMaxTokensLimit);
+      }
+      if (!clampCurrent) {
+        return dynamicMaxTokensLimit;
+      }
+      const rawMaxTokens = Number(
+        maxTokensNumberInput instanceof HTMLInputElement
+          ? maxTokensNumberInput.value
+          : maxTokensRangeInput instanceof HTMLInputElement
+            ? maxTokensRangeInput.value
+            : initialMaxTokens,
+      );
+      const safeMaxTokens = Number.isFinite(rawMaxTokens)
+        ? Math.floor(clampNumber(rawMaxTokens, 16, dynamicMaxTokensLimit))
+        : Math.min(initialMaxTokens, dynamicMaxTokensLimit);
+      if (maxTokensNumberInput instanceof HTMLInputElement) {
+        maxTokensNumberInput.value = String(safeMaxTokens);
+      }
+      if (maxTokensRangeInput instanceof HTMLInputElement) {
+        maxTokensRangeInput.value = String(safeMaxTokens);
+      }
+      return dynamicMaxTokensLimit;
+    };
+
+    syncMaxTokensCap({ clampCurrent: true });
+
     modalBody.querySelectorAll(".mpm-field__range").forEach((rangeElement) => {
       const fieldName = rangeElement.dataset.mpmRange;
       const numberInput = modalBody.querySelector(`[data-mpm="${fieldName}"]`);
       if (!(numberInput instanceof HTMLInputElement)) return;
       rangeElement.addEventListener("input", () => {
         numberInput.value = rangeElement.value;
+        if (fieldName === "context_window" || fieldName === "max_tokens") {
+          syncMaxTokensCap({ clampCurrent: true });
+        }
       });
       numberInput.addEventListener("input", () => {
         rangeElement.value = numberInput.value;
+        if (fieldName === "context_window" || fieldName === "max_tokens") {
+          syncMaxTokensCap({ clampCurrent: true });
+        }
       });
     });
 
@@ -150,6 +208,7 @@ export function createModelParamsController({
         if (preset.top_k !== undefined) setField("top_k", preset.top_k);
         if (preset.max_tokens !== undefined) setField("max_tokens", preset.max_tokens);
         if (preset.context_window !== undefined) setField("context_window", preset.context_window);
+        syncMaxTokensCap({ clampCurrent: true });
       });
     });
 
@@ -160,7 +219,7 @@ export function createModelParamsController({
   }
 
   async function saveModelParams() {
-    if (!modelId || !modalBody) return;
+    if (!modelId || !modalBody || saveInFlight) return;
     const read = (name) => {
       const rawValue = (modalBody.querySelector(`[data-mpm="${name}"]`)?.value ?? "").trim();
       if (rawValue === "") {
@@ -172,15 +231,22 @@ export function createModelParamsController({
 
     const params = {};
     const temperature = read("temperature");
-    if (temperature !== undefined) params.temperature = temperature;
+    if (temperature !== undefined) params.temperature = clampNumber(temperature, 0, 2);
     const topP = read("top_p");
-    if (topP !== undefined) params.top_p = topP;
+    if (topP !== undefined) params.top_p = clampNumber(topP, 0, 1);
     const topK = read("top_k");
-    if (topK !== undefined) params.top_k = topK;
-    const maxTokens = read("max_tokens");
-    if (maxTokens !== undefined) params.max_tokens = maxTokens;
-    const contextWindow = read("context_window");
+    if (topK !== undefined) params.top_k = Math.floor(clampNumber(topK, 1, 400));
+    const contextWindowRaw = read("context_window");
+    const contextWindow = contextWindowRaw !== undefined
+      ? Math.floor(clampNumber(contextWindowRaw, 256, currentContextWindowMax))
+      : undefined;
     if (contextWindow !== undefined) params.context_window = contextWindow;
+    const maxTokensRaw = read("max_tokens");
+    const maxTokensLimit = Math.floor(clampNumber(contextWindow ?? currentMaxTokensMax, 16, currentMaxTokensMax));
+    const maxTokens = maxTokensRaw !== undefined
+      ? Math.floor(clampNumber(maxTokensRaw, 16, maxTokensLimit))
+      : undefined;
+    if (maxTokens !== undefined) params.max_tokens = maxTokens;
 
     if (!Object.keys(params).length) {
       pushToast("Нет изменённых параметров.", { tone: "neutral", durationMs: 1800 });
@@ -188,13 +254,27 @@ export function createModelParamsController({
     }
 
     const currentModelId = modelId;
+    saveInFlight = true;
+    if (saveButton instanceof HTMLButtonElement) {
+      saveButton.disabled = true;
+    }
     try {
-      await backendClient.updateModelParams(currentModelId, params);
+      await backendClient.updateModelParams(currentModelId, params, { timeoutMs: 45000 });
       pushToast("Параметры модели обновлены.", { tone: "success", durationMs: 2000 });
       closeModelParamsModal();
-      await onSaved?.(currentModelId);
+      void Promise.resolve(onSaved?.(currentModelId)).catch((error) => {
+        pushToast(`Параметры сохранены, но UI обновился не полностью: ${error.message}`, {
+          tone: "warning",
+          durationMs: 3200,
+        });
+      });
     } catch (error) {
       pushToast(`Ошибка: ${error.message}`, { tone: "error", durationMs: 3600 });
+    } finally {
+      saveInFlight = false;
+      if (saveButton instanceof HTMLButtonElement) {
+        saveButton.disabled = false;
+      }
     }
   }
 

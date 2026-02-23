@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import re
 import subprocess
 import sys
@@ -417,6 +418,14 @@ def _build_wrapper_script() -> str:
   )
 
 
+def _build_subprocess_env() -> dict[str, str]:
+  env = dict(os.environ)
+  for key in list(env.keys()):
+    if key.startswith("MallocStackLogging"):
+      env.pop(key, None)
+  return env
+
+
 def _truncate(value: Any, *, max_len: int) -> tuple[str, bool]:
   safe = str(value or "")
   if len(safe) <= max_len:
@@ -519,6 +528,7 @@ def handle(args: dict[str, Any], runtime: Any, host: Any) -> dict[str, Any]:
       capture_output=True,
       timeout=float(timeout_sec) + 0.25,
       check=False,
+      env=_build_subprocess_env(),
     )
   except subprocess.TimeoutExpired:
     duration_ms = int((time.perf_counter() - started_at) * 1000)

@@ -34,17 +34,6 @@ function estimateTokens(text) {
   return Math.max(1, Math.ceil(safeText.length / 4));
 }
 
-function formatCompactTokens(value) {
-  const safeValue = Math.max(0, Math.floor(Number(value) || 0));
-  if (safeValue >= 1_000_000) {
-    return `${(safeValue / 1_000_000).toFixed(1)}M`;
-  }
-  if (safeValue >= 1000) {
-    return `${(safeValue / 1000).toFixed(1)}k`;
-  }
-  return String(safeValue);
-}
-
 function formatExactTokens(value) {
   const safeValue = Math.max(0, Math.floor(Number(value) || 0));
   return safeValue.toLocaleString("ru-RU");
@@ -276,6 +265,7 @@ export function createContextGuardController({
     refreshTimer: 0,
     latestDraftText: "",
     latestAttachments: [],
+    pendingAssistantText: "",
   };
 
   function applyLoadingState(isLoading) {
@@ -290,6 +280,7 @@ export function createContextGuardController({
     draftText = "",
     attachments = [],
     historyOverride = null,
+    pendingAssistantText = state.pendingAssistantText,
   } = {}) {
     const historyEntries = normalizeHistoryEntries(
       Array.isArray(historyOverride)
@@ -299,11 +290,15 @@ export function createContextGuardController({
     const historyTokens = historyEntries.reduce((sum, item) => sum + estimateTokens(item.text), 0);
     const draftTokens = estimateTokens(draftText);
     const attachmentTokens = estimateAttachmentTokens(attachments);
+    const pendingAssistantTokens = estimateTokens(pendingAssistantText);
     const systemPromptTokens = Math.max(0, Number(state.requirements.system_prompt_tokens || 0));
     const historyOverheadTokens = Math.max(0, Number(state.requirements.history_overhead_tokens || 0));
     const reserveTokens = Math.max(0, Number(state.requirements.reserve_tokens || 0));
     const baselineTokens = Math.max(64, systemPromptTokens + historyOverheadTokens + reserveTokens);
-    const usedTokens = Math.max(1, baselineTokens + historyTokens + draftTokens + attachmentTokens);
+    const usedTokens = Math.max(
+      1,
+      baselineTokens + historyTokens + draftTokens + attachmentTokens + pendingAssistantTokens,
+    );
     const contextWindow = Math.max(512, Math.floor(Number(state.contextWindow) || DEFAULT_CONTEXT_WINDOW));
     const ratio = clamp(usedTokens / contextWindow, 0, 2);
     const remaining = Math.floor(contextWindow - usedTokens);
@@ -316,6 +311,7 @@ export function createContextGuardController({
       historyTokens,
       draftTokens,
       attachmentTokens,
+      pendingAssistantTokens,
       historyEntries,
       systemPromptTokens,
       historyOverheadTokens,
@@ -372,8 +368,6 @@ export function createContextGuardController({
       elements.composerContextIndicator.dataset.loading = "false";
       elements.composerContextRing.style.setProperty("--ctx-ratio", "0");
       elements.composerContextLabel.textContent = "off";
-      elements.composerContextIndicator.title = "Context Guard отключён";
-      elements.composerContextIndicator.setAttribute("aria-label", "Context Guard отключён");
       elements.composerContextIndicator.setAttribute("aria-busy", "false");
       if (elements.tokenCount instanceof HTMLElement) {
         elements.tokenCount.textContent = "—";
@@ -389,15 +383,8 @@ export function createContextGuardController({
     elements.composerContextIndicator.setAttribute("aria-busy", state.refreshInFlight ? "true" : "false");
     elements.composerContextRing.style.setProperty("--ctx-ratio", String(ratioPercent));
     elements.composerContextLabel.textContent = state.refreshInFlight ? "sync" : `${ratioPercent}%`;
-    elements.composerContextIndicator.title = state.refreshInFlight
-      ? `Контекст: ${formatCompactTokens(usage.usedTokens)} / ${formatCompactTokens(usage.contextWindow)} токенов (обновление лимитов...)`
-      : `Контекст: ${formatCompactTokens(usage.usedTokens)} / ${formatCompactTokens(usage.contextWindow)} токенов`;
-    elements.composerContextIndicator.setAttribute(
-      "aria-label",
-      `Использование контекста ${ratioPercent}%`,
-    );
     if (elements.tokenCount instanceof HTMLElement) {
-      elements.tokenCount.textContent = `${formatCompactTokens(usage.usedTokens)} / ${formatCompactTokens(usage.contextWindow)}`;
+      elements.tokenCount.textContent = `${formatExactTokens(usage.usedTokens)} / ${formatExactTokens(usage.contextWindow)}`;
     }
     applyPopoverDetails(usage);
   }
@@ -593,6 +580,7 @@ export function createContextGuardController({
   } = {}) {
     state.latestDraftText = String(draftText || "");
     state.latestAttachments = Array.isArray(attachments) ? attachments : [];
+    state.pendingAssistantText = "";
 
     await refreshLimits();
 
@@ -661,9 +649,28 @@ export function createContextGuardController({
     return refreshNow();
   }
 
+  function setPendingAssistantText(text = "") {
+    const normalized = normalizeTextInput(String(text || ""));
+    if (normalized === state.pendingAssistantText) {
+      return refreshNow();
+    }
+    state.pendingAssistantText = normalized;
+    return refreshNow();
+  }
+
+  function clearPendingAssistantText() {
+    if (!state.pendingAssistantText) {
+      return refreshNow();
+    }
+    state.pendingAssistantText = "";
+    return refreshNow();
+  }
+
   return {
     sync,
     prepareRequest,
     refreshLimits,
+    setPendingAssistantText,
+    clearPendingAssistantText,
   };
 }
