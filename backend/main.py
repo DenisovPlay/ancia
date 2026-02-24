@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
@@ -78,14 +79,49 @@ def load_system_prompt() -> str:
   return "Ты локальный агент Ancia. Отвечай кратко и сохраняй контекст пользователя."
 
 
-def make_app() -> FastAPI:
-  app = FastAPI(title="Ancia Local Agent Backend", version="0.1.0")
-  cors_origins_raw = os.getenv("ANCIA_CORS_ALLOW_ORIGINS", "*").strip()
-  cors_origins = ["*"] if cors_origins_raw == "*" else [
+LOGGER = logging.getLogger("ancia.backend.main")
+PROD_CORS_DEFAULT_ORIGINS = [
+  "tauri://localhost",
+  "https://tauri.localhost",
+  "http://tauri.localhost",
+  "http://127.0.0.1:1420",
+  "http://localhost:1420",
+]
+
+
+def _parse_cors_origins(raw_value: str) -> list[str]:
+  return [
     origin.strip()
-    for origin in cors_origins_raw.split(",")
+    for origin in str(raw_value or "").split(",")
     if origin.strip()
   ]
+
+
+def resolve_cors_origins() -> tuple[list[str], str]:
+  profile = str(os.getenv("ANCIA_CORS_PROFILE", "dev") or "dev").strip().lower()
+  raw_origins = str(os.getenv("ANCIA_CORS_ALLOW_ORIGINS", "") or "").strip()
+
+  if profile == "prod":
+    if raw_origins:
+      parsed = _parse_cors_origins(raw_origins)
+      origins = [origin for origin in parsed if origin != "*"]
+      if not origins:
+        origins = PROD_CORS_DEFAULT_ORIGINS.copy()
+    else:
+      origins = PROD_CORS_DEFAULT_ORIGINS.copy()
+    return origins, "prod"
+
+  # dev profile: wildcard by default for local iteration.
+  if not raw_origins or raw_origins == "*":
+    return ["*"], "dev"
+
+  parsed = _parse_cors_origins(raw_origins)
+  return parsed or ["*"], "dev"
+
+
+def make_app() -> FastAPI:
+  app = FastAPI(title="Ancia Local Agent Backend", version="0.1.0")
+  cors_origins, cors_profile = resolve_cors_origins()
   app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins or ["*"],
@@ -93,6 +129,7 @@ def make_app() -> FastAPI:
     allow_methods=["*"],
     allow_headers=["*"],
   )
+  LOGGER.info("CORS profile '%s' active (%d origins)", cors_profile, len(cors_origins))
 
   # Приходит часть OPTIONS не как CORS preflight (без Origin/Access-Control-Request-Method),
   # поэтому FastAPI по умолчанию отвечает 405. Ловим все OPTIONS и отдаём 204.

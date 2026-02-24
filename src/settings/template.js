@@ -1,7 +1,7 @@
 import { icon } from "../ui/icons.js";
 
 const inputCls = "rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none transition focus:border-zinc-600";
-const rowCls  = "flex items-center justify-between gap-4 py-3 border-b border-zinc-800/60 last:border-0";
+const rowCls  = "flex items-center justify-between gap-4 py-3";
 const labelCls = "text-xs text-zinc-500 shrink-0";
 
 export const settingsPageTemplate = `
@@ -203,6 +203,35 @@ export const settingsPageTemplate = `
             <input id="settings-context-chat-events" type="checkbox" class="h-4 w-4 rounded border-zinc-700 bg-zinc-950 accent-zinc-400" />
             <span class="text-sm text-zinc-300">Показывать события Context Guard в чате</span>
           </label>
+        </div>
+        <div class="${rowCls} px-3.5">
+          <label class="flex items-center gap-3 w-full cursor-pointer">
+            <input id="settings-model-fallback-enabled" type="checkbox" class="h-4 w-4 rounded border-zinc-700 bg-zinc-950 accent-zinc-400" />
+            <span class="text-sm text-zinc-300">Авто-fallback модели при ошибках</span>
+          </label>
+        </div>
+        <div class="${rowCls} px-3.5">
+          <span class="${labelCls}">Профиль fallback</span>
+          <select id="settings-model-fallback-profile" class="${inputCls} w-44 text-right">
+            <option value="conservative">Консервативный</option>
+            <option value="balanced">Сбалансированный</option>
+            <option value="aggressive">Агрессивный</option>
+          </select>
+        </div>
+        <div class="${rowCls} px-3.5">
+          <label class="flex items-center gap-3 w-full cursor-pointer">
+            <input id="settings-model-scenario-autoadjust" type="checkbox" class="h-4 w-4 rounded border-zinc-700 bg-zinc-950 accent-zinc-400" />
+            <span class="text-sm text-zinc-300">Автоприменение сценарного профиля модели</span>
+          </label>
+        </div>
+        <div class="${rowCls} px-3.5">
+          <span class="${labelCls}">Профиль модели</span>
+          <select id="settings-model-scenario-profile" class="${inputCls} w-44 text-right">
+            <option value="auto">Авто</option>
+            <option value="fast">Быстрый</option>
+            <option value="precise">Точный</option>
+            <option value="long_context">Длинный контекст</option>
+          </select>
         </div>
         <div class="px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2">
           <div class="flex items-center gap-2">

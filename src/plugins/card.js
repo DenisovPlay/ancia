@@ -1,6 +1,17 @@
-import { icon } from "./ui/icons.js";
+import { icon } from "../ui/icons.js";
 
 export const VALID_PLUGIN_FILTERS = new Set(["all", "installed", "agent", "web", "system"]);
+export const VALID_PLUGIN_PERMISSION_POLICIES = new Set(["allow", "ask", "deny"]);
+export const PLUGIN_PERMISSION_POLICY_LABELS = {
+  allow: "разрешено",
+  ask: "спрашивать",
+  deny: "запрещено",
+};
+export const PLUGIN_PERMISSION_POLICY_OPTION_LABELS = {
+  allow: "Разрешено",
+  ask: "Спрашивать",
+  deny: "Запрещено",
+};
 
 function escapeHtml(value) {
   return String(value || "")
@@ -14,6 +25,34 @@ function escapeHtml(value) {
 export function normalizePluginFilter(filter) {
   const normalized = String(filter || "").trim().toLowerCase();
   return VALID_PLUGIN_FILTERS.has(normalized) ? normalized : "all";
+}
+
+export function normalizePluginPermissionPolicy(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return VALID_PLUGIN_PERMISSION_POLICIES.has(normalized) ? normalized : "allow";
+}
+
+function normalizeToolPermissionMap(rawMap, tools = [], fallback = "allow") {
+  const source = rawMap && typeof rawMap === "object" ? rawMap : {};
+  const safeFallback = normalizePluginPermissionPolicy(fallback);
+  const toolSet = new Set(
+    (Array.isArray(tools) ? tools : [])
+      .map((toolName) => String(toolName || "").trim().toLowerCase())
+      .filter(Boolean),
+  );
+  const normalized = {};
+  toolSet.forEach((toolName) => {
+    normalized[toolName] = normalizePluginPermissionPolicy(source[toolName], safeFallback);
+  });
+  return normalized;
+}
+
+export function getPluginPermissionPolicyLabel(value, { option = false } = {}) {
+  const policy = normalizePluginPermissionPolicy(value);
+  if (option) {
+    return PLUGIN_PERMISSION_POLICY_OPTION_LABELS[policy] || PLUGIN_PERMISSION_POLICY_OPTION_LABELS.allow;
+  }
+  return PLUGIN_PERMISSION_POLICY_LABELS[policy] || PLUGIN_PERMISSION_POLICY_LABELS.allow;
 }
 
 export function normalizeBackendPlugin(rawPlugin) {
@@ -38,9 +77,17 @@ export function normalizeBackendPlugin(rawPlugin) {
   const safeSubtitle = String(rawPlugin.subtitle ?? rawPlugin.summary ?? "").trim();
   const safeDescription = String(rawPlugin.description || "").trim();
 
+  const permissionPolicy = normalizePluginPermissionPolicy(rawPlugin.permission_policy || rawPlugin.permissionPolicy);
+  const toolPermissionPolicies = normalizeToolPermissionMap(
+    rawPlugin.tool_permission_policies || rawPlugin.toolPermissionPolicies,
+    tools,
+    permissionPolicy,
+  );
+
   return {
     id: fallbackId,
     tool: primaryTool || fallbackId,
+    tools,
     title: safeTitle,
     subtitle: safeSubtitle,
     description: safeDescription || safeSubtitle || safeTitle,
@@ -57,6 +104,8 @@ export function normalizeBackendPlugin(rawPlugin) {
     manifestUrl: String(rawPlugin.manifest_url || rawPlugin.manifestUrl || "").trim(),
     repoUrl: String(rawPlugin.repo_url || rawPlugin.repoUrl || "").trim(),
     source: String(rawPlugin.source || (rawPlugin.installed === false ? "registry" : "unknown")).trim().toLowerCase(),
+    permissionPolicy,
+    toolPermissionPolicies,
     canInstall: rawPlugin.can_install === true || (rawPlugin.installed === false && Boolean(rawPlugin.manifest_url || rawPlugin.manifestUrl)),
     canUninstall: rawPlugin.can_uninstall === true,
     installable: rawPlugin.installable === true || Boolean(rawPlugin.manifest_url || rawPlugin.manifestUrl),
@@ -99,7 +148,6 @@ export function renderPluginCard(plugin) {
   const canUpdate = isInstalled && plugin.allowUpdate !== false;
   const canInstall = !isInstalled && plugin.canInstall;
   const canUninstall = isInstalled && plugin.canUninstall;
-
   const btnCls = "active:scale-95 duration-300 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-1 text-xs text-zinc-300 hover:bg-zinc-800";
   const btnDisabled = "opacity-50 cursor-not-allowed";
 
@@ -152,6 +200,29 @@ export function renderPluginCard(plugin) {
       ` : ""}
     `;
 
+  const permissionLabel = getPluginPermissionPolicyLabel(plugin.permissionPolicy, { option: true });
+  const toolCount = Array.isArray(plugin.tools) ? plugin.tools.length : 0;
+  const permissionSummary = isInstalled
+    ? `
+      <div class="flex items-center justify-between rounded-md border border-zinc-800/80 bg-zinc-950/40 px-2 py-1.5">
+        <span class="text-[10px] uppercase tracking-wide text-zinc-500">Разрешения</span>
+        <span class="text-[11px] text-zinc-300">${escapeHtml(permissionLabel)} • ${toolCount} инструментов</span>
+      </div>
+    `
+    : "";
+  const permissionsButton = isInstalled
+    ? `
+      <button
+        type="button"
+        data-plugin-action="open-permissions"
+        data-plugin-id="${escapeHtml(plugin.id)}"
+        class="${btnCls}"
+      >
+        Разрешения
+      </button>
+    `
+    : "";
+
   return `
     <article
       data-plugin-card
@@ -172,12 +243,14 @@ export function renderPluginCard(plugin) {
         </span>
       </div>
       <p class="text-xs leading-[1.6] text-zinc-400 line-clamp-2 flex-1">${escapeHtml(plugin.description || plugin.subtitle || plugin.title)}</p>
+      ${permissionSummary}
       <div class="flex items-center justify-between gap-2 pt-1">
         <div class="flex items-center gap-2 min-w-0">
           <span class="text-[10px] font-mono text-zinc-600">${escapeHtml(versionText)}</span>
           ${homepageLink}
         </div>
         <div class="flex items-center gap-1.5 shrink-0">
+          ${permissionsButton}
           ${actionsHtml}
         </div>
       </div>

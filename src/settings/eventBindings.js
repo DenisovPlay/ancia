@@ -108,6 +108,20 @@ export function createSettingsEventBindings({
       syncSettingsDirtyState();
     });
 
+    elements.settingsModelFallbackEnabled?.addEventListener("change", () => {
+      if (elements.settingsModelFallbackProfile instanceof HTMLSelectElement) {
+        elements.settingsModelFallbackProfile.disabled = !Boolean(elements.settingsModelFallbackEnabled?.checked);
+      }
+      syncSettingsDirtyState();
+    });
+
+    elements.settingsModelScenarioAutoApply?.addEventListener("change", () => {
+      if (elements.settingsModelScenarioProfile instanceof HTMLSelectElement) {
+        elements.settingsModelScenarioProfile.disabled = !Boolean(elements.settingsModelScenarioAutoApply?.checked);
+      }
+      syncSettingsDirtyState();
+    });
+
     bindSettingsFieldListeners();
   }
 

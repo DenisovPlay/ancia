@@ -139,11 +139,26 @@ export function installRuntimeApis({
     async deleteMessage(messageId, chatId = getChatFeature()?.getActiveChatId()) {
       return getChatFeature() ? getChatFeature().deleteMessage(messageId, chatId) : false;
     },
-    exportChats() {
-      return getChatFeature()?.exportChats() || "";
+    async exportChats(formatOrOptions = "json", options = {}) {
+      const feature = getChatFeature();
+      if (!feature?.exportChats) {
+        return "";
+      }
+      return feature.exportChats(formatOrOptions, options);
     },
-    importChats(payload) {
-      return getChatFeature()?.importChats(payload) || { error: "chat feature unavailable" };
+    async importChats(payload, options = {}) {
+      const feature = getChatFeature();
+      if (!feature?.importChats) {
+        return { error: "chat feature unavailable" };
+      }
+      return feature.importChats(payload, options);
+    },
+    async searchChats(query, options = {}) {
+      const feature = getChatFeature();
+      if (!feature?.searchChats) {
+        return { query: String(query || ""), results: [], count: 0 };
+      }
+      return feature.searchChats(query, options);
     },
     getActiveChatId() {
       return getChatFeature()?.getActiveChatId() || null;

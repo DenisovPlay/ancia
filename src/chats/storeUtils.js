@@ -52,6 +52,9 @@ export function resolveStoredToolPayload(message) {
   const args = meta.tool_args && typeof meta.tool_args === "object" ? meta.tool_args : (
     meta.toolArgs && typeof meta.toolArgs === "object" ? meta.toolArgs : {}
   );
+  const badge = meta.tool_badge && typeof meta.tool_badge === "object" ? meta.tool_badge : (
+    meta.toolBadge && typeof meta.toolBadge === "object" ? meta.toolBadge : null
+  );
   if (!name && !output && !Object.keys(args).length) {
     return null;
   }
@@ -62,6 +65,7 @@ export function resolveStoredToolPayload(message) {
     status,
     output: output || undefined,
     args,
+    badge: badge || undefined,
     text: normalizeTextInput(String(message.text || "")),
   };
 }

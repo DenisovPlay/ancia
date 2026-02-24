@@ -16,6 +16,8 @@ import { createChatStoreCoordinator } from "./chats/storeCoordinator.js";
 import { createChatStoreTransfer } from "./chats/storeTransfer.js";
 import { createChatToolCatalog } from "./chats/toolCatalog.js";
 import { createChatSessionBootstrap } from "./chats/sessionBootstrap.js";
+import { createChatHolidayBannerController } from "./chats/holidayBanner.js";
+import { createModalOverlayManager } from "./ui/modalOverlayManager.js";
 import {
   BACKEND_HISTORY_MAX_MESSAGES,
   createChatHistoryAndPersistence,
@@ -47,6 +49,7 @@ export function createChatFeature({
 }) {
   const getChatSessionButtons = () => [...document.querySelectorAll("[data-chat-item]")];
   let showOnlyActiveSessions = false;
+  let sessionSearchQuery = "";
   let nextSessionNumber = 1;
   let chatSessionIdSeq = 0;
   let activeChatSessionId = null;
@@ -199,6 +202,10 @@ sessionUiController = createChatSessionUiController({
   getCurrentRouteState,
   applyContextualBackground,
   getSyncComposerState: () => syncComposerState,
+  getSessionSearchQuery: () => sessionSearchQuery,
+});
+const holidayBannerController = createChatHolidayBannerController({
+  elements,
 });
 
 const sessionStoreActions = createChatSessionStoreActions({
@@ -311,6 +318,120 @@ function canEditMessageInUI(chatId, messageId) {
   return String(record?.message?.role || "").toLowerCase() === "user";
 }
 
+const chatExportModalOverlay = createModalOverlayManager({
+  overlay: elements.chatExportModalOverlay,
+  isMotionEnabled,
+  transitionMs: 200,
+});
+const chatExportModalState = {
+  open: false,
+  resolve: null,
+  keydownHandler: null,
+  lastFormat: "json",
+};
+const normalizeChatExportFormat = (value) => (
+  String(value || "").trim().toLowerCase() === "md" ? "md" : "json"
+);
+const hasChatExportModalSupport = () => Boolean(
+  chatExportModalOverlay.hasSupport()
+    && elements.chatExportModalTitle instanceof HTMLElement
+    && elements.chatExportModalFormat instanceof HTMLSelectElement
+    && elements.chatExportModalCancel instanceof HTMLButtonElement
+    && elements.chatExportModalConfirm instanceof HTMLButtonElement,
+);
+function settleChatExportModal(selectedFormat = null, { skipAnimation = false } = {}) {
+  if (!chatExportModalState.open) {
+    return;
+  }
+
+  const resolver = chatExportModalState.resolve;
+  const keydownHandler = chatExportModalState.keydownHandler;
+  chatExportModalState.open = false;
+  chatExportModalState.resolve = null;
+  chatExportModalState.keydownHandler = null;
+
+  if (typeof keydownHandler === "function") {
+    document.removeEventListener("keydown", keydownHandler);
+  }
+
+  chatExportModalOverlay.close({ skipAnimation });
+  const normalizedResult = selectedFormat == null ? null : normalizeChatExportFormat(selectedFormat);
+  if (normalizedResult) {
+    chatExportModalState.lastFormat = normalizedResult;
+  }
+  if (typeof resolver === "function") {
+    resolver(normalizedResult);
+  }
+}
+
+function requestChatExportFormat({ chatTitle = "" } = {}) {
+  if (!hasChatExportModalSupport()) {
+    const fallbackPrompt = window.prompt?.(
+      "Формат экспорта (json/md):",
+      chatExportModalState.lastFormat,
+    );
+    if (fallbackPrompt == null) {
+      return Promise.resolve(null);
+    }
+    const fallbackFormat = normalizeChatExportFormat(fallbackPrompt);
+    chatExportModalState.lastFormat = fallbackFormat;
+    return Promise.resolve(fallbackFormat);
+  }
+
+  if (chatExportModalState.open) {
+    settleChatExportModal(null, { skipAnimation: true });
+  }
+
+  const safeTitle = String(chatTitle || "").trim();
+  elements.chatExportModalTitle.textContent = safeTitle
+    ? `Экспорт чата «${safeTitle}»`
+    : "Экспорт чата";
+  elements.chatExportModalFormat.value = chatExportModalState.lastFormat;
+  chatExportModalState.open = true;
+  chatExportModalOverlay.open({ captureFocus: true });
+
+  return new Promise((resolve) => {
+    chatExportModalState.resolve = resolve;
+    const keydownHandler = (event) => {
+      if (!chatExportModalState.open) {
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        settleChatExportModal(null);
+        return;
+      }
+      if (event.key === "Enter") {
+        event.preventDefault();
+        settleChatExportModal(elements.chatExportModalFormat?.value || "json");
+      }
+    };
+    chatExportModalState.keydownHandler = keydownHandler;
+    document.addEventListener("keydown", keydownHandler);
+
+    window.requestAnimationFrame(() => {
+      elements.chatExportModalFormat?.focus({ preventScroll: true });
+    });
+  });
+}
+
+if (hasChatExportModalSupport()) {
+  elements.chatExportModalConfirm.addEventListener("click", () => {
+    settleChatExportModal(elements.chatExportModalFormat?.value || "json");
+  });
+  elements.chatExportModalCancel.addEventListener("click", () => {
+    settleChatExportModal(null);
+  });
+  elements.chatExportModalOverlay.addEventListener("click", (event) => {
+    if (event.target === elements.chatExportModalOverlay) {
+      settleChatExportModal(null);
+    }
+  });
+}
+
+let requestChatExportFromEventBindings = async () => false;
+let openChatImportDialogFromEventBindings = () => {};
+
 let executeContextMenuAction = async () => {};
 const contextMenuController = createChatContextMenuController({
   menuElement: elements.contextMenu,
@@ -359,6 +480,8 @@ function openContextMenu(options = {}) {
   editMessageById,
   requestActionConfirm,
   deleteMessageById,
+  requestChatExport: (...args) => requestChatExportFromEventBindings(...args),
+  openChatImportDialog: (...args) => openChatImportDialogFromEventBindings(...args),
 }));
 contextMenuController.bind();
 
@@ -369,7 +492,99 @@ function applyChatSessionVisibilityFilter() {
 function setActiveChatSession(targetButton, options = {}) {
   sessionUiController?.setActiveChatSession(targetButton, options);
 }
-bindChatSessionEvents({
+
+async function searchChatsForUi(query, options = {}) {
+  const safeQuery = String(query || "").trim();
+  if (!safeQuery) {
+    return { query: "", results: [], count: 0 };
+  }
+  if (isBackendRuntimeEnabled()) {
+    try {
+      return await backendClient.searchChats(safeQuery, options);
+    } catch {
+      return { query: safeQuery, results: [], count: 0 };
+    }
+  }
+
+  const needle = safeQuery.toLowerCase();
+  const localResults = [];
+  const sessions = Array.isArray(chatStore?.sessions) ? chatStore.sessions : [];
+  sessions.forEach((session) => {
+    const chatId = String(session?.id || "").trim();
+    const chatTitle = String(session?.title || "Чат").trim() || "Чат";
+    const titleMatch = chatTitle.toLowerCase().includes(needle);
+    if (titleMatch) {
+      localResults.push({
+        chat_id: chatId,
+        chat_title: chatTitle,
+        message_id: "",
+        role: "assistant",
+        text: chatTitle,
+        snippet: chatTitle,
+        timestamp: String(session?.updatedAt || session?.createdAt || ""),
+      });
+    }
+    const messages = Array.isArray(session?.messages) ? session.messages : [];
+    messages.forEach((message) => {
+      const text = normalizeTextInput(String(message?.text || "")).trim();
+      if (!text || !text.toLowerCase().includes(needle)) {
+        return;
+      }
+      localResults.push({
+        chat_id: chatId,
+        chat_title: chatTitle,
+        message_id: String(message?.id || "").trim(),
+        role: String(message?.role || "assistant").trim().toLowerCase() || "assistant",
+        text,
+        snippet: text.slice(0, 220),
+        timestamp: String(message?.timestamp || ""),
+      });
+    });
+  });
+
+  return {
+    query: safeQuery,
+    results: localResults.slice(0, 120),
+    count: localResults.length,
+  };
+}
+
+function openSearchResult({ chatId = "", messageId = "" } = {}) {
+  const safeChatId = String(chatId || "").trim();
+  const safeMessageId = String(messageId || "").trim();
+  if (!safeChatId) {
+    return;
+  }
+  const targetButton = getChatSessionButtons().find((button) => button.dataset.sessionId === safeChatId) || null;
+  if (targetButton) {
+    setActiveChatSession(targetButton, { renderMessages: true, applyBackground: true });
+  }
+  if (!isLeftPanelDocked()) {
+    mobileState.leftOpen = false;
+    syncMobilePanels();
+  }
+  if (!safeMessageId || !(elements.chatStream instanceof HTMLElement)) {
+    return;
+  }
+  window.setTimeout(() => {
+    const row = elements.chatStream.querySelector(`.message-row[data-message-id="${safeMessageId}"]`);
+    if (!(row instanceof HTMLElement)) {
+      return;
+    }
+    row.scrollIntoView({ behavior: "smooth", block: "center" });
+    row.classList.remove("message-row-highlight");
+    void row.offsetWidth;
+    row.classList.add("message-row-highlight");
+    window.setTimeout(() => {
+      row.classList.remove("message-row-highlight");
+    }, 1300);
+  }, 80);
+}
+
+let runGenerationAction = async () => false;
+let exportChatsForUi = async () => ({ format: "json", store: { sessions: [] } });
+let importChatsForUi = async () => ({ imported: { sessions: 0, messages: 0 } });
+const chatSessionEventBindings = bindChatSessionEvents({
   elements,
   isLeftPanelDocked,
   mobileState,
@@ -378,6 +593,9 @@ bindChatSessionEvents({
   getShowOnlyActiveSessions: () => showOnlyActiveSessions,
   setShowOnlyActiveSessions: (value) => {
     showOnlyActiveSessions = Boolean(value);
+  },
+  setSessionSearchQuery: (value) => {
+    sessionSearchQuery = String(value || "").trim().toLowerCase();
   },
   applyChatSessionVisibilityFilter,
   getActiveChatSession,
@@ -402,14 +620,30 @@ bindChatSessionEvents({
   setActiveChatSession,
   openContextMenu,
   getAppendMessage: () => appendMessage,
+  runGenerationAction: async (payload) => runGenerationAction(payload),
   focusComposer: () => {
     elements.composerInput?.focus();
   },
+  searchChats: (query, options = {}) => searchChatsForUi(query, options),
+  openSearchResult,
+  exportChats: (...args) => exportChatsForUi(...args),
+  importChats: (...args) => importChatsForUi(...args),
+  requestChatExportFormat,
 });
+requestChatExportFromEventBindings = (...args) => {
+  if (typeof chatSessionEventBindings?.requestChatExport !== "function") {
+    return Promise.resolve(false);
+  }
+  return chatSessionEventBindings.requestChatExport(...args);
+};
+openChatImportDialogFromEventBindings = (...args) => {
+  chatSessionEventBindings?.openChatImportDialog?.(...args);
+};
 const {
   appendMessage,
   updateMessageRowContent,
   updateToolRow,
+  setAssistantGenerationActions,
   normalizeLegacyToolName,
   resolveToolMeta,
   formatToolOutputText,
@@ -471,11 +705,13 @@ const composerController = createChatComposerController({
   updateConnectionState,
   BACKEND_STATUS,
   pushToast,
+  requestActionConfirm,
   isBackendRuntimeEnabled,
   syncChatStoreFromBackend,
   appendMessage,
   updateMessageRowContent,
   updateToolRow,
+  setAssistantGenerationActions,
   normalizeLegacyToolName,
   resolveToolMeta,
   formatToolOutputText,
@@ -488,15 +724,19 @@ const composerController = createChatComposerController({
   applyTransientMood,
   setChatSessionMood,
   renameChatSessionById,
+  getMessageRecord,
   sanitizeSessionTitle,
   persistChatMessage,
   ASSISTANT_PENDING_LABEL,
 });
 syncComposerState = (options = {}) => composerController.syncState(options);
+runGenerationAction = async (payload) => composerController.triggerGenerationAction(payload);
 composerController.bind();
 
 
 function initialize() {
+  holidayBannerController.initialize();
+  sessionSearchQuery = String(elements.chatSessionSearch?.value || "").trim().toLowerCase();
   chatStore = normalizeChatStore(chatStore);
   ensureActiveChatSessionInStore();
   rebuildChatSessionCounters();
@@ -565,6 +805,8 @@ function clearCurrentChatState(transitionMs = runtimeConfig.defaultTransitionMs)
     importChatStorePayload,
     listChatSessions,
   });
+  exportChatsForUi = (...args) => chatPublicApi.exportChats(...args);
+  importChatsForUi = (...args) => chatPublicApi.importChats(...args);
 
 return {
   initialize,
@@ -615,6 +857,7 @@ return {
   deleteMessage: chatPublicApi.deleteMessage,
   exportChats: chatPublicApi.exportChats,
   importChats: chatPublicApi.importChats,
+  searchChats: chatPublicApi.searchChats,
   listChats: chatPublicApi.listChats,
 };
 }

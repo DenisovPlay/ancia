@@ -1027,6 +1027,14 @@ class PythonModelEngine(EngineModelsMixin):
 
     return self._fallback_token_estimate(safe_text), "chars/4"
 
+  def _estimate_token_count_exact(self, text: str) -> tuple[int, str]:
+    count, mode = self._estimate_token_count(text)
+    if mode == "chars/4":
+      raise RuntimeError(
+        "Точный подсчёт токенов недоступен: токенизатор выбранной модели не загружен."
+      )
+    return count, mode
+
   def get_context_window_requirements(
     self,
     *,
@@ -1105,6 +1113,268 @@ class PythonModelEngine(EngineModelsMixin):
       "reserve_tokens": int(reserve_tokens),
       "token_estimation_mode": token_estimation_mode,
       "active_tools_count": len(safe_active_tools),
+      "tokenizer_loaded": bool(self._tokenizer is not None),
+    }
+
+  @staticmethod
+  def _coerce_context_usage_history(entries: list[Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(entries, list):
+      return []
+    out: list[dict[str, Any]] = []
+    for item in entries[:64]:
+      raw = item.model_dump() if hasattr(item, "model_dump") else item
+      if not isinstance(raw, dict):
+        continue
+      role = str(raw.get("role") or "").strip().lower()
+      if role not in {"user", "assistant", "system"}:
+        continue
+      text = str(raw.get("text") or "").strip()
+      if not text:
+        continue
+      out.append(
+        {
+          "role": role,
+          "text": text,
+          "timestamp": raw.get("timestamp"),
+        }
+      )
+    return out
+
+  @staticmethod
+  def _coerce_context_usage_attachments(entries: list[Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(entries, list):
+      return []
+    out: list[dict[str, Any]] = []
+    for item in entries[:10]:
+      raw = item.model_dump() if hasattr(item, "model_dump") else item
+      if not isinstance(raw, dict):
+        continue
+      out.append(
+        {
+          "id": str(raw.get("id") or "").strip(),
+          "name": str(raw.get("name") or "").strip(),
+          "kind": normalize_attachment_kind_fn(str(raw.get("kind") or "file")),
+          "mimeType": str(raw.get("mimeType") or "").strip(),
+          "size": max(0, int(raw.get("size") or 0)),
+          "textContent": str(raw.get("textContent") or ""),
+          "dataUrl": str(raw.get("dataUrl") or "").strip(),
+        }
+      )
+    return out
+
+  def _build_context_usage_request(
+    self,
+    *,
+    draft_text: str,
+    history: list[Any] | None,
+    attachments: list[Any] | None,
+  ) -> ChatRequest:
+    payload = {
+      "message": str(draft_text or "").strip(),
+      "attachments": self._coerce_context_usage_attachments(attachments),
+      "context": {
+        "chat_id": "context-guard",
+        "chat_title": "",
+        "mood": "neutral",
+        "user": {
+          "name": "",
+          "context": "",
+          "language": "ru",
+          "timezone": "UTC",
+        },
+        "history": self._coerce_context_usage_history(history),
+        "system_prompt": "",
+      },
+    }
+    return ChatRequest.model_validate(payload)
+
+  @staticmethod
+  def _split_context_usage_messages(
+    messages: list[dict[str, Any]],
+  ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    safe_messages = list(messages or [])
+    if not safe_messages:
+      return [], [], []
+    has_system = str(safe_messages[0].get("role") or "").strip().lower() == "system"
+    if has_system:
+      system_messages = safe_messages[:1]
+      history_messages = safe_messages[1:-1]
+      user_messages = safe_messages[-1:]
+      return system_messages, history_messages, user_messages
+    return [], safe_messages[:-1], safe_messages[-1:]
+
+  def _estimate_prompt_tokens_from_messages_exact(
+    self,
+    messages: list[dict[str, Any]],
+    *,
+    active_tools: set[str],
+    tool_schemas: dict[str, dict[str, Any]],
+  ) -> tuple[int, str]:
+    rendered_prompt = self._render_prompt_with_tool_schemas(
+      messages,
+      active_tools=active_tools,
+      tool_schemas=tool_schemas,
+    )
+    return self._estimate_token_count_exact(rendered_prompt)
+
+  def get_context_usage(
+    self,
+    *,
+    model_id: str = "",
+    draft_text: str = "",
+    pending_assistant_text: str = "",
+    history: list[Any] | None = None,
+    attachments: list[Any] | None = None,
+    history_variants: list[list[Any]] | None = None,
+    active_tools: set[str] | None = None,
+    tool_definitions: dict[str, dict[str, Any]] | None = None,
+    tool_schemas: dict[str, dict[str, Any]] | None = None,
+  ) -> dict[str, Any]:
+    safe_active_tools = {str(name or "").strip().lower() for name in (active_tools or set()) if str(name or "").strip()}
+    safe_tool_definitions = tool_definitions if isinstance(tool_definitions, dict) else {}
+    safe_tool_schemas = tool_schemas if isinstance(tool_schemas, dict) else {}
+
+    selected_model_id = normalize_model_id(self.get_selected_model_id(), "")
+    safe_model_id = normalize_model_id(model_id, selected_model_id)
+    if not safe_model_id:
+      safe_model_id = selected_model_id
+    if safe_model_id != selected_model_id:
+      safe_model_id = selected_model_id
+
+    model_entry = get_model_entry(safe_model_id)
+    tier_key = normalize_model_tier_key(
+      getattr(model_entry, "recommended_tier", "") if model_entry is not None else "",
+      self.get_selected_tier(),
+    )
+    tier = MODEL_TIERS[tier_key]
+    model_params = self.get_model_params(safe_model_id, tier_key=tier_key)
+    model_context_limit = max(
+      512,
+      min(
+        self.MAX_CONTEXT_WINDOW_LIMIT,
+        int(getattr(model_entry, "max_context", 0) or tier.max_context or 8192),
+      ),
+    )
+    context_window = max(
+      256,
+      min(model_context_limit, int(model_params.get("context_window") or model_context_limit)),
+    )
+
+    requirements = self.get_context_window_requirements(
+      active_tools=safe_active_tools,
+      tool_definitions=safe_tool_definitions,
+    )
+    reserve_tokens = max(0, int(requirements.get("reserve_tokens") or 0))
+
+    pending_tokens, _pending_mode = self._estimate_token_count_exact(str(pending_assistant_text or ""))
+
+    def evaluate_history_variant(
+      variant_history: list[Any] | None,
+      *,
+      include_breakdown: bool,
+    ) -> dict[str, Any]:
+      chat_request = self._build_context_usage_request(
+        draft_text=draft_text,
+        history=variant_history,
+        attachments=attachments,
+      )
+      messages_full = self._build_messages(
+        chat_request,
+        turns=[],
+        active_tools=safe_active_tools,
+        tool_definitions=safe_tool_definitions,
+      )
+      prompt_tokens, token_mode = self._estimate_prompt_tokens_from_messages_exact(
+        messages_full,
+        active_tools=safe_active_tools,
+        tool_schemas=safe_tool_schemas,
+      )
+      system_messages, history_messages, _user_messages = self._split_context_usage_messages(messages_full)
+      system_and_history = [*system_messages, *history_messages]
+      system_rendered_tokens, _ = self._estimate_prompt_tokens_from_messages_exact(
+        system_messages,
+        active_tools=safe_active_tools,
+        tool_schemas=safe_tool_schemas,
+      )
+      system_history_rendered_tokens, _ = self._estimate_prompt_tokens_from_messages_exact(
+        system_and_history,
+        active_tools=safe_active_tools,
+        tool_schemas=safe_tool_schemas,
+      )
+
+      system_prompt_tokens = 0
+      if system_messages:
+        system_text = str(system_messages[0].get("content") or "").strip()
+        if system_text:
+          system_prompt_tokens, _ = self._estimate_token_count_exact(system_text)
+
+      history_tokens = max(0, system_history_rendered_tokens - system_rendered_tokens)
+      draft_and_attachment_tokens = max(0, prompt_tokens - system_history_rendered_tokens)
+      draft_tokens = draft_and_attachment_tokens
+      attachment_tokens = 0
+      if include_breakdown and attachments:
+        no_attachments_request = self._build_context_usage_request(
+          draft_text=draft_text,
+          history=variant_history,
+          attachments=[],
+        )
+        no_attachments_messages = self._build_messages(
+          no_attachments_request,
+          turns=[],
+          active_tools=safe_active_tools,
+          tool_definitions=safe_tool_definitions,
+        )
+        prompt_no_attachments_tokens, _ = self._estimate_prompt_tokens_from_messages_exact(
+          no_attachments_messages,
+          active_tools=safe_active_tools,
+          tool_schemas=safe_tool_schemas,
+        )
+        draft_tokens = max(0, prompt_no_attachments_tokens - system_history_rendered_tokens)
+        attachment_tokens = max(0, prompt_tokens - prompt_no_attachments_tokens)
+
+      used_tokens = max(0, prompt_tokens + pending_tokens)
+      effective_tokens = max(0, used_tokens + reserve_tokens)
+      ratio = float(effective_tokens / context_window) if context_window > 0 else 0.0
+      remaining_tokens = int(context_window - effective_tokens)
+      payload = {
+        "prompt_tokens": int(prompt_tokens),
+        "pending_assistant_tokens": int(pending_tokens),
+        "used_tokens": int(used_tokens),
+        "effective_tokens": int(effective_tokens),
+        "remaining_tokens": int(remaining_tokens),
+        "ratio": ratio,
+        "history_tokens": int(history_tokens),
+        "draft_tokens": int(max(0, draft_tokens)),
+        "attachment_tokens": int(max(0, attachment_tokens)),
+        "system_prompt_tokens": int(system_prompt_tokens),
+        "history_messages": int(len(history_messages)),
+        "context_window": int(context_window),
+        "reserve_tokens": int(reserve_tokens),
+        "token_estimation_mode": str(token_mode or "tokenizer.encode"),
+        "exact": True,
+      }
+      return payload
+
+    usage = evaluate_history_variant(history, include_breakdown=True)
+    variants_payload: list[dict[str, Any]] = []
+    for index, variant_history in enumerate(list(history_variants or [])[:80]):
+      variant_usage = evaluate_history_variant(variant_history, include_breakdown=False)
+      variants_payload.append(
+        {
+          "index": int(index),
+          "usage": variant_usage,
+        }
+      )
+
+    return {
+      "model_id": safe_model_id,
+      "params": {
+        "context_window": int(context_window),
+        "max_tokens": int(model_params.get("max_tokens") or 0),
+      },
+      "context_window_requirements": requirements,
+      "usage": usage,
+      "variants": variants_payload,
       "tokenizer_loaded": bool(self._tokenizer is not None),
     }
 
@@ -1765,17 +2035,31 @@ class PythonModelEngine(EngineModelsMixin):
     tool_schema_map = {}
     if tool_registry is not None and hasattr(tool_registry, "build_llm_schema_map"):
       tool_schema_map = tool_registry.build_llm_schema_map(active_tools or set())
+    return self._render_prompt_with_tool_schemas(
+      messages,
+      active_tools=active_tools or set(),
+      tool_schemas=tool_schema_map,
+    )
+
+  def _render_prompt_with_tool_schemas(
+    self,
+    messages: list[dict[str, Any]],
+    *,
+    active_tools: set[str],
+    tool_schemas: dict[str, dict[str, Any]] | None = None,
+  ) -> str:
+    safe_tool_schemas = tool_schemas if isinstance(tool_schemas, dict) else {}
     if self._runtime_backend_kind == "mlx_vlm" and self._vlm_processor is not None:
       return self._render_vlm_prompt(
         messages,
-        tool_schemas=tool_schema_map,
-        active_tools=active_tools or set(),
+        tool_schemas=safe_tool_schemas,
+        active_tools=active_tools,
       )
     return render_prompt_fn(
       messages,
       tokenizer=self._tokenizer,
-      active_tools=active_tools or set(),
-      tool_schemas=tool_schema_map,
+      active_tools=active_tools,
+      tool_schemas=safe_tool_schemas,
     )
 
   def _build_generation_attempts(self, prompt: str, plan: GenerationPlan) -> list[dict[str, Any]]:

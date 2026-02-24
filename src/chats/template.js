@@ -8,13 +8,20 @@ export const chatPageTemplate = `
     <button
       id="chat-new-session-button"
       type="button"
-      class="icon-button active:scale-95 duration-300 mb-3 rounded-lg border border-zinc-700 bg-zinc-100 px-3 py-1.5 text-sm font-medium text-zinc-900 transition hover:bg-zinc-200"
+      class="icon-button active:scale-95 duration-300 mb-3 rounded-lg border border-zinc-700 bg-zinc-100 p-2.5 text-sm font-medium text-zinc-900 transition hover:bg-zinc-200"
     >
       ${icon("chat-plus")}
       <span>Новый чат</span>
     </button>
 
-    <div class="mb-2 flex items-center justify-between px-1">
+    <input
+      id="chat-import-file-input"
+      type="file"
+      class="hidden"
+      accept=".json,.md,.markdown,application/json,text/markdown,text/plain"
+    />
+
+    <div class="mb-3 flex items-center justify-between">
       <h2 class="text-[10px] uppercase tracking-[0.12em] text-zinc-500">Диалоги</h2>
       <div class="flex items-center gap-1">
         <button
@@ -38,8 +45,31 @@ export const chatPageTemplate = `
       </div>
     </div>
 
-    <div id="chat-session-list" class="chat-scroll flex-1 min-h-0 space-y-1.5 overflow-auto pr-0.5">
+    <div style="z-index:99;">
+      <input
+        id="chat-session-search"
+        type="search"
+        placeholder="Поиск чата"
+        class="w-full rounded-lg border border-zinc-800 bg-zinc-950 p-2.5 text-sm text-zinc-200 outline-none transition focus:border-zinc-600"
+      />
+      <div id="chat-session-search-results" class="chat-search-results hidden" data-open="false"></div>
+    </div>
+
+    <div id="chat-session-list" class="chat-scroll grow flex-1 min-h-0 space-y-1.5 overflow-auto py-6 -my-3">
       
+    </div>
+
+    <div id="chat-holiday-banner" class="chat-holiday-banner hidden border border-zinc-800 bg-zinc-950 shadow flex flex-col items-center justify-center rounded-xl sticky bottom-0 w-full z-90 p-3 gap-2.5">
+      <img id="chat-holiday-banner-logo" src="/ancia.png" alt="Логотип" class="w-14 h-14 rounded-xl object-cover">
+      <span id="chat-holiday-banner-title" class="font-bold text-center">С праздником!</span>
+      <span id="chat-holiday-banner-body" class="text-sm text-zinc-300 text-center">Желаем вам хорошего дня и отличного настроения.</span>
+      <button
+        id="chat-holiday-banner-dismiss"
+        type="button"
+        class="icon-button active:scale-95 duration-300 rounded-lg border border-zinc-700 bg-zinc-100 p-2.5 text-sm font-medium text-zinc-900 transition hover:bg-zinc-200"
+      >
+        <span>Спасибо!</span>
+      </button>
     </div>
   </aside>
 
@@ -107,35 +137,71 @@ export const chatPageTemplate = `
         >
           ${icon("attach")}
         </button>
-        <button
+        <div
           id="composer-context-indicator"
-          type="button"
           class="composer-context-indicator"
+          tabindex="0"
+          role="button"
         >
           <span id="composer-context-ring" class="composer-context-ring" aria-hidden="true">
             <span class="composer-context-ring__inner"></span>
           </span>
           <span id="composer-context-label" class="composer-context-label">0%</span>
-          <span id="composer-context-popover" class="composer-context-popover" role="tooltip" aria-hidden="true">
-            <span class="composer-context-popover__title">Контекст</span>
-            <span class="composer-context-popover__row">
-              <span class="composer-context-popover__key">Занято</span>
-              <span id="composer-context-used" class="composer-context-popover__value">—</span>
-            </span>
-            <span class="composer-context-popover__row">
-              <span class="composer-context-popover__key">Максимум</span>
-              <span id="composer-context-max" class="composer-context-popover__value">—</span>
+            <span id="composer-context-popover" class="composer-context-popover" role="tooltip" aria-hidden="true">
+              <span class="composer-context-popover__title">Контекст</span>
+              <span class="composer-context-popover__row">
+                <span class="composer-context-popover__key">Занято (с резервом)</span>
+                <span id="composer-context-used" class="composer-context-popover__value">—</span>
+              </span>
+              <span class="composer-context-popover__row">
+                <span class="composer-context-popover__key">Максимум</span>
+                <span id="composer-context-max" class="composer-context-popover__value">—</span>
             </span>
             <span class="composer-context-popover__row">
               <span class="composer-context-popover__key">История чата</span>
               <span id="composer-context-history" class="composer-context-popover__value">—</span>
             </span>
-            <span class="composer-context-popover__row">
-              <span class="composer-context-popover__key">Системный промпт</span>
-              <span id="composer-context-system" class="composer-context-popover__value">—</span>
+              <span class="composer-context-popover__row">
+                <span class="composer-context-popover__key">Системный промпт</span>
+                <span id="composer-context-system" class="composer-context-popover__value">—</span>
+              </span>
+              <span class="composer-context-popover__row">
+                <span class="composer-context-popover__key">Служебный каркас</span>
+                <span id="composer-context-service" class="composer-context-popover__value">—</span>
+              </span>
+              <span class="composer-context-popover__row">
+                <span class="composer-context-popover__key">Черновик и вложения</span>
+                <span id="composer-context-draft" class="composer-context-popover__value">—</span>
+              </span>
+              <span class="composer-context-popover__row">
+                <span class="composer-context-popover__key">Ожидаемый ответ</span>
+                <span id="composer-context-pending" class="composer-context-popover__value">—</span>
+              </span>
+              <span class="composer-context-popover__row">
+                <span class="composer-context-popover__key">Резерв генерации</span>
+                <span id="composer-context-reserve" class="composer-context-popover__value">—</span>
+              </span>
+              <span class="composer-context-popover__row">
+                <span class="composer-context-popover__key">Слои сжатия</span>
+                <span id="composer-context-layers" class="composer-context-popover__value">0</span>
+              </span>
+            <span class="composer-context-popover__layers-title">Последние слои</span>
+            <span id="composer-context-layers-list" class="composer-context-popover__layers-list">
+              <span class="composer-context-popover__layers-empty">Слои пока не созданы</span>
+            </span>
+            <span class="composer-context-popover__actions w-full grid grid-cols-2 gap-[0.35rem] mt-[0.1rem]">
+              <button id="composer-context-cycle-mode" type="button" class="composer-context-popover__action-btn col-span-2">
+                Режим
+              </button>
+              <button id="composer-context-compress-now" type="button" class="composer-context-popover__action-btn">
+                Сжать
+              </button>
+              <button id="composer-context-reset-layers" type="button" class="composer-context-popover__action-btn">
+                Сбросить
+              </button>
             </span>
           </span>
-        </button>
+        </div>
       </div>
       <input
         id="composer-attachments-input"
@@ -199,4 +265,21 @@ export const chatPageTemplate = `
       <p class="mt-1 text-[11px] font-mono text-zinc-500">Запуск #0189</p>
     </div>
   </aside>
+
+  <div id="chat-export-modal-overlay" class="app-modal-overlay chat-export-modal-overlay hidden" aria-hidden="true">
+    <div class="action-dialog chat-export-modal">
+      <p id="chat-export-modal-title" class="action-dialog__title">Экспорт чата</p>
+      <p class="action-dialog__message">Выберите формат файла для экспорта.</p>
+      <div class="chat-export-modal__field">
+        <select id="chat-export-modal-format" class="action-dialog__input">
+          <option value="json">JSON (.json)</option>
+          <option value="md">Markdown (.md)</option>
+        </select>
+      </div>
+      <div class="action-dialog__actions">
+        <button id="chat-export-modal-cancel" type="button" class="icon-button active:scale-95 duration-300 rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-sm text-zinc-300 transition hover:bg-zinc-800">Отмена</button>
+        <button id="chat-export-modal-confirm" type="button" class="icon-button active:scale-95 duration-300 rounded-lg border border-zinc-700 bg-zinc-100 px-3 py-1.5 text-sm font-medium text-zinc-900 transition hover:bg-zinc-200">Экспортировать</button>
+      </div>
+    </div>
+  </div>
 `;

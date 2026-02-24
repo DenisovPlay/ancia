@@ -3,12 +3,18 @@ from __future__ import annotations
 import importlib.util
 import inspect
 import json
+from contextlib import nullcontext
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable
 from urllib import error as url_error
 from urllib import parse as url_parse
 from urllib import request as url_request
+
+try:
+  from backend.plugin_permissions import normalize_plugin_permission_policy
+except ModuleNotFoundError:
+  from plugin_permissions import normalize_plugin_permission_policy  # type: ignore
 
 
 ToolHandler = Callable[[dict[str, Any], Any], dict[str, Any]]
@@ -53,6 +59,36 @@ class PluginPythonCallableCache:
     return fn
 
 
+def _tool_policy_key(plugin_id: str, tool_name: str) -> str:
+  safe_plugin_id = str(plugin_id or "").strip().lower()
+  safe_tool_name = str(tool_name or "").strip().lower()
+  if not safe_plugin_id or not safe_tool_name:
+    return ""
+  return f"{safe_plugin_id}::{safe_tool_name}"
+
+
+def _enforce_runtime_tool_policy(runtime: Any, plugin_id: str, tool_name: str) -> None:
+  tool_key = _tool_policy_key(plugin_id, tool_name)
+  if not tool_key or runtime is None:
+    return
+  policy_map = (
+    dict(getattr(runtime, "tool_permission_policies", {}) or {})
+    if hasattr(runtime, "tool_permission_policies")
+    else {}
+  )
+  policy = normalize_plugin_permission_policy(policy_map.get(tool_key, "allow"), "allow")
+  if policy == "deny":
+    raise RuntimeError(f"Инструмент '{tool_name}' запрещён политикой разрешений.")
+  if policy == "ask":
+    granted = {
+      str(item or "").strip().lower()
+      for item in list(getattr(runtime, "tool_permission_grants", None) or [])
+      if str(item or "").strip()
+    }
+    if tool_key not in granted:
+      raise RuntimeError(f"Инструмент '{tool_name}' требует подтверждения (policy: ask).")
+
+
 def _call_python_tool(
   fn: Callable[..., Any],
   *,
@@ -63,15 +99,22 @@ def _call_python_tool(
   tool_name: str,
   handler_spec: dict[str, Any],
 ) -> dict[str, Any]:
+  _enforce_runtime_tool_policy(runtime, plugin_id, tool_name)
   signature = inspect.signature(fn)
-  if len(signature.parameters) >= 3:
-    result = fn(args, runtime, host_api)
-  elif len(signature.parameters) >= 2:
-    result = fn(args, runtime)
-  elif len(signature.parameters) == 1:
-    result = fn(args)
-  else:
-    result = fn()
+  runtime_scope = (
+    host_api.bind_runtime(runtime=runtime, plugin_id=plugin_id, tool_name=tool_name)
+    if host_api is not None and hasattr(host_api, "bind_runtime")
+    else nullcontext()
+  )
+  with runtime_scope:
+    if len(signature.parameters) >= 3:
+      result = fn(args, runtime, host_api)
+    elif len(signature.parameters) >= 2:
+      result = fn(args, runtime)
+    elif len(signature.parameters) == 1:
+      result = fn(args)
+    else:
+      result = fn()
 
   if isinstance(result, dict):
     return result
@@ -90,6 +133,7 @@ def _make_http_json_handler(
   handler_spec: dict[str, Any],
   requires_network: bool,
   get_autonomous_mode: Callable[[], bool],
+  host_api: Any = None,
 ) -> ToolHandler:
   endpoint = _normalize_http_url(str(handler_spec.get("url") or handler_spec.get("endpoint") or "").strip())
   method = str(handler_spec.get("method") or "POST").strip().upper()
@@ -98,8 +142,13 @@ def _make_http_json_handler(
   static_headers = handler_spec.get("headers") if isinstance(handler_spec.get("headers"), dict) else {}
 
   def handler(args: dict[str, Any], runtime: Any) -> dict[str, Any]:
+    _enforce_runtime_tool_policy(runtime, plugin_id, tool_name)
     if requires_network and get_autonomous_mode():
       raise RuntimeError("Автономный режим включен: внешний HTTP-инструмент отключен.")
+    if host_api is not None and hasattr(host_api, "ensure_network_allowed"):
+      host_api.ensure_network_allowed()
+    if host_api is not None and hasattr(host_api, "ensure_domain_allowed"):
+      host_api.ensure_domain_allowed(endpoint, runtime=runtime)
 
     payload = {
       "tool": tool_name,
@@ -205,6 +254,7 @@ def register_tools_from_plugins(
           handler_spec=handler_spec,
           requires_network=requires_network,
           get_autonomous_mode=get_autonomous_mode,
+          host_api=host_api,
         )
       except ValueError:
         def invalid_http_handler(args: dict[str, Any], runtime: Any) -> dict[str, Any]:

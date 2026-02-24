@@ -11,8 +11,10 @@ export function createChatContextMenuController({
     { id: "chat-open", label: "Открыть чат" },
     { id: "chat-rename", label: "Переименовать чат" },
     { id: "chat-duplicate", label: "Дублировать чат" },
+    { id: "chat-export", label: "Экспорт чата" },
     { id: "chat-clear", label: "Очистить историю" },
     { divider: true },
+    { id: "chat-import", label: "Импорт чатов" },
     { id: "chat-delete", label: "Удалить чат", tone: "danger" },
   ];
 

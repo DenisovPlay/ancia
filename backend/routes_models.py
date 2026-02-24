@@ -5,9 +5,9 @@ from typing import Any, Callable
 from fastapi import FastAPI, HTTPException
 
 try:
-  from backend.schemas import ModelParamsUpdateRequest, ModelSelectRequest
+  from backend.schemas import ContextUsageRequest, ModelParamsUpdateRequest, ModelSelectRequest
 except ModuleNotFoundError:
-  from schemas import ModelParamsUpdateRequest, ModelSelectRequest  # type: ignore
+  from schemas import ContextUsageRequest, ModelParamsUpdateRequest, ModelSelectRequest  # type: ignore
 
 
 def register_model_routes(
@@ -214,6 +214,49 @@ def register_model_routes(
       "recommended_tier": tier_hint,
       "params": params,
       "context_window_requirements": context_limits,
+    }
+
+  @app.post("/models/context-usage")
+  def get_context_usage(payload: ContextUsageRequest) -> dict[str, Any]:
+    if not hasattr(model_engine, "get_context_usage"):
+      raise HTTPException(status_code=501, detail="Context usage API is not available")
+
+    active_tools = resolve_context_guard_active_tools()
+    tool_definitions = (
+      tool_registry.build_tool_definition_map(active_tools)
+      if hasattr(tool_registry, "build_tool_definition_map")
+      else {}
+    )
+    tool_schemas = (
+      tool_registry.build_llm_schema_map(active_tools)
+      if hasattr(tool_registry, "build_llm_schema_map")
+      else {}
+    )
+    try:
+      usage_payload = model_engine.get_context_usage(
+        model_id=str(payload.model_id or "").strip().lower(),
+        draft_text=str(payload.draft_text or ""),
+        pending_assistant_text=str(payload.pending_assistant_text or ""),
+        history=list(payload.history or []),
+        attachments=list(payload.attachments or []),
+        history_variants=list(payload.history_variants or []),
+        active_tools=active_tools,
+        tool_definitions=tool_definitions,
+        tool_schemas=tool_schemas,
+      )
+    except RuntimeError as exc:
+      raise HTTPException(
+        status_code=409,
+        detail={
+          "code": "tokenizer_unavailable",
+          "message": str(exc),
+        },
+      ) from exc
+    except ValueError as exc:
+      raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+      "ok": True,
+      **usage_payload,
     }
 
   @app.get("/tools")

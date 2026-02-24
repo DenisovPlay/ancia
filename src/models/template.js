@@ -1,4 +1,4 @@
-import { icon } from "./ui/icons.js";
+import { icon } from "../ui/icons.js";
 
 export const modelsPageTemplate = `
   <aside

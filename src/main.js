@@ -3,10 +3,10 @@ import "katex/dist/katex.min.css";
 import "highlight.js/styles/atom-one-dark.min.css";
 import { StatefulLiquidBackground } from "./background.js";
 import { chatPageTemplate, createChatFeature } from "./chats.js";
-import { createModelsFeature, modelsPageTemplate } from "./models.js";
-import { createPluginsFeature, pluginsPageTemplate } from "./plugins.js";
-import { syncPluginUiExtensions as syncPluginUiExtensionsRuntime } from "./plugins.uiExtensions.js";
-import { getPluginUiRuntime } from "./plugins.uiRuntime.js";
+import { createModelsFeature, modelsPageTemplate } from "./models/index.js";
+import { createPluginsFeature, pluginsPageTemplate } from "./plugins/index.js";
+import { syncPluginUiExtensions as syncPluginUiExtensionsRuntime } from "./plugins/uiExtensions.js";
+import { getPluginUiRuntime } from "./plugins/uiRuntime.js";
 import {
   BACKEND_STATUS,
   ROUTE_BACKGROUND_STATE,
@@ -268,6 +268,7 @@ pluginsFeature = createPluginsFeature({
   elements,
   pushToast,
   backendClient,
+  isMotionEnabled,
   syncPluginUiExtensions: () => syncPluginUiExtensionsRuntime({
     backendClient,
     pushToast,

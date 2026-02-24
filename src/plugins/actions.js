@@ -6,6 +6,25 @@ function resolvePluginId(button) {
   return String(button.dataset.pluginId || "").trim();
 }
 
+function normalizePermissionPolicy(value) {
+  const safeValue = String(value || "").trim().toLowerCase();
+  if (safeValue === "ask" || safeValue === "deny") {
+    return safeValue;
+  }
+  return "allow";
+}
+
+function formatPermissionPolicyLabel(value) {
+  const policy = normalizePermissionPolicy(value);
+  if (policy === "ask") {
+    return "спрашивать";
+  }
+  if (policy === "deny") {
+    return "запрещено";
+  }
+  return "разрешено";
+}
+
 async function withBusyButton(button, busyText, callback) {
   button.disabled = true;
   button.setAttribute("aria-busy", "true");
@@ -110,10 +129,41 @@ export function createPluginActions({
     });
   }
 
+  async function handlePluginPermission(control) {
+    const pluginId = resolvePluginId(control);
+    const pluginName = resolvePluginName(control);
+    const policy = normalizePermissionPolicy(control?.value);
+    if (!pluginId) return;
+
+    const previousValue = normalizePermissionPolicy(control.dataset.previousValue || "allow");
+    control.disabled = true;
+    try {
+      await backendClient.updatePluginPermissions({
+        plugin_id: pluginId,
+        policy,
+      });
+      control.dataset.previousValue = policy;
+      pushToast(`Разрешения «${pluginName}»: ${formatPermissionPolicyLabel(policy)}.`, {
+        tone: "success",
+        durationMs: 2400,
+      });
+      await reloadPlugins();
+    } catch (error) {
+      control.value = previousValue;
+      pushToast(`Не удалось изменить разрешения «${pluginName}»: ${error.message}`, {
+        tone: "error",
+        durationMs: 3600,
+      });
+    } finally {
+      control.disabled = false;
+    }
+  }
+
   return {
     handlePluginToggle,
     handlePluginInstall,
     handlePluginUninstall,
     handlePluginUpdate,
+    handlePluginPermission,
   };
 }

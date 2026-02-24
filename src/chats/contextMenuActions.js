@@ -56,6 +56,8 @@ export function createChatContextMenuActions({
   editMessageById,
   requestActionConfirm,
   deleteMessageById,
+  requestChatExport,
+  openChatImportDialog,
 }) {
   async function executeContextMenuAction(actionId, context = {}) {
     const defaults = getDefaultContext?.() || {};
@@ -165,6 +167,15 @@ export function createChatContextMenuActions({
       return;
     }
 
+    if (actionId === "chat-export") {
+      if (typeof requestChatExport !== "function") {
+        pushToast("Экспорт чата недоступен.", { tone: "warning", durationMs: 2600 });
+        return;
+      }
+      await requestChatExport({ chatId });
+      return;
+    }
+
     if (actionId === "chat-clear") {
       const session = getChatSessionById(chatId);
       const sessionLabel = session?.title || chatId;
@@ -207,6 +218,15 @@ export function createChatContextMenuActions({
       if (cleared) {
         pushToast("История чата очищена.", { tone: "success" });
       }
+      return;
+    }
+
+    if (actionId === "chat-import") {
+      if (typeof openChatImportDialog !== "function") {
+        pushToast("Импорт чатов недоступен.", { tone: "warning", durationMs: 2600 });
+        return;
+      }
+      openChatImportDialog();
       return;
     }
 

@@ -9,11 +9,13 @@ export function createComposerGenerationController({
   updateConnectionState,
   BACKEND_STATUS,
   pushToast,
+  requestActionConfirm,
   isBackendRuntimeEnabled,
   syncChatStoreFromBackend,
   appendMessage,
   updateMessageRowContent,
   updateToolRow,
+  setAssistantGenerationActions,
   normalizeLegacyToolName,
   resolveToolMeta,
   formatToolOutputText,
@@ -25,6 +27,7 @@ export function createComposerGenerationController({
   applyTransientMood,
   setChatSessionMood,
   renameChatSessionById,
+  getMessageRecord,
   sanitizeSessionTitle,
   persistChatMessage,
   ASSISTANT_PENDING_LABEL,
@@ -32,6 +35,53 @@ export function createComposerGenerationController({
   contextGuard,
 }) {
   let activeGeneration = null;
+
+  function normalizeLoopGuardText(value = "") {
+    return normalizeTextInput(String(value || ""))
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase();
+  }
+
+  function hasRunawayRepetition(text = "") {
+    const normalized = normalizeLoopGuardText(text);
+    if (!normalized || normalized.length < 180) {
+      return false;
+    }
+    if (/(.{24,120}?)(?:\s+\1){2,}/.test(normalized)) {
+      return true;
+    }
+    const tokens = normalized.split(" ").filter(Boolean);
+    for (const width of [8, 12, 16]) {
+      if (tokens.length < width * 3) {
+        continue;
+      }
+      const tail = tokens.slice(-width).join(" ");
+      const prev = tokens.slice(-width * 2, -width).join(" ");
+      const prev2 = tokens.slice(-width * 3, -width * 2).join(" ");
+      if (tail && tail === prev && tail === prev2) {
+        return true;
+      }
+    }
+    const sentences = normalized.split(/(?<=[.!?])\s+/).map((item) => item.trim()).filter(Boolean);
+    if (sentences.length >= 3) {
+      const last = sentences[sentences.length - 1];
+      if (last && last.length >= 24 && last === sentences[sentences.length - 2] && last === sentences[sentences.length - 3]) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function buildAntiLoopRetryPrompt(userText = "") {
+    const safeUserText = normalizeTextInput(String(userText || "")).trim();
+    if (!safeUserText) {
+      return "";
+    }
+    return `${safeUserText}\n\n`
+      + "Сформируй ответ заново в режиме anti-loop: без повторяющихся фраз и абзацев, "
+      + "без самокопирования, с чёткой структурой и новыми формулировками.";
+  }
 
   function setComposerSubmitMode(mode = "send") {
     if (!(elements.composerSubmit instanceof HTMLButtonElement)) {
@@ -363,6 +413,243 @@ export function createComposerGenerationController({
     return true;
   }
 
+  async function resolvePermissionGrantsForTurn() {
+    const emptyResult = {
+      pluginPermissionGrants: [],
+      toolPermissionGrants: [],
+      domainPermissionGrants: [],
+    };
+    if (!isBackendRuntimeEnabled() || typeof backendClient.listPluginPermissions !== "function") {
+      return emptyResult;
+    }
+    let permissionsPayload = null;
+    try {
+      permissionsPayload = await backendClient.listPluginPermissions();
+    } catch {
+      return emptyResult;
+    }
+
+    const pluginPolicyMap = permissionsPayload?.policies && typeof permissionsPayload.policies === "object"
+      ? permissionsPayload.policies
+      : {};
+    const toolPolicyMap = permissionsPayload?.tool_policies && typeof permissionsPayload.tool_policies === "object"
+      ? permissionsPayload.tool_policies
+      : {};
+    const domainPolicyMap = permissionsPayload?.domain_policies && typeof permissionsPayload.domain_policies === "object"
+      ? permissionsPayload.domain_policies
+      : {};
+
+    const askPluginIds = Object.entries(pluginPolicyMap)
+      .filter(([pluginId, policy]) => String(pluginId || "").trim() && String(policy || "").trim().toLowerCase() === "ask")
+      .map(([pluginId]) => String(pluginId || "").trim().toLowerCase())
+      .filter(Boolean);
+    const askToolKeys = Object.entries(toolPolicyMap)
+      .filter(([toolKey, policy]) => String(toolKey || "").trim() && String(policy || "").trim().toLowerCase() === "ask")
+      .map(([toolKey]) => String(toolKey || "").trim().toLowerCase())
+      .filter(Boolean);
+    const askDomains = Object.entries(domainPolicyMap)
+      .filter(([domainKey, policy]) => String(domainKey || "").trim() && String(policy || "").trim().toLowerCase() === "ask")
+      .map(([domainKey]) => String(domainKey || "").trim().toLowerCase())
+      .filter(Boolean);
+
+    if (askPluginIds.length === 0 && askToolKeys.length === 0 && askDomains.length === 0) {
+      return emptyResult;
+    }
+
+    let askPluginNames = [...askPluginIds];
+    if (typeof backendClient.listPlugins === "function") {
+      try {
+        const pluginsPayload = await backendClient.listPlugins();
+        const allPlugins = Array.isArray(pluginsPayload?.plugins) ? pluginsPayload.plugins : [];
+        const namesById = new Map(
+          allPlugins
+            .filter((plugin) => plugin && typeof plugin === "object")
+            .map((plugin) => [
+              String(plugin.id || "").trim().toLowerCase(),
+              String(plugin.name || plugin.title || plugin.id || "").trim(),
+            ]),
+        );
+        askPluginNames = askPluginIds.map((pluginId) => namesById.get(pluginId) || pluginId);
+      } catch {
+        // Ignore plugins list failures and fallback to plugin ids.
+      }
+    }
+
+    const askToolNameByKey = new Map(
+      (Array.isArray(permissionsPayload?.tools) ? permissionsPayload.tools : [])
+        .filter((entry) => entry && typeof entry === "object")
+        .map((entry) => {
+          const pluginId = String(entry.plugin_id || "").trim().toLowerCase();
+          const toolName = String(entry.tool_name || "").trim().toLowerCase();
+          const key = String(entry.tool_key || `${pluginId}::${toolName}`).trim().toLowerCase();
+          const display = pluginId && toolName ? `${pluginId}/${toolName}` : key;
+          return [key, display];
+        }),
+    );
+
+    const previewList = (items = [], limit = 3) => {
+      const safeItems = Array.isArray(items) ? items.filter(Boolean) : [];
+      const preview = safeItems.slice(0, limit).join(", ");
+      const suffix = safeItems.length > limit ? ` и ещё ${safeItems.length - limit}` : "";
+      return { preview, suffix };
+    };
+
+    const result = { ...emptyResult };
+    if (askPluginIds.length > 0) {
+      const { preview, suffix } = previewList(askPluginNames);
+      const shouldAllowPlugins = await requestActionConfirm(
+        `Разрешить плагины со статусом «Спрашивать» для этого запроса: ${preview}${suffix}?`,
+        {
+          title: "Разрешения плагинов",
+          confirmLabel: "Разрешить на запрос",
+        },
+      );
+      if (shouldAllowPlugins) {
+        result.pluginPermissionGrants = askPluginIds;
+      } else {
+        pushToast("Плагины со статусом «Спрашивать» пропущены для этого запроса.", {
+          tone: "neutral",
+          durationMs: 2200,
+        });
+      }
+    }
+
+    if (askToolKeys.length > 0) {
+      const toolDisplayList = askToolKeys.map((toolKey) => askToolNameByKey.get(toolKey) || toolKey);
+      const { preview, suffix } = previewList(toolDisplayList);
+      const shouldAllowTools = await requestActionConfirm(
+        `Разрешить инструменты со статусом «Спрашивать»: ${preview}${suffix}?`,
+        {
+          title: "Разрешения инструментов",
+          confirmLabel: "Разрешить на запрос",
+        },
+      );
+      if (shouldAllowTools) {
+        result.toolPermissionGrants = askToolKeys;
+      } else {
+        pushToast("Инструменты со статусом «Спрашивать» пропущены для этого запроса.", {
+          tone: "neutral",
+          durationMs: 2200,
+        });
+      }
+    }
+
+    if (askDomains.length > 0) {
+      const { preview, suffix } = previewList(askDomains);
+      const shouldAllowDomains = await requestActionConfirm(
+        `Разрешить домены со статусом «Спрашивать»: ${preview}${suffix}?`,
+        {
+          title: "Разрешения доменов",
+          confirmLabel: "Разрешить на запрос",
+        },
+      );
+      if (shouldAllowDomains) {
+        result.domainPermissionGrants = askDomains;
+      } else {
+        pushToast("Домены со статусом «Спрашивать» пропущены для этого запроса.", {
+          tone: "neutral",
+          durationMs: 2200,
+        });
+      }
+    }
+
+    return result;
+  }
+
+  function buildGenerationActionsMeta({
+    userText = "",
+    userMessageId = "",
+    backendGenerationActions = null,
+  } = {}) {
+    const safeUserText = normalizeTextInput(String(userText || "")).trim();
+    const safeUserMessageId = String(userMessageId || "").trim();
+    const backendPayload = backendGenerationActions && typeof backendGenerationActions === "object"
+      ? backendGenerationActions
+      : {};
+    const sourceUserText = normalizeTextInput(String(
+      backendPayload.source_user_text
+      || backendPayload.sourceUserText
+      || safeUserText,
+    )).trim();
+    const sourceUserMessageId = String(
+      backendPayload.source_user_message_id
+      || backendPayload.sourceUserMessageId
+      || safeUserMessageId,
+    ).trim();
+    if (!sourceUserText && !sourceUserMessageId) {
+      return null;
+    }
+    return {
+      source_user_text: sourceUserText,
+      source_user_message_id: sourceUserMessageId,
+      allow_retry: false,
+      allow_continue: backendPayload.allow_continue === true,
+      allow_regenerate: backendPayload.allow_regenerate !== false,
+    };
+  }
+
+  async function triggerGenerationAction({
+    action = "",
+    chatId = "",
+    messageId = "",
+  } = {}) {
+    const safeAction = String(action || "").trim().toLowerCase();
+    const safeChatId = String(chatId || getActiveChatSessionId() || "").trim();
+    const safeMessageId = String(messageId || "").trim();
+    if (!safeAction || !safeChatId || !safeMessageId) {
+      return false;
+    }
+    const record = getMessageRecord?.(safeChatId, safeMessageId);
+    const message = record?.message && typeof record.message === "object" ? record.message : null;
+    if (!message || String(message.role || "").trim().toLowerCase() !== "assistant") {
+      return false;
+    }
+
+    const meta = message.meta && typeof message.meta === "object" ? message.meta : {};
+    const generationActions = meta.generation_actions && typeof meta.generation_actions === "object"
+      ? meta.generation_actions
+      : (meta.generationActions && typeof meta.generationActions === "object" ? meta.generationActions : {});
+    const sourceUserMessageId = String(
+      generationActions.source_user_message_id
+      || generationActions.sourceUserMessageId
+      || "",
+    ).trim();
+    let sourceUserText = normalizeTextInput(
+      String(
+        generationActions.source_user_text
+        || generationActions.sourceUserText
+        || "",
+      ),
+    ).trim();
+    if (!sourceUserText && sourceUserMessageId) {
+      const sourceRecord = getMessageRecord?.(safeChatId, sourceUserMessageId);
+      sourceUserText = normalizeTextInput(String(sourceRecord?.message?.text || "")).trim();
+    }
+    if (!sourceUserText) {
+      pushToast("Не найден исходный запрос для повторной генерации.", {
+        tone: "warning",
+        durationMs: 3200,
+      });
+      return false;
+    }
+
+    let promptText = sourceUserText;
+    if (safeAction === "continue") {
+      promptText = `${sourceUserText}\n\nПродолжи предыдущий ответ с того места, где остановились, без повторения уже сказанного.`;
+    }
+    if (safeAction !== "retry" && safeAction !== "continue" && safeAction !== "regenerate") {
+      return false;
+    }
+
+    if (!(elements.composerInput instanceof HTMLTextAreaElement)) {
+      return false;
+    }
+    elements.composerInput.value = promptText;
+    syncState();
+    await handleSubmit({ preventDefault() {} });
+    return true;
+  }
+
   async function handleSubmit(event) {
     event.preventDefault();
 
@@ -394,11 +681,13 @@ export function createComposerGenerationController({
       || getActiveChatSessionId()
       || "",
     );
-    appendMessage("user", userMessageText, "", {
+    const requestId = `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const userMessageRow = appendMessage("user", userMessageText, "", {
       persist: true,
       chatId: requestSessionId,
       meta: hasAttachments ? { attachments: attachmentsSnapshot } : {},
     });
+    const userMessageId = String(userMessageRow?.dataset?.messageId || "").trim();
     if (elements.composerInput) {
       elements.composerInput.value = "";
     }
@@ -409,6 +698,7 @@ export function createComposerGenerationController({
       draftText: "",
       attachments: attachmentsSnapshot,
     });
+    let contextGuardEventPayload = null;
     const historyOverride = Array.isArray(contextPlan?.historyOverride)
       ? contextPlan.historyOverride
       : null;
@@ -417,8 +707,11 @@ export function createComposerGenerationController({
       const afterUsage = contextPlan.usage?.usedTokens || 0;
       const usageLimit = contextPlan.usage?.contextWindow || 0;
       const unresolvedOverflow = !Boolean(contextPlan.resolvedOverflow);
+      const forceMode = Boolean(contextPlan.forceMode);
       const details = [
-        `Контекст переполнен: ${beforeUsage.toLocaleString("ru-RU")} / ${usageLimit.toLocaleString("ru-RU")} токенов.`,
+        forceMode && !contextPlan?.overflowed
+          ? `Контекст сжат по запросу: ${beforeUsage.toLocaleString("ru-RU")} / ${usageLimit.toLocaleString("ru-RU")} токенов.`
+          : `Контекст переполнен: ${beforeUsage.toLocaleString("ru-RU")} / ${usageLimit.toLocaleString("ru-RU")} токенов.`,
         `История сжата: ${contextPlan.sourceMessages} -> ${contextPlan.targetMessages} сообщений.`,
         `Экономия: ${(contextPlan.savedTokens || 0).toLocaleString("ru-RU")} токенов.`,
       ];
@@ -427,6 +720,20 @@ export function createComposerGenerationController({
       } else {
         details.push(`После сжатия: ${afterUsage.toLocaleString("ru-RU")} / ${usageLimit.toLocaleString("ru-RU")} (переполнение не снято полностью).`);
       }
+      contextGuardEventPayload = {
+        name: "context_guard.compress",
+        display_name: "Context Guard",
+        status: unresolvedOverflow ? "warning" : "ok",
+        meta_suffix: "system plugin • сжатие контекста",
+        badge: unresolvedOverflow
+          ? {
+            label: "переполнение не снято",
+            tone: "warning",
+          }
+          : null,
+        args: { query: forceMode ? "ручное сжатие контекста" : "автосжатие контекста" },
+        text: details.join("\n"),
+      };
 
       if (unresolvedOverflow) {
         pushToast(
@@ -437,21 +744,9 @@ export function createComposerGenerationController({
 
       if (runtimeConfig.contextGuardShowChatEvents) {
         appendMessage("tool", "context_guard.compress", "system plugin • сжатие контекста", {
-          persist: false,
+          persist: true,
           chatId: requestSessionId,
-          toolPayload: {
-            name: "context_guard.compress",
-            display_name: "Context Guard",
-            status: unresolvedOverflow ? "warning" : "ok",
-            badge: unresolvedOverflow
-              ? {
-                label: "переполнение не снято",
-                tone: "warning",
-              }
-              : null,
-            args: { query: "автосжатие контекста" },
-            text: details.join("\n"),
-          },
+          toolPayload: contextGuardEventPayload,
           toolPhase: "result",
         });
       }
@@ -461,6 +756,23 @@ export function createComposerGenerationController({
         { tone: "warning", durationMs: 3200 },
       );
     }
+    const unresolvedContextOverflow = Boolean(contextPlan?.overflowed) && !Boolean(contextPlan?.resolvedOverflow);
+    if (unresolvedContextOverflow) {
+      appendMessage(
+        "assistant",
+        "Запрос не отправлен: контекст переполнен даже после всех fallback-стратегий сжатия. "
+        + "Сократите сообщение/вложения или увеличьте context window модели.",
+        "Context Guard • отправка остановлена",
+        {
+          persist: true,
+          chatId: requestSessionId,
+        },
+      );
+      contextGuard?.clearPendingAssistantText?.();
+      syncState({ forceContextRefresh: true });
+      return;
+    }
+    const permissionGrants = await resolvePermissionGrantsForTurn();
 
     const savedMood = getChatSessionMood(requestSessionId) || "neutral";
 
@@ -481,7 +793,7 @@ export function createComposerGenerationController({
       pendingLabel: ASSISTANT_PENDING_LABEL,
     });
 
-    const abortController = new AbortController();
+    let abortController = new AbortController();
     const generationId = Date.now() + Math.random();
     activeGeneration = {
       id: generationId,
@@ -497,10 +809,11 @@ export function createComposerGenerationController({
 
     let latestPartial = "";
     let latestStreamMode = "";
+    let antiLoopAbortTriggered = false;
+    let antiLoopAutoRetryUsed = false;
     const seenToolInvocations = new Set();
     const toolRowsByInvocationId = new Map();
     let lastInsertedToolRowBeforeAssistant = null;
-    let lastInsertedToolRowAfterAssistant = null;
 
     const resolveAssistantRow = () => {
       const recoveredRow = recoverAssistantRowForActiveGeneration();
@@ -514,48 +827,12 @@ export function createComposerGenerationController({
       return null;
     };
 
-    const hasAssistantVisibleText = () => {
-      const activeRow = resolveAssistantRow();
-      if (!(activeRow instanceof HTMLElement)) {
-        return false;
-      }
-      const body = activeRow.querySelector("[data-message-body]");
-      if (!(body instanceof HTMLElement)) {
-        return false;
-      }
-      const pending = activeRow.dataset.pending === "true" || body.getAttribute("data-pending") === "true";
-      if (pending) {
-        return false;
-      }
-      return Boolean(body.textContent?.trim());
-    };
-
     const insertToolRowNearAssistant = (row) => {
       const activeRow = resolveAssistantRow();
       if (!(row instanceof HTMLElement) || !(activeRow instanceof HTMLElement)) {
         return;
       }
       if (activeRow.parentNode !== elements.chatStream) {
-        return;
-      }
-      if (hasAssistantVisibleText()) {
-        if (
-          lastInsertedToolRowAfterAssistant instanceof HTMLElement
-          && lastInsertedToolRowAfterAssistant.parentNode === elements.chatStream
-        ) {
-          if (lastInsertedToolRowAfterAssistant.nextSibling) {
-            elements.chatStream.insertBefore(row, lastInsertedToolRowAfterAssistant.nextSibling);
-          } else {
-            elements.chatStream.appendChild(row);
-          }
-        } else {
-          if (activeRow.nextSibling) {
-            elements.chatStream.insertBefore(row, activeRow.nextSibling);
-          } else {
-            elements.chatStream.appendChild(row);
-          }
-        }
-        lastInsertedToolRowAfterAssistant = row;
         return;
       }
 
@@ -586,12 +863,16 @@ export function createComposerGenerationController({
       return row;
     };
 
-    try {
-      const reply = await requestAssistantReply(effectiveText, requestSessionId, {
-        signal: abortController.signal,
-        attachments: attachmentsSnapshot,
-        historyOverride,
-        onStatusUpdate: (statusMsg) => {
+    const runAssistantAttempt = async (requestText, { antiLoopMode = false } = {}) => requestAssistantReply(requestText, requestSessionId, {
+      signal: abortController.signal,
+      attachments: attachmentsSnapshot,
+      historyOverride,
+      contextGuardEvent: runtimeConfig.contextGuardShowChatEvents ? contextGuardEventPayload : null,
+      pluginPermissionGrants: permissionGrants.pluginPermissionGrants,
+      toolPermissionGrants: permissionGrants.toolPermissionGrants,
+      domainPermissionGrants: permissionGrants.domainPermissionGrants,
+      requestId,
+      onStatusUpdate: (statusMsg) => {
           if (activeGeneration && activeGeneration.id === generationId) {
             activeGeneration.latestMetaSuffix = statusMsg;
           }
@@ -719,8 +1000,67 @@ export function createComposerGenerationController({
             top: elements.chatStream.scrollHeight,
             behavior: "auto",
           });
+          if (!antiLoopMode && !antiLoopAutoRetryUsed && !antiLoopAbortTriggered && hasRunawayRepetition(latestPartial)) {
+            antiLoopAbortTriggered = true;
+            updateConnectionState(BACKEND_STATUS.checking, "Anti-loop guard: перезапускаем ответ...");
+            pushToast("Обнаружено зацикливание ответа. Выполняем авто-перезапуск генерации.", {
+              tone: "warning",
+              durationMs: 2600,
+            });
+            const activeRow = resolveAssistantRow();
+            if (activeRow) {
+              updateMessageRowContent(activeRow, {
+                text: latestPartial,
+                metaSuffix: `${streamMetaSuffix} • anti-loop`,
+                timestamp: new Date(),
+                pending: false,
+                pendingLabel: ASSISTANT_PENDING_LABEL,
+                streamMode: "",
+              });
+            }
+            if (abortController && !abortController.signal.aborted) {
+              abortController.abort("ANTI_LOOP_GUARD");
+            }
+          }
         },
       });
+
+    try {
+      let reply = await runAssistantAttempt(effectiveText, { antiLoopMode: false });
+      if (reply?.cancelled && antiLoopAbortTriggered && !antiLoopAutoRetryUsed) {
+        antiLoopAutoRetryUsed = true;
+        antiLoopAbortTriggered = false;
+        latestPartial = "";
+        contextGuard?.setPendingAssistantText?.("");
+
+        appendAndInsertToolRow({
+          name: "generation.loop_guard",
+          display_name: "Loop Guard",
+          status: "warning",
+          meta_suffix: "system plugin • anti-loop",
+          args: { query: "авто-перезапуск генерации" },
+          text: "Обнаружен повторяющийся паттерн. Перезапускаем ответ в anti-loop режиме.",
+        }, "result");
+
+        const activeRow = resolveAssistantRow();
+        if (activeRow) {
+          updateMessageRowContent(activeRow, {
+            text: "",
+            metaSuffix: `${streamMetaSuffix} • anti-loop retry`,
+            timestamp: new Date(),
+            pending: true,
+            pendingLabel: ASSISTANT_PENDING_LABEL,
+            streamMode: "",
+          });
+        }
+        abortController = new AbortController();
+        if (activeGeneration && activeGeneration.id === generationId) {
+          activeGeneration.abortController = abortController;
+          activeGeneration.stoppedByUser = false;
+        }
+        const retryPrompt = buildAntiLoopRetryPrompt(effectiveText);
+        reply = await runAssistantAttempt(retryPrompt || effectiveText, { antiLoopMode: true });
+      }
 
       if (reply?.cancelled) {
         if (activeGeneration && activeGeneration.id === generationId) {
@@ -734,12 +1074,18 @@ export function createComposerGenerationController({
             silent: true,
           });
         }
+        syncState({ forceContextRefresh: true });
         return;
       }
 
       const finalText = normalizeTextInput(reply.text || latestPartial || "Бэкенд вернул пустой ответ.");
       const finalMetaSuffix = String(reply.metaSuffix || streamMetaSuffix || initialMetaSuffix);
       latestStreamMode = String(reply?.stream?.mode || "").trim().toLowerCase();
+      const generationActionsMeta = buildGenerationActionsMeta({
+        userText: userMessageText,
+        userMessageId,
+        backendGenerationActions: reply?.generationActions,
+      });
       if (activeGeneration && activeGeneration.id === generationId) {
         activeGeneration.latestText = finalText;
         activeGeneration.latestMetaSuffix = finalMetaSuffix;
@@ -750,27 +1096,29 @@ export function createComposerGenerationController({
       }
 
       const finalToolEvents = Array.isArray(reply.toolEvents) ? reply.toolEvents : [];
-      finalToolEvents.forEach((eventItem) => {
-        const toolName = normalizeLegacyToolName(String(eventItem?.name || "tool"));
-        const toolDisplayName = String(eventItem?.display_name || resolveToolMeta(toolName).displayName || toolName);
-        const toolStatus = String(eventItem?.status || "ok").trim().toLowerCase() || "ok";
-        const toolOutput = eventItem?.output && typeof eventItem.output === "object" ? eventItem.output : {};
-        const toolText = formatToolOutputText(toolName, toolOutput) || toolName;
-        persistChatMessage({
-          chatId: requestSessionId,
-          role: "tool",
-          text: toolText,
-          metaSuffix: `инструмент • ${toolStatus}`,
-          meta: {
-            tool_name: toolName,
-            tool_display_name: toolDisplayName,
-            status: toolStatus,
-            tool_output: toolOutput,
-            tool_args: {},
-          },
-          timestamp: new Date().toISOString(),
+      if (!isBackendRuntimeEnabled()) {
+        finalToolEvents.forEach((eventItem) => {
+          const toolName = normalizeLegacyToolName(String(eventItem?.name || "tool"));
+          const toolDisplayName = String(eventItem?.display_name || resolveToolMeta(toolName).displayName || toolName);
+          const toolStatus = String(eventItem?.status || "ok").trim().toLowerCase() || "ok";
+          const toolOutput = eventItem?.output && typeof eventItem.output === "object" ? eventItem.output : {};
+          const toolText = formatToolOutputText(toolName, toolOutput) || toolName;
+          persistChatMessage({
+            chatId: requestSessionId,
+            role: "tool",
+            text: toolText,
+            metaSuffix: `инструмент • ${toolStatus}`,
+            meta: {
+              tool_name: toolName,
+              tool_display_name: toolDisplayName,
+              status: toolStatus,
+              tool_output: toolOutput,
+              tool_args: {},
+            },
+            timestamp: new Date().toISOString(),
+          });
         });
-      });
+      }
 
       const activeRow = resolveAssistantRow();
       if (activeRow) {
@@ -780,6 +1128,17 @@ export function createComposerGenerationController({
           timestamp: new Date(),
           streamMode: latestStreamMode,
         });
+        if (generationActionsMeta) {
+          setAssistantGenerationActions?.(activeRow, generationActionsMeta);
+        }
+      }
+
+      const assistantPersistMeta = {};
+      if (latestStreamMode) {
+        assistantPersistMeta.stream = { mode: latestStreamMode };
+      }
+      if (generationActionsMeta) {
+        assistantPersistMeta.generation_actions = generationActionsMeta;
       }
 
       const persisted = persistChatMessage({
@@ -787,7 +1146,7 @@ export function createComposerGenerationController({
         role: "assistant",
         text: finalText,
         metaSuffix: finalMetaSuffix,
-        meta: latestStreamMode ? { stream: { mode: latestStreamMode } } : {},
+        meta: assistantPersistMeta,
         timestamp: new Date().toISOString(),
       });
       if (activeRow && persisted?.id) {
@@ -811,8 +1170,10 @@ export function createComposerGenerationController({
             silent: true,
           });
         }
+        syncState({ forceContextRefresh: true });
       } else {
         background.setMood(finalMood || "neutral", runtimeConfig.defaultTransitionMs);
+        syncState({ forceContextRefresh: true });
       }
     } finally {
       if (!activeGeneration || activeGeneration.id === generationId) {
@@ -821,13 +1182,14 @@ export function createComposerGenerationController({
         if (requestSessionId) {
           pruneTransientAssistantDuplicates(requestSessionId);
         }
-        syncState();
+        syncState({ forceContextRefresh: true });
       }
     }
   }
 
   return {
     handleSubmit,
+    triggerGenerationAction,
     syncState,
     stopActiveGeneration,
     isGenerationActiveForChat,

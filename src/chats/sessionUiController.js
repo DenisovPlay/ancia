@@ -15,7 +15,21 @@ export function createChatSessionUiController({
   getCurrentRouteState,
   applyContextualBackground,
   getSyncComposerState,
+  getSessionSearchQuery,
 }) {
+  function buildSessionSearchBlob(session) {
+    const parts = [String(session?.title || "")];
+    const messages = Array.isArray(session?.messages) ? session.messages.slice(-14) : [];
+    messages.forEach((message) => {
+      const text = String(message?.text || "").replace(/\s+/g, " ").trim();
+      if (!text) {
+        return;
+      }
+      parts.push(text.slice(0, 280));
+    });
+    return parts.join(" ").toLowerCase();
+  }
+
   function ensureChatSessionIdentity(button) {
     if (!(button instanceof HTMLElement)) {
       return null;
@@ -38,6 +52,7 @@ export function createChatSessionUiController({
     button.dataset.active = String(isActive);
     button.dataset.sessionId = session.id;
     button.dataset.sessionTitle = session.title;
+    button.dataset.sessionSearch = buildSessionSearchBlob(session);
     button.className = "route-pill active:scale-95 duration-300 w-full rounded-lg border p-2.5 text-left";
     button.setAttribute("aria-pressed", String(isActive));
 
@@ -65,11 +80,14 @@ export function createChatSessionUiController({
   function applyChatSessionVisibilityFilter() {
     const buttons = getChatSessionButtons();
     buttons.forEach(ensureChatSessionIdentity);
+    const searchNeedle = String(getSessionSearchQuery?.() || "").trim().toLowerCase();
 
     const showOnlyActiveSessions = getShowOnlyActiveSessions();
     buttons.forEach((button) => {
       const isActive = button.dataset.active === "true";
-      const shouldHide = showOnlyActiveSessions && !isActive;
+      const searchBlob = String(button.dataset.sessionSearch || "").toLowerCase();
+      const searchMiss = Boolean(searchNeedle) && !searchBlob.includes(searchNeedle);
+      const shouldHide = (showOnlyActiveSessions && !isActive) || searchMiss;
       button.classList.toggle("hidden", shouldHide);
       button.setAttribute("aria-hidden", String(shouldHide));
     });

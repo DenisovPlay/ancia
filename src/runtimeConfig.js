@@ -188,6 +188,10 @@ export const DEVICE_PRESET_ORDER = Object.keys(DEVICE_PRESET_META);
 const DEVICE_PRESET_KEYS = new Set(DEVICE_PRESET_ORDER);
 const UI_FONT_PRESET_ORDER = ["system", "serif", "rounded", "mono", "custom"];
 const UI_FONT_PRESET_KEYS = new Set(UI_FONT_PRESET_ORDER);
+export const MODEL_FALLBACK_PROFILE_ORDER = ["conservative", "balanced", "aggressive"];
+const MODEL_FALLBACK_PROFILE_KEYS = new Set(MODEL_FALLBACK_PROFILE_ORDER);
+export const MODEL_SCENARIO_PROFILE_ORDER = ["auto", "fast", "precise", "long_context"];
+const MODEL_SCENARIO_PROFILE_KEYS = new Set(MODEL_SCENARIO_PROFILE_ORDER);
 
 export const DEFAULT_RUNTIME_CONFIG = {
   mode: "backend",
@@ -219,6 +223,10 @@ export const DEFAULT_RUNTIME_CONFIG = {
   contextGuardPluginEnabled: true,
   contextGuardAutoCompress: true,
   contextGuardShowChatEvents: true,
+  modelAutoFallbackEnabled: true,
+  modelAutoFallbackProfile: "balanced",
+  modelScenarioAutoApply: true,
+  modelScenarioProfile: "auto",
 };
 
 export function clamp(value, min, max) {
@@ -243,6 +251,16 @@ export function normalizeDevicePreset(value) {
 export function normalizeUiFontPreset(value) {
   const normalized = String(value || "").trim().toLowerCase();
   return UI_FONT_PRESET_KEYS.has(normalized) ? normalized : "system";
+}
+
+export function normalizeModelFallbackProfile(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return MODEL_FALLBACK_PROFILE_KEYS.has(normalized) ? normalized : "balanced";
+}
+
+export function normalizeModelScenarioProfile(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return MODEL_SCENARIO_PROFILE_KEYS.has(normalized) ? normalized : "auto";
 }
 
 export function getDevicePresetMeta(presetId) {
@@ -320,6 +338,10 @@ export function normalizeRuntimeConfig(partial = {}) {
   config.contextGuardPluginEnabled = Boolean(config.contextGuardPluginEnabled ?? true);
   config.contextGuardAutoCompress = Boolean(config.contextGuardAutoCompress ?? true);
   config.contextGuardShowChatEvents = Boolean(config.contextGuardShowChatEvents ?? true);
+  config.modelAutoFallbackEnabled = Boolean(config.modelAutoFallbackEnabled ?? true);
+  config.modelAutoFallbackProfile = normalizeModelFallbackProfile(config.modelAutoFallbackProfile);
+  config.modelScenarioAutoApply = Boolean(config.modelScenarioAutoApply ?? true);
+  config.modelScenarioProfile = normalizeModelScenarioProfile(config.modelScenarioProfile);
   return config;
 }
 

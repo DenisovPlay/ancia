@@ -1,4 +1,4 @@
-import { createModalOverlayManager } from "./ui/modalOverlayManager.js";
+import { createModalOverlayManager } from "../ui/modalOverlayManager.js";
 
 const MODEL_PARAM_PRESETS = [
   { id: "balanced", label: "Сбалансированный", temperature: 0.7, top_p: 0.9, top_k: 40, max_tokens: 512, context_window: 4096 },

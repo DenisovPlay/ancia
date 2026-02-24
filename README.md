@@ -26,8 +26,8 @@
 
 - `src/main.js` — сборка UI, роутинг страниц, общие состояния.
 - `src/chats.js` — чат, стриминг, отображение tool-вызовов, вложения.
-- `src/models.js` — управление моделями и параметрами.
-- `src/plugins.js` — маркетплейс/установленные плагины.
+- `src/models/index.js` — управление моделями и параметрами.
+- `src/plugins/index.js` — маркетплейс/установленные плагины.
 - `src/settings.js` — настройки приложения.
 - `src/services/backendClient.js` — HTTP/SSE клиент к API.
 - `backend/main.py` — инициализация FastAPI, CORS, регистрация tools.
@@ -61,6 +61,9 @@ npm run tauri:dev
 npm run dev                 # frontend (Vite)
 npm run tauri:dev           # desktop в режиме разработки
 npm run tauri:build         # release сборка Tauri
+npm run lint                # синтаксические проверки JS/Python
+npm run test:smoke          # backend smoke-тесты API/плагинов
+npm run check               # lint + smoke + build
 npm run backend:dev         # backend вручную (uvicorn)
 npm run backend:dev:reload  # backend с --reload
 npm run backend:setup       # подготовка .venv + pip install
@@ -159,7 +162,8 @@ npm run backend:sidecar     # сборка backend sidecar (PyInstaller)
 - `ANCIA_BACKEND_HOST` (по умолчанию `127.0.0.1`)
 - `ANCIA_BACKEND_PORT` (по умолчанию `5055`)
 - `ANCIA_BACKEND_DATA_DIR` (путь к данным бэка)
-- `ANCIA_CORS_ALLOW_ORIGINS` (по умолчанию `*`)
+- `ANCIA_CORS_PROFILE` (`dev` по умолчанию; `prod` включает ограниченный whitelist origin)
+- `ANCIA_CORS_ALLOW_ORIGINS` (для `dev` по умолчанию `*`; для `prod` — список через запятую без `*`)
 - `ANCIA_ENABLE_MODEL_EAGER_LOAD=1` (загрузка модели на старте)
 - `ANCIA_PLUGIN_REGISTRY_URL` (URL реестра плагинов)
 

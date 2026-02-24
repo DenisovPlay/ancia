@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from pathlib import Path
 
 # Для smoke-проверки не грузим модель на старте, чтобы тесты работали в CI/песочнице.
@@ -55,13 +56,24 @@ def main() -> int:
     print(f"[OK] OPTIONS {path} -> {response.status_code}")
 
   plugins_payload = client.get("/plugins")
+  required_ids = {"duckduckgo", "visit-website", "system-time", "chat-mood", "python-run"}
+  retry_count = 0
+  while plugins_payload.status_code == 200 and retry_count < 2:
+    plugin_items = plugins_payload.json().get("plugins", [])
+    plugin_ids = sorted([str(item.get("id") or "") for item in plugin_items if isinstance(item, dict)])
+    missing_required = sorted(required_ids.difference(set(plugin_ids)))
+    if not missing_required:
+      break
+    retry_count += 1
+    time.sleep(0.2)
+    plugins_payload = client.get("/plugins")
+
   if plugins_payload.status_code != 200:
     print(f"[FAIL] GET /plugins -> {plugins_payload.status_code}")
     failed = True
   else:
     plugin_items = plugins_payload.json().get("plugins", [])
     plugin_ids = sorted([str(item.get("id") or "") for item in plugin_items if isinstance(item, dict)])
-    required_ids = {"duckduckgo", "visit-website", "system-time", "chat-mood", "python-run"}
     missing_required = sorted(required_ids.difference(set(plugin_ids)))
     if missing_required:
       print(f"[FAIL] required plugins missing: {missing_required}; got={plugin_ids}")

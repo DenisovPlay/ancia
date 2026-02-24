@@ -51,6 +51,20 @@ export function createSettingsRuntimeController({
       elements.settingsContextChatEvents.checked = Boolean(source.contextGuardShowChatEvents);
       elements.settingsContextChatEvents.disabled = !Boolean(source.contextGuardPluginEnabled);
     }
+    if (elements.settingsModelFallbackEnabled) {
+      elements.settingsModelFallbackEnabled.checked = Boolean(source.modelAutoFallbackEnabled);
+    }
+    if (elements.settingsModelFallbackProfile) {
+      elements.settingsModelFallbackProfile.value = String(source.modelAutoFallbackProfile || "balanced");
+      elements.settingsModelFallbackProfile.disabled = !Boolean(source.modelAutoFallbackEnabled);
+    }
+    if (elements.settingsModelScenarioAutoApply) {
+      elements.settingsModelScenarioAutoApply.checked = Boolean(source.modelScenarioAutoApply);
+    }
+    if (elements.settingsModelScenarioProfile) {
+      elements.settingsModelScenarioProfile.value = String(source.modelScenarioProfile || "auto");
+      elements.settingsModelScenarioProfile.disabled = !Boolean(source.modelScenarioAutoApply);
+    }
     if (elements.settingsBootMood) {
       elements.settingsBootMood.value = source.bootMood;
     }
@@ -102,6 +116,10 @@ export function createSettingsRuntimeController({
       contextGuardPluginEnabled: elements.settingsContextGuardEnabled?.checked,
       contextGuardAutoCompress: elements.settingsContextAutoCompress?.checked,
       contextGuardShowChatEvents: elements.settingsContextChatEvents?.checked,
+      modelAutoFallbackEnabled: elements.settingsModelFallbackEnabled?.checked,
+      modelAutoFallbackProfile: elements.settingsModelFallbackProfile?.value,
+      modelScenarioAutoApply: elements.settingsModelScenarioAutoApply?.checked,
+      modelScenarioProfile: elements.settingsModelScenarioProfile?.value,
       bootMood: elements.settingsBootMood?.value,
       defaultTransitionMs: elements.settingsDefaultTransition?.value,
       userName: elements.settingsUserName?.value,

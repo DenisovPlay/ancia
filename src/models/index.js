@@ -1,6 +1,6 @@
-import { normalizeModelCardPayload, renderModelCard, sortModels } from "./models.card.js";
-import { createModelParamsController } from "./models.paramsModal.js";
-import { modelsPageTemplate } from "./models.template.js";
+import { normalizeModelCardPayload, renderModelCard, sortModels } from "./card.js";
+import { createModelParamsController } from "./paramsModal.js";
+import { modelsPageTemplate } from "./template.js";
 
 const VALID_MODEL_FILTERS = new Set(["all", "installed"]);
 

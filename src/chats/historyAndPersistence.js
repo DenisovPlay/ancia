@@ -1,6 +1,6 @@
-export const BACKEND_HISTORY_MAX_MESSAGES = 12;
-export const BACKEND_HISTORY_MAX_CHARS_PER_MESSAGE = 900;
-export const BACKEND_HISTORY_MAX_TOTAL_CHARS = 5200;
+export const BACKEND_HISTORY_MAX_MESSAGES = 24;
+export const BACKEND_HISTORY_MAX_CHARS_PER_MESSAGE = 1400;
+export const BACKEND_HISTORY_MAX_TOTAL_CHARS = 18000;
 
 export function createChatHistoryAndPersistence({
   normalizeTextInput,

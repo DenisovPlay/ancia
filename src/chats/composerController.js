@@ -10,11 +10,13 @@ export function createChatComposerController({
   updateConnectionState,
   BACKEND_STATUS,
   pushToast,
+  requestActionConfirm,
   isBackendRuntimeEnabled,
   syncChatStoreFromBackend,
   appendMessage,
   updateMessageRowContent,
   updateToolRow,
+  setAssistantGenerationActions,
   normalizeLegacyToolName,
   resolveToolMeta,
   formatToolOutputText,
@@ -27,6 +29,7 @@ export function createChatComposerController({
   applyTransientMood,
   setChatSessionMood,
   renameChatSessionById,
+  getMessageRecord,
   sanitizeSessionTitle,
   persistChatMessage,
   ASSISTANT_PENDING_LABEL,
@@ -78,11 +81,13 @@ export function createChatComposerController({
     updateConnectionState,
     BACKEND_STATUS,
     pushToast,
+    requestActionConfirm,
     isBackendRuntimeEnabled,
     syncChatStoreFromBackend,
     appendMessage,
     updateMessageRowContent,
     updateToolRow,
+    setAssistantGenerationActions,
     normalizeLegacyToolName,
     resolveToolMeta,
     formatToolOutputText,
@@ -94,6 +99,7 @@ export function createChatComposerController({
     applyTransientMood,
     setChatSessionMood,
     renameChatSessionById,
+    getMessageRecord,
     sanitizeSessionTitle,
     persistChatMessage,
     ASSISTANT_PENDING_LABEL,
@@ -103,6 +109,7 @@ export function createChatComposerController({
       runtimeConfig,
       backendClient,
       getChatHistoryForBackend,
+      getActiveChatSessionId,
     }),
   });
 
@@ -111,6 +118,7 @@ export function createChatComposerController({
     syncState,
     stopActiveGeneration,
     isGenerationActiveForChat,
+    triggerGenerationAction,
   } = generationController;
 
   function bind() {
@@ -171,6 +179,7 @@ export function createChatComposerController({
     syncState,
     stopActiveGeneration,
     isGenerationActiveForChat,
+    triggerGenerationAction,
     renderAttachments: () => composerAttachments.render(),
   };
 }

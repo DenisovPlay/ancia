@@ -218,11 +218,27 @@ export class BackendClient {
 
   async updateModelParams(modelId, payload = {}, { timeoutMs = 30000 } = {}) {
     const safeModelId = encodePathSegment(modelId);
-    return this.request(`/models/${safeModelId}/params`, {
-      method: "PATCH",
-      body: payload || {},
-      timeoutMs: Number(timeoutMs || 30000),
-    });
+    const initialTimeout = Number(timeoutMs || 30000);
+    try {
+      return await this.request(`/models/${safeModelId}/params`, {
+        method: "PATCH",
+        body: payload || {},
+        timeoutMs: initialTimeout,
+      });
+    } catch (error) {
+      const message = String(error?.message || "").toLowerCase();
+      if (!message.includes("превышено время ожидания")) {
+        throw error;
+      }
+      await new Promise((resolve) => {
+        window.setTimeout(resolve, 420);
+      });
+      return this.request(`/models/${safeModelId}/params`, {
+        method: "PATCH",
+        body: payload || {},
+        timeoutMs: Math.max(initialTimeout, 90000),
+      });
+    }
   }
 
   async getModelContextRequirements(modelId = "", { timeoutMs = 20000 } = {}) {
@@ -236,8 +252,27 @@ export class BackendClient {
     });
   }
 
+  async getModelContextUsage(payload = {}, { timeoutMs = 45000 } = {}) {
+    return this.request("/models/context-usage", {
+      method: "POST",
+      body: payload || {},
+      timeoutMs: Number(timeoutMs || 45000),
+    });
+  }
+
   async listPlugins() {
     return this.request("/plugins", { method: "GET" });
+  }
+
+  async listPluginPermissions() {
+    return this.request("/plugins/permissions", { method: "GET" });
+  }
+
+  async updatePluginPermissions(payload = {}) {
+    return this.request("/plugins/permissions", {
+      method: "PATCH",
+      body: payload || {},
+    });
   }
 
   async listPluginRegistry() {
@@ -487,6 +522,55 @@ export class BackendClient {
 
   async listChats() {
     return this.request("/chats", { method: "GET" });
+  }
+
+  async searchChats(query, { limit = 120, chatId = "" } = {}) {
+    const safeQuery = String(query || "").trim();
+    const params = new URLSearchParams();
+    params.set("query", safeQuery);
+    if (Number.isFinite(Number(limit)) && Number(limit) > 0) {
+      params.set("limit", String(Math.floor(Number(limit))));
+    }
+    if (String(chatId || "").trim()) {
+      params.set("chat_id", String(chatId || "").trim());
+    }
+    return this.request(`/chats/search?${params.toString()}`, { method: "GET" });
+  }
+
+  async exportChats(formatOrOptions = "json", options = {}) {
+    const inputOptions = formatOrOptions && typeof formatOrOptions === "object"
+      ? formatOrOptions
+      : options;
+    const safeFormat = String(
+      formatOrOptions && typeof formatOrOptions === "object"
+        ? inputOptions.format
+        : formatOrOptions,
+    ).trim().toLowerCase() || "json";
+    const safeChatId = String(inputOptions?.chatId || inputOptions?.chat_id || "").trim();
+    const params = new URLSearchParams();
+    params.set("format", safeFormat);
+    if (safeChatId) {
+      params.set("chat_id", safeChatId);
+    }
+    return this.request(`/chats/export?${params.toString()}`, {
+      method: "GET",
+      timeoutMs: 30000,
+    });
+  }
+
+  async importChats(payload = {}, options = {}) {
+    const body = payload && typeof payload === "object"
+      ? { ...payload }
+      : {};
+    const safeMode = String(options?.mode || "").trim().toLowerCase();
+    if (safeMode === "merge" || safeMode === "replace") {
+      body.mode = safeMode;
+    }
+    return this.request("/chats/import", {
+      method: "POST",
+      body,
+      timeoutMs: 45000,
+    });
   }
 
   async createChat(payload) {

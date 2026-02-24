@@ -1,4 +1,5 @@
 import { normalizeTextInput } from "../ui/messageFormatter.js";
+import { icon } from "../ui/icons.js";
 import { ASSISTANT_PENDING_LABEL, ROLE_STYLE_MAP } from "./messageUiCore/constants.js";
 import { createMessageContentRenderer } from "./messageUiCore/contentRenderer.js";
 import { createToolRenderer } from "./messageUiCore/toolRenderer.js";
@@ -82,6 +83,114 @@ export function createChatMessageUi({
     }
 
     return container;
+  }
+
+  function resolveGenerationActions(meta = {}) {
+    if (!meta || typeof meta !== "object") {
+      return null;
+    }
+    const payload = meta.generation_actions && typeof meta.generation_actions === "object"
+      ? meta.generation_actions
+      : (meta.generationActions && typeof meta.generationActions === "object" ? meta.generationActions : null);
+    if (!payload) {
+      return null;
+    }
+    const sourceUserText = normalizeTextInput(String(payload.source_user_text || payload.sourceUserText || "")).trim();
+    const sourceUserMessageId = String(payload.source_user_message_id || payload.sourceUserMessageId || "").trim();
+    if (!sourceUserText && !sourceUserMessageId) {
+      return null;
+    }
+    return {
+      sourceUserText,
+      sourceUserMessageId,
+      allowRetry: payload.allow_retry === true,
+      allowContinue: payload.allow_continue === true,
+      allowRegenerate: payload.allow_regenerate !== false,
+    };
+  }
+
+  function resolveAssistantMetaActionsHost(wrapper) {
+    if (!(wrapper instanceof HTMLElement)) {
+      return null;
+    }
+    const host = wrapper.querySelector(".message-content-assistant");
+    if (!(host instanceof HTMLElement)) {
+      return null;
+    }
+    const meta = host.querySelector("[data-message-meta]");
+    if (!(meta instanceof HTMLElement)) {
+      return null;
+    }
+    let metaRow = host.querySelector("[data-message-meta-row]");
+    if (!(metaRow instanceof HTMLElement)) {
+      metaRow = document.createElement("div");
+      metaRow.className = "message-meta-row";
+      metaRow.setAttribute("data-message-meta-row", "true");
+      if (meta.parentNode === host) {
+        host.insertBefore(metaRow, meta);
+      } else {
+        host.append(metaRow);
+      }
+      metaRow.append(meta);
+    } else if (meta.parentNode !== metaRow) {
+      metaRow.prepend(meta);
+    }
+    return metaRow;
+  }
+
+  function setAssistantGenerationActions(wrapper, actions = null) {
+    if (!(wrapper instanceof HTMLElement)) {
+      return;
+    }
+    const existing = wrapper.querySelectorAll("[data-generation-actions]");
+    existing.forEach((node) => {
+      if (node instanceof HTMLElement) {
+        node.remove();
+      }
+    });
+    const role = String(wrapper.dataset.role || "").trim().toLowerCase();
+    if (role !== "assistant") {
+      return;
+    }
+    const host = resolveAssistantMetaActionsHost(wrapper);
+    if (!(host instanceof HTMLElement) || !actions || typeof actions !== "object") {
+      return;
+    }
+    const actionsRow = document.createElement("div");
+    actionsRow.className = "message-generation-actions";
+    actionsRow.setAttribute("data-generation-actions", "true");
+
+    const appendAction = (key, label, {
+      iconName = "",
+      iconOnly = false,
+    } = {}) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "message-generation-action-btn";
+      if (iconOnly) {
+        btn.classList.add("message-generation-action-btn--icon");
+      }
+      btn.dataset.generationAction = key;
+      if (iconOnly) {
+        btn.innerHTML = icon(iconName || "refresh");
+      } else {
+        btn.textContent = label;
+      }
+      actionsRow.append(btn);
+    };
+    if (actions.allowContinue) {
+      appendAction("continue", "Продолжить");
+    }
+    if (actions.allowRegenerate) {
+      appendAction("regenerate", "Перегенерировать", {
+        iconName: "refresh",
+        iconOnly: true,
+      });
+    }
+    if (!actionsRow.childElementCount) {
+      return;
+    }
+    host.append(actionsRow);
   }
 
   function appendMessage(role, text, metaSuffix = "", options = {}) {
@@ -198,7 +307,15 @@ export function createChatMessageUi({
       }
       applyMetaStreamMode(meta, resolvedRole === "assistant" && !pending ? streamMode : "");
 
-      card.append(body, meta);
+      if (resolvedRole === "assistant") {
+        const metaRow = document.createElement("div");
+        metaRow.className = "message-meta-row";
+        metaRow.setAttribute("data-message-meta-row", "true");
+        metaRow.append(meta);
+        card.append(body, metaRow);
+      } else {
+        card.append(body, meta);
+      }
 
       if (resolvedRole === "user" && messageAttachments.length > 0) {
         const attachmentsList = buildAttachmentListNode(messageAttachments);
@@ -213,6 +330,10 @@ export function createChatMessageUi({
       } else {
         wrapper.append(card);
       }
+
+      if (resolvedRole === "assistant" && !pending) {
+        setAssistantGenerationActions(wrapper, resolveGenerationActions(safeMeta));
+      }
     }
 
     elements.chatStream.appendChild(wrapper);
@@ -224,12 +345,30 @@ export function createChatMessageUi({
     }
 
     if (persist && typeof persistChatMessage === "function") {
+      const persistMeta = { ...safeMeta };
+      if (resolvedRole === "tool" && options?.toolPayload && typeof options.toolPayload === "object") {
+        const toolPayload = options.toolPayload;
+        const toolArgs = toolPayload.args && typeof toolPayload.args === "object" ? toolPayload.args : {};
+        const toolOutput = toolPayload.output && typeof toolPayload.output === "object" ? toolPayload.output : {};
+        const toolBadge = toolPayload.badge && typeof toolPayload.badge === "object" ? toolPayload.badge : null;
+        persistMeta.tool_name = String(toolPayload.name || persistMeta.tool_name || "").trim();
+        persistMeta.tool_display_name = String(toolPayload.display_name || toolPayload.displayName || persistMeta.tool_display_name || "").trim();
+        persistMeta.status = String(toolPayload.status || persistMeta.status || "ok").trim().toLowerCase() || "ok";
+        persistMeta.tool_args = toolArgs;
+        persistMeta.tool_output = toolOutput;
+        if (toolBadge) {
+          persistMeta.tool_badge = {
+            label: String(toolBadge.label || "").trim(),
+            tone: String(toolBadge.tone || "neutral").trim().toLowerCase() || "neutral",
+          };
+        }
+      }
       const persisted = persistChatMessage({
         chatId,
         role: wrapper.dataset.role,
         text,
         metaSuffix,
-        meta: safeMeta,
+        meta: persistMeta,
         timestamp: safeTimestamp.toISOString(),
       });
       messageId = persisted?.id || messageId;
@@ -247,6 +386,7 @@ export function createChatMessageUi({
     appendMessage,
     updateMessageRowContent,
     updateToolRow,
+    setAssistantGenerationActions,
     normalizeLegacyToolName,
     resolveToolMeta,
     formatToolOutputText,

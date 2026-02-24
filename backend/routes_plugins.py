@@ -8,6 +8,47 @@ from urllib.parse import quote
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response
 
+try:
+  from backend.plugin_permissions import (
+    DEFAULT_DOMAIN_PERMISSION_POLICY,
+    DEFAULT_PLUGIN_PERMISSION_POLICY,
+    VALID_PLUGIN_PERMISSION_POLICIES,
+    build_effective_domain_permissions,
+    build_effective_plugin_permissions,
+    build_effective_tool_permissions,
+    normalize_domain_key,
+    normalize_domain_default_policy,
+    normalize_plugin_permission_policy,
+    read_domain_default_policy,
+    read_domain_permissions,
+    read_plugin_permissions,
+    read_tool_permissions,
+    write_domain_default_policy,
+    write_domain_permissions,
+    write_plugin_permissions,
+    write_tool_permissions,
+  )
+except ModuleNotFoundError:
+  from plugin_permissions import (  # type: ignore
+    DEFAULT_DOMAIN_PERMISSION_POLICY,
+    DEFAULT_PLUGIN_PERMISSION_POLICY,
+    VALID_PLUGIN_PERMISSION_POLICIES,
+    build_effective_domain_permissions,
+    build_effective_plugin_permissions,
+    build_effective_tool_permissions,
+    normalize_domain_key,
+    normalize_domain_default_policy,
+    normalize_plugin_permission_policy,
+    read_domain_default_policy,
+    read_domain_permissions,
+    read_plugin_permissions,
+    read_tool_permissions,
+    write_domain_default_policy,
+    write_domain_permissions,
+    write_plugin_permissions,
+    write_tool_permissions,
+  )
+
 
 def register_plugin_routes(
   app: FastAPI,
@@ -20,6 +61,193 @@ def register_plugin_routes(
   get_autonomous_mode: Callable[[], bool],
   refresh_tool_registry_fn: Callable[[], None] | None = None,
 ) -> None:
+  def _sanitize_plugin_id(value: Any) -> str:
+    if hasattr(plugin_marketplace, "sanitize_plugin_id"):
+      return str(plugin_marketplace.sanitize_plugin_id(value) or "").strip().lower()
+    return str(value or "").strip().lower()
+
+  def _list_installed_plugin_ids() -> list[str]:
+    plugin_manager.reload()
+    ids: list[str] = []
+    for plugin in plugin_manager.list_plugins():
+      plugin_id = _sanitize_plugin_id(getattr(plugin, "id", ""))
+      if plugin_id:
+        ids.append(plugin_id)
+    return sorted(set(ids))
+
+  def _sanitize_tool_name(value: Any) -> str:
+    safe_value = str(value or "").strip().lower()
+    if not safe_value:
+      return ""
+    return safe_value
+
+  def _build_tool_key(plugin_id: Any, tool_name: Any) -> str:
+    safe_plugin_id = _sanitize_plugin_id(plugin_id)
+    safe_tool_name = _sanitize_tool_name(tool_name)
+    if not safe_plugin_id or not safe_tool_name:
+      return ""
+    return f"{safe_plugin_id}::{safe_tool_name}"
+
+  def _list_installed_tools() -> list[dict[str, str]]:
+    plugin_manager.reload()
+    tools: list[dict[str, str]] = []
+    for plugin in plugin_manager.list_plugins():
+      plugin_id = _sanitize_plugin_id(getattr(plugin, "id", ""))
+      if not plugin_id:
+        continue
+      raw_tools = list(getattr(plugin, "tools", []) or [])
+      for tool_name in raw_tools:
+        safe_tool_name = _sanitize_tool_name(tool_name)
+        if not safe_tool_name:
+          continue
+        tools.append(
+          {
+            "plugin_id": plugin_id,
+            "tool_name": safe_tool_name,
+            "tool_key": f"{plugin_id}::{safe_tool_name}",
+          }
+        )
+    tools.sort(key=lambda item: (item["plugin_id"], item["tool_name"]))
+    return tools
+
+  def _read_plugin_permission_map() -> dict[str, str]:
+    return read_plugin_permissions(storage, sanitize_plugin_id=_sanitize_plugin_id)
+
+  def _write_plugin_permission_map(policies: Any) -> dict[str, str]:
+    return write_plugin_permissions(
+      storage,
+      policies,
+      sanitize_plugin_id=_sanitize_plugin_id,
+    )
+
+  def _read_tool_permission_map() -> dict[str, str]:
+    return read_tool_permissions(
+      storage,
+      sanitize_plugin_id=_sanitize_plugin_id,
+      sanitize_tool_name=_sanitize_tool_name,
+    )
+
+  def _write_tool_permission_map(policies: Any) -> dict[str, str]:
+    return write_tool_permissions(
+      storage,
+      policies,
+      sanitize_plugin_id=_sanitize_plugin_id,
+      sanitize_tool_name=_sanitize_tool_name,
+    )
+
+  def _read_domain_permission_map() -> dict[str, str]:
+    return read_domain_permissions(storage)
+
+  def _write_domain_permission_map(policies: Any) -> dict[str, str]:
+    return write_domain_permissions(storage, policies)
+
+  def _read_domain_default_policy() -> str:
+    return read_domain_default_policy(storage)
+
+  def _write_domain_default_policy(policy: Any) -> str:
+    return write_domain_default_policy(storage, policy)
+
+  def _build_permissions_payload() -> dict[str, Any]:
+    installed_plugin_ids = _list_installed_plugin_ids()
+    installed_tools = _list_installed_tools()
+    installed_tool_keys = [item["tool_key"] for item in installed_tools]
+    stored_policies = _read_plugin_permission_map()
+    effective_policies = build_effective_plugin_permissions(
+      installed_plugin_ids,
+      stored_policies,
+      sanitize_plugin_id=_sanitize_plugin_id,
+    )
+    stored_tool_policies = _read_tool_permission_map()
+    effective_tool_policies = build_effective_tool_permissions(
+      installed_tool_keys,
+      stored_tool_policies,
+      plugin_policy_map=effective_policies,
+      sanitize_plugin_id=_sanitize_plugin_id,
+      sanitize_tool_name=_sanitize_tool_name,
+    )
+    stored_domain_policies = _read_domain_permission_map()
+    effective_domain_policies = build_effective_domain_permissions(
+      list(stored_domain_policies.keys()),
+      stored_domain_policies,
+    )
+    domain_default_policy = normalize_domain_default_policy(
+      _read_domain_default_policy(),
+      DEFAULT_DOMAIN_PERMISSION_POLICY,
+    )
+    return {
+      "default_policy": DEFAULT_PLUGIN_PERMISSION_POLICY,
+      "valid_policies": sorted(VALID_PLUGIN_PERMISSION_POLICIES),
+      "policies": effective_policies,
+      "stored_policies": stored_policies,
+      "tool_policies": effective_tool_policies,
+      "stored_tool_policies": stored_tool_policies,
+      "domain_policies": effective_domain_policies,
+      "stored_domain_policies": stored_domain_policies,
+      "domain_default_policy": domain_default_policy,
+      "default_domain_policy": domain_default_policy,
+      "tools": installed_tools,
+      "plugins_total": len(installed_plugin_ids),
+      "tools_total": len(installed_tool_keys),
+    }
+
+  def _inject_permissions_into_plugins_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+      return payload
+    plugins = payload.get("plugins")
+    if not isinstance(plugins, list):
+      return payload
+    policy_map = _read_plugin_permission_map()
+    tool_policy_map = _read_tool_permission_map()
+    domain_policy_map = _read_domain_permission_map()
+    installed_plugin_ids = [
+      _sanitize_plugin_id(item.get("id"))
+      for item in plugins
+      if isinstance(item, dict)
+    ]
+    effective = build_effective_plugin_permissions(
+      installed_plugin_ids,
+      policy_map,
+      sanitize_plugin_id=_sanitize_plugin_id,
+    )
+    for item in plugins:
+      if not isinstance(item, dict):
+        continue
+      plugin_id = _sanitize_plugin_id(item.get("id"))
+      policy = normalize_plugin_permission_policy(
+        effective.get(plugin_id, DEFAULT_PLUGIN_PERMISSION_POLICY),
+        DEFAULT_PLUGIN_PERMISSION_POLICY,
+      )
+      item["permission_policy"] = policy
+      raw_tools = list(item.get("tools") or [])
+      tool_policies: dict[str, str] = {}
+      for tool_name in raw_tools:
+        tool_key = _build_tool_key(plugin_id, tool_name)
+        if not tool_key:
+          continue
+        tool_policies[str(tool_name).strip().lower()] = normalize_plugin_permission_policy(
+          tool_policy_map.get(tool_key, policy),
+          policy,
+        )
+      item["tool_permission_policies"] = tool_policies
+    payload["plugin_permission_default"] = DEFAULT_PLUGIN_PERMISSION_POLICY
+    payload["plugin_permission_policies"] = effective
+    payload["plugin_tool_permission_policies"] = build_effective_tool_permissions(
+      list(tool_policy_map.keys()),
+      tool_policy_map,
+      plugin_policy_map=effective,
+      sanitize_plugin_id=_sanitize_plugin_id,
+      sanitize_tool_name=_sanitize_tool_name,
+    )
+    payload["plugin_domain_permission_policies"] = build_effective_domain_permissions(
+      list(domain_policy_map.keys()),
+      domain_policy_map,
+    )
+    payload["plugin_domain_default_policy"] = normalize_domain_default_policy(
+      _read_domain_default_policy(),
+      DEFAULT_DOMAIN_PERMISSION_POLICY,
+    )
+    return payload
+
   def _refresh_plugins_and_tools() -> None:
     if callable(refresh_tool_registry_fn):
       refresh_tool_registry_fn()
@@ -40,14 +268,153 @@ def register_plugin_routes(
     return HTTPException(status_code=500, detail=str(exc))
 
   def _list_plugins_payload() -> dict[str, Any]:
-    return plugin_marketplace.list_plugins_payload(autonomous_mode=get_autonomous_mode())
+    payload = plugin_marketplace.list_plugins_payload(autonomous_mode=get_autonomous_mode())
+    return _inject_permissions_into_plugins_payload(payload)
 
   def _registry_payload() -> dict[str, Any]:
-    return plugin_marketplace.build_registry_plugins_payload(autonomous_mode=get_autonomous_mode())
+    payload = plugin_marketplace.build_registry_plugins_payload(autonomous_mode=get_autonomous_mode())
+    return _inject_permissions_into_plugins_payload(payload)
 
   @app.get("/plugins")
   def list_plugins() -> dict[str, Any]:
     return _list_plugins_payload()
+
+  @app.get("/plugins/permissions")
+  def get_plugin_permissions() -> dict[str, Any]:
+    return _build_permissions_payload()
+
+  @app.patch("/plugins/permissions")
+  def update_plugin_permissions(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    body = payload or {}
+    current_plugin = _read_plugin_permission_map()
+    current_tool = _read_tool_permission_map()
+    current_domain = _read_domain_permission_map()
+    installed_plugin_ids = set(_list_installed_plugin_ids())
+    installed_tool_keys = {item["tool_key"] for item in _list_installed_tools()}
+    updates_raw = body.get("policies")
+    updates: dict[str, str] = {}
+    tool_updates: dict[str, str] = {}
+    domain_updates: dict[str, str] = {}
+    domain_removals: set[str] = set()
+    domain_default_policy = ""
+
+    if isinstance(updates_raw, dict):
+      for raw_plugin_id, raw_policy in updates_raw.items():
+        plugin_id = _sanitize_plugin_id(raw_plugin_id)
+        if not plugin_id:
+          continue
+        if plugin_id not in installed_plugin_ids:
+          raise HTTPException(status_code=404, detail=f"Plugin '{plugin_id}' not found")
+        updates[plugin_id] = normalize_plugin_permission_policy(raw_policy)
+
+    single_plugin_id = _sanitize_plugin_id(
+      body.get("plugin_id")
+      or body.get("pluginId")
+      or body.get("id"),
+    )
+    if single_plugin_id:
+      if single_plugin_id not in installed_plugin_ids:
+        raise HTTPException(status_code=404, detail=f"Plugin '{single_plugin_id}' not found")
+      updates[single_plugin_id] = normalize_plugin_permission_policy(
+        body.get("policy"),
+        DEFAULT_PLUGIN_PERMISSION_POLICY,
+      )
+
+    tool_updates_raw = body.get("tool_policies")
+    if isinstance(tool_updates_raw, dict):
+      for raw_tool_key, raw_policy in tool_updates_raw.items():
+        tool_key = _build_tool_key(*str(raw_tool_key or "").split("::", 1)) if "::" in str(raw_tool_key or "") else ""
+        if not tool_key:
+          continue
+        if tool_key not in installed_tool_keys:
+          raise HTTPException(status_code=404, detail=f"Tool '{tool_key}' not found")
+        tool_updates[tool_key] = normalize_plugin_permission_policy(
+          raw_policy,
+          DEFAULT_PLUGIN_PERMISSION_POLICY,
+        )
+
+    single_tool_plugin_id = _sanitize_plugin_id(
+      body.get("tool_plugin_id")
+      or body.get("toolPluginId")
+      or body.get("plugin_id"),
+    )
+    single_tool_name = _sanitize_tool_name(
+      body.get("tool_name")
+      or body.get("toolName"),
+    )
+    if single_tool_plugin_id and single_tool_name:
+      single_tool_key = _build_tool_key(single_tool_plugin_id, single_tool_name)
+      if single_tool_key not in installed_tool_keys:
+        raise HTTPException(status_code=404, detail=f"Tool '{single_tool_key}' not found")
+      tool_updates[single_tool_key] = normalize_plugin_permission_policy(
+        body.get("tool_policy") or body.get("policy"),
+        DEFAULT_PLUGIN_PERMISSION_POLICY,
+      )
+
+    domain_updates_raw = body.get("domain_policies")
+    if isinstance(domain_updates_raw, dict):
+      for raw_domain, raw_policy in domain_updates_raw.items():
+        domain = normalize_domain_key(raw_domain)
+        if not domain:
+          continue
+        domain_updates[domain] = normalize_plugin_permission_policy(
+          raw_policy,
+          DEFAULT_PLUGIN_PERMISSION_POLICY,
+        )
+
+    domain_remove_raw = body.get("domain_policy_remove") or body.get("domainPolicyRemove") or []
+    if isinstance(domain_remove_raw, (list, tuple, set)):
+      for raw_domain in domain_remove_raw:
+        domain = normalize_domain_key(raw_domain)
+        if domain:
+          domain_removals.add(domain)
+
+    single_domain = normalize_domain_key(
+      body.get("domain")
+      or body.get("domain_name")
+      or body.get("domainName"),
+    )
+    if single_domain:
+      if bool(body.get("remove_domain_policy") or body.get("removeDomainPolicy")):
+        domain_removals.add(single_domain)
+      else:
+        domain_updates[single_domain] = normalize_plugin_permission_policy(
+          body.get("domain_policy") or body.get("policy"),
+          DEFAULT_PLUGIN_PERMISSION_POLICY,
+        )
+
+    domain_default_raw = (
+      body.get("domain_default_policy")
+      or body.get("domainDefaultPolicy")
+      or body.get("default_domain_policy")
+      or body.get("defaultDomainPolicy")
+      or body.get("unknown_domain_policy")
+      or body.get("unknownDomainPolicy")
+      or ""
+    )
+    if str(domain_default_raw).strip():
+      domain_default_policy = normalize_domain_default_policy(
+        domain_default_raw,
+        DEFAULT_DOMAIN_PERMISSION_POLICY,
+      )
+
+    if not updates and not tool_updates and not domain_updates and not domain_removals and not domain_default_policy:
+      raise HTTPException(status_code=400, detail="No permission updates provided")
+
+    if updates:
+      merged_plugin = {**current_plugin, **updates}
+      _write_plugin_permission_map(merged_plugin)
+    if tool_updates:
+      merged_tool = {**current_tool, **tool_updates}
+      _write_tool_permission_map(merged_tool)
+    if domain_updates or domain_removals:
+      merged_domain = {**current_domain, **domain_updates}
+      for domain in domain_removals:
+        merged_domain.pop(domain, None)
+      _write_domain_permission_map(merged_domain)
+    if domain_default_policy:
+      _write_domain_default_policy(domain_default_policy)
+    return _build_permissions_payload()
 
   @app.get("/plugins/registry")
   def plugins_registry() -> dict[str, Any]:

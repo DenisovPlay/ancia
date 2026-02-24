@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -35,6 +35,12 @@ class ChatContext(BaseModel):
   user: UserContext = Field(default_factory=UserContext)
   ui: UiContext = Field(default_factory=UiContext)
   history: list[HistoryMessage] = Field(default_factory=list)
+  plugin_permission_grants: list[str] = Field(default_factory=list)
+  tool_permission_grants: list[str] = Field(default_factory=list)
+  domain_permission_grants: list[str] = Field(default_factory=list)
+  request_id: str = ""
+  history_override_enabled: bool = False
+  context_guard_event: dict[str, Any] = Field(default_factory=dict)
   chat_id: str = "default"
   chat_title: str = ""
   system_prompt: str = ""
@@ -69,6 +75,7 @@ class ChatResponse(BaseModel):
   model: str
   tool_events: list[ToolEvent] = Field(default_factory=list)
   usage: dict[str, int] = Field(default_factory=dict)
+  generation_actions: dict[str, Any] = Field(default_factory=dict)
 
 
 class ModelSelectRequest(BaseModel):
@@ -82,6 +89,15 @@ class ModelParamsUpdateRequest(BaseModel):
   temperature: float | None = None
   top_p: float | None = None
   top_k: int | None = None
+
+
+class ContextUsageRequest(BaseModel):
+  model_id: str = ""
+  draft_text: str = ""
+  pending_assistant_text: str = ""
+  history: list[HistoryMessage] = Field(default_factory=list)
+  attachments: list[AttachmentRef] = Field(default_factory=list)
+  history_variants: list[list[HistoryMessage]] = Field(default_factory=list)
 
 
 class ChatCreateRequest(BaseModel):
@@ -149,3 +165,9 @@ class RuntimeChatContext:
   mood: str
   user_name: str
   timezone: str
+  plugin_permission_grants: set[str] = field(default_factory=set)
+  tool_permission_grants: set[str] = field(default_factory=set)
+  domain_permission_grants: set[str] = field(default_factory=set)
+  tool_permission_policies: dict[str, str] = field(default_factory=dict)
+  domain_permission_policies: dict[str, str] = field(default_factory=dict)
+  domain_default_policy: str = "allow"

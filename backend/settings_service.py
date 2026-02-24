@@ -35,6 +35,8 @@ DEFAULT_RUNTIME_CONFIG: dict[str, Any] = {
   "contextGuardPluginEnabled": True,
   "contextGuardAutoCompress": True,
   "contextGuardShowChatEvents": True,
+  "modelAutoFallbackEnabled": True,
+  "modelAutoFallbackProfile": "balanced",
 }
 
 DEFAULT_ONBOARDING_STATE: dict[str, Any] = {
@@ -61,6 +63,11 @@ class SettingsService:
     result["contextGuardPluginEnabled"] = bool(result.get("contextGuardPluginEnabled", True))
     result["contextGuardAutoCompress"] = bool(result.get("contextGuardAutoCompress", True))
     result["contextGuardShowChatEvents"] = bool(result.get("contextGuardShowChatEvents", True))
+    result["modelAutoFallbackEnabled"] = bool(result.get("modelAutoFallbackEnabled", True))
+    profile = str(result.get("modelAutoFallbackProfile") or "balanced").strip().lower()
+    if profile not in {"conservative", "balanced", "aggressive"}:
+      profile = "balanced"
+    result["modelAutoFallbackProfile"] = profile
     return result
 
   def sanitize_onboarding_state(self, payload: Any) -> dict[str, Any]:

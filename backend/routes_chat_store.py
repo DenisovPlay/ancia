@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import re
 from typing import Any, Callable
 
 from fastapi import FastAPI, HTTPException
@@ -26,9 +28,101 @@ def register_chat_store_routes(
   storage: Any,
   normalize_mood_fn: Callable[[str, str], str],
 ) -> None:
+  def extract_json_from_markdown(content: str) -> dict[str, Any]:
+    safe_content = str(content or "")
+    block_match = re.search(r"```ancia-json\s+([\s\S]*?)\s+```", safe_content, flags=re.IGNORECASE)
+    if block_match:
+      payload_text = block_match.group(1).strip()
+      return json.loads(payload_text)
+    return json.loads(safe_content)
+
   @app.get("/chats")
   def list_chats() -> dict[str, Any]:
     return storage.list_chat_store()
+
+  @app.get("/chats/search")
+  def search_chats(query: str = "", limit: int = 120, chat_id: str = "") -> dict[str, Any]:
+    safe_query = str(query or "").strip()
+    if not safe_query:
+      return {
+        "query": "",
+        "results": [],
+        "count": 0,
+      }
+    results = storage.search_messages(
+      safe_query,
+      limit=limit,
+      chat_id=chat_id,
+    )
+    return {
+      "query": safe_query,
+      "results": results,
+      "count": len(results),
+    }
+
+  @app.get("/chats/export")
+  def export_chats(format: str = "json", chat_id: str = "") -> dict[str, Any]:
+    safe_format = str(format or "json").strip().lower()
+    if safe_format not in {"json", "md", "markdown"}:
+      raise HTTPException(status_code=400, detail="format must be json or md")
+    safe_chat_id = str(chat_id or "").strip()
+    try:
+      if safe_format == "json":
+        return {
+          "format": "json",
+          "chat_id": safe_chat_id,
+          "store": storage.export_chat_store_payload(safe_chat_id),
+        }
+      return {
+        "format": "md",
+        "chat_id": safe_chat_id,
+        "content": storage.export_chat_store_markdown(safe_chat_id),
+      }
+    except ValueError as exc:
+      raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+  @app.post("/chats/import")
+  def import_chats(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    body = payload or {}
+    mode = str(body.get("mode") or "replace").strip().lower()
+    if mode not in {"replace", "merge"}:
+      raise HTTPException(status_code=400, detail="mode must be replace or merge")
+    raw_format = str(body.get("format") or "").strip().lower()
+    source_payload: dict[str, Any] | None = None
+    if raw_format in {"md", "markdown"}:
+      markdown_content = str(body.get("content") or "").strip()
+      if not markdown_content:
+        raise HTTPException(status_code=400, detail="content is required for markdown import")
+      try:
+        source_payload = extract_json_from_markdown(markdown_content)
+      except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid markdown payload: {exc}") from exc
+    else:
+      store_payload = body.get("store")
+      if isinstance(store_payload, dict):
+        source_payload = store_payload
+      elif isinstance(body.get("sessions"), list):
+        source_payload = {
+          "activeSessionId": str(body.get("activeSessionId") or ""),
+          "sessions": body.get("sessions"),
+        }
+      else:
+        raise HTTPException(status_code=400, detail="store payload is required")
+
+    try:
+      imported = storage.import_chat_store_payload(source_payload, mode=mode)
+    except ValueError as exc:
+      raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {
+      "ok": True,
+      "mode": str(imported.get("mode") or mode),
+      "imported": {
+        "sessions": int(imported.get("sessions") or 0),
+        "messages": int(imported.get("messages") or 0),
+      },
+      "store": imported.get("store") or storage.list_chat_store(),
+    }
 
   @app.post("/chats")
   def create_chat(payload: ChatCreateRequest) -> dict[str, Any]:

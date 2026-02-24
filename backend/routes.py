@@ -18,6 +18,17 @@ from fastapi.responses import StreamingResponse
 
 try:
   from backend.common import normalize_mood, utc_now_iso
+  from backend.plugin_permissions import (
+    DEFAULT_DOMAIN_PERMISSION_POLICY,
+    DEFAULT_PLUGIN_PERMISSION_POLICY,
+    normalize_domain_key,
+    normalize_domain_default_policy,
+    normalize_plugin_permission_policy,
+    read_domain_default_policy,
+    read_domain_permissions,
+    read_plugin_permissions,
+    read_tool_permissions,
+  )
   from backend.plugin_marketplace_service import PluginMarketplaceService
   from backend.routes_chat_store import register_chat_store_routes
   from backend.routes_models import register_model_routes
@@ -28,6 +39,7 @@ try:
     DEFAULT_RUNTIME_CONFIG,
     SettingsService,
   )
+  from backend.text_stream_utils import compact_repetitions, is_repetition_runaway
   from backend.schemas import (
     HistoryMessage,
     ChatRequest,
@@ -37,6 +49,17 @@ try:
   )
 except ModuleNotFoundError:
   from common import normalize_mood, utc_now_iso  # type: ignore
+  from plugin_permissions import (  # type: ignore
+    DEFAULT_DOMAIN_PERMISSION_POLICY,
+    DEFAULT_PLUGIN_PERMISSION_POLICY,
+    normalize_domain_key,
+    normalize_domain_default_policy,
+    normalize_plugin_permission_policy,
+    read_domain_default_policy,
+    read_domain_permissions,
+    read_plugin_permissions,
+    read_tool_permissions,
+  )
   from plugin_marketplace_service import PluginMarketplaceService  # type: ignore
   from routes_chat_store import register_chat_store_routes  # type: ignore
   from routes_models import register_model_routes  # type: ignore
@@ -47,6 +70,7 @@ except ModuleNotFoundError:
     DEFAULT_RUNTIME_CONFIG,
     SettingsService,
   )
+  from text_stream_utils import compact_repetitions, is_repetition_runaway  # type: ignore
   from schemas import (  # type: ignore
     HistoryMessage,
     ChatRequest,
@@ -521,7 +545,7 @@ def register_api_routes(
 
   def prepare_chat_turn(
     payload: ChatRequest,
-  ) -> tuple[str, str, str, str, RuntimeChatContext, set[str]]:
+  ) -> tuple[str, str, str, str, RuntimeChatContext, set[str], str]:
     user_text = payload.message.strip()
     attachments = list(payload.attachments or [])
     if not user_text and not attachments:
@@ -575,9 +599,34 @@ def register_api_routes(
     if should_update_title:
       storage.update_chat(chat_id, title=chat_title)
 
-    # Источник истории только backend-БД: не доверяем клиентскому кэшу.
+    # История для модели:
+    # - по умолчанию берём backend-БД (источник истины),
+    # - при history_override_enabled=true используем переданный override только для модели.
+    client_history_override_enabled = bool(getattr(payload.context, "history_override_enabled", False))
+    client_history_override: list[HistoryMessage] = []
+    if client_history_override_enabled:
+      raw_history = list(getattr(payload.context, "history", None) or [])
+      for entry in raw_history[-48:]:
+        role = str(getattr(entry, "role", "") or "").strip().lower()
+        if role not in {"user", "assistant", "system"}:
+          continue
+        text = str(getattr(entry, "text", "") or "").strip()
+        if not text:
+          continue
+        client_history_override.append(
+          HistoryMessage(
+            role=role,
+            text=text,
+            timestamp=str(getattr(entry, "timestamp", "") or ""),
+          )
+        )
+      if client_history_override:
+        tail = client_history_override[-1]
+        if str(tail.role or "").strip().lower() == "user" and str(tail.text or "").strip() == user_text:
+          client_history_override = client_history_override[:-1]
+
     stored_history = storage.get_chat_messages(chat_id, limit=24)
-    history_for_model: list[HistoryMessage] = []
+    history_from_storage: list[HistoryMessage] = []
     for entry in stored_history:
       role = str(entry.get("role") or "").strip().lower()
       if role not in {"user", "assistant", "system"}:
@@ -585,14 +634,14 @@ def register_api_routes(
       text = str(entry.get("text") or "").strip()
       if not text:
         continue
-      history_for_model.append(
+      history_from_storage.append(
         HistoryMessage(
           role=role,
           text=text,
           timestamp=str(entry.get("timestamp") or ""),
         )
       )
-    payload.context.history = history_for_model
+    payload.context.history = client_history_override if client_history_override else history_from_storage
 
     attachment_payloads: list[dict[str, Any]] = []
     attachment_preview_lines: list[str] = []
@@ -622,26 +671,63 @@ def register_api_routes(
       attachment_preview_lines.append(f"{index}. {' '.join(label_parts)}")
 
     user_text_for_storage = user_text
+    request_id = str(getattr(payload.context, "request_id", "") or "").strip()
 
-    storage.append_message(
-      chat_id=chat_id,
-      role="user",
-      text=user_text_for_storage,
-      meta={
-        "source": "ui",
-        "meta_suffix": "",
-        "attachments": attachment_payloads,
-        "attachment_preview_lines": attachment_preview_lines,
-        "has_attachments": bool(attachment_payloads),
-      },
-    )
+    user_message_id = ""
+    if request_id and existing_messages:
+      last_entry = existing_messages[-1]
+      last_role = str(last_entry.get("role") or "").strip().lower()
+      last_text = str(last_entry.get("text") or "").strip()
+      last_meta = last_entry.get("meta") if isinstance(last_entry.get("meta"), dict) else {}
+      last_request_id = str(last_meta.get("request_id") or "").strip()
+      if (
+        last_role == "user"
+        and last_request_id
+        and last_request_id == request_id
+        and last_text == user_text_for_storage
+      ):
+        user_message_id = str(last_entry.get("id") or "").strip()
 
-    runtime = RuntimeChatContext(
-      chat_id=chat_id,
-      mood=incoming_mood,
-      user_name=payload.context.user.name.strip(),
-      timezone=payload.context.user.timezone.strip() or "UTC",
-    )
+    if not user_message_id:
+      user_message_id = storage.append_message(
+        chat_id=chat_id,
+        role="user",
+        text=user_text_for_storage,
+        meta={
+          "source": "ui",
+          "meta_suffix": "",
+          "attachments": attachment_payloads,
+          "attachment_preview_lines": attachment_preview_lines,
+          "has_attachments": bool(attachment_payloads),
+          "request_id": request_id,
+        },
+      )
+
+    context_guard_event_raw = getattr(payload.context, "context_guard_event", None)
+    if isinstance(context_guard_event_raw, dict):
+      event_name = str(context_guard_event_raw.get("name") or "").strip().lower()
+      event_text = str(context_guard_event_raw.get("text") or "").strip()
+      if event_name == "context_guard.compress" and event_text:
+        event_display_name = str(context_guard_event_raw.get("display_name") or "").strip() or "Context Guard"
+        event_status_raw = str(context_guard_event_raw.get("status") or "ok").strip().lower()
+        event_status = event_status_raw if event_status_raw in {"ok", "warning", "error"} else "ok"
+        event_args = context_guard_event_raw.get("args") if isinstance(context_guard_event_raw.get("args"), dict) else {}
+        event_badge = context_guard_event_raw.get("badge") if isinstance(context_guard_event_raw.get("badge"), dict) else None
+        storage.append_message(
+          chat_id=chat_id,
+          role="tool",
+          text=event_text,
+          meta={
+            "meta_suffix": str(context_guard_event_raw.get("meta_suffix") or "сжатие контекста"),
+            "tool_name": "context_guard.compress",
+            "tool_display_name": event_display_name,
+            "status": event_status,
+            "tool_output": {},
+            "tool_args": event_args,
+            "tool_badge": event_badge,
+            "context_guard_event": True,
+          },
+        )
 
     autonomous_mode = get_autonomous_mode()
     if callable(refresh_tool_registry_fn):
@@ -650,7 +736,155 @@ def register_api_routes(
       plugin_manager.reload()
     active_tools = plugin_manager.resolve_active_tools(autonomous_mode=autonomous_mode)
     active_tools = {tool for tool in active_tools if tool_registry.has_tool(tool)}
-    return user_text, chat_id, chat_title, incoming_mood, runtime, active_tools
+    plugin_permission_map = read_plugin_permissions(
+      storage,
+      sanitize_plugin_id=plugin_marketplace.sanitize_plugin_id,
+    )
+    tool_permission_map = read_tool_permissions(
+      storage,
+      sanitize_plugin_id=plugin_marketplace.sanitize_plugin_id,
+      sanitize_tool_name=lambda value: str(value or "").strip().lower(),
+    )
+    domain_permission_map = read_domain_permissions(storage)
+    domain_default_policy = normalize_domain_default_policy(
+      read_domain_default_policy(storage),
+      DEFAULT_DOMAIN_PERMISSION_POLICY,
+    )
+    granted_plugin_ids = {
+      str(plugin_marketplace.sanitize_plugin_id(item) or "").strip().lower()
+      for item in list(getattr(payload.context, "plugin_permission_grants", None) or [])
+      if str(plugin_marketplace.sanitize_plugin_id(item) or "").strip()
+    }
+    granted_tool_keys: set[str] = set()
+    for raw_item in list(getattr(payload.context, "tool_permission_grants", None) or []):
+      raw_value = str(raw_item or "").strip().lower()
+      if not raw_value:
+        continue
+      separator = "::" if "::" in raw_value else (":" if ":" in raw_value else ("|" if "|" in raw_value else ""))
+      if not separator:
+        continue
+      plugin_raw, tool_raw = raw_value.split(separator, 1)
+      plugin_id = str(plugin_marketplace.sanitize_plugin_id(plugin_raw) or "").strip().lower()
+      tool_name = str(tool_raw or "").strip().lower()
+      if not plugin_id or not tool_name:
+        continue
+      if hasattr(tool_registry, "resolve_tool_name"):
+        tool_name = str(tool_registry.resolve_tool_name(tool_name) or "").strip().lower()
+      if not tool_name:
+        continue
+      granted_tool_keys.add(f"{plugin_id}::{tool_name}")
+    granted_domain_keys: set[str] = set()
+    for raw_domain in list(getattr(payload.context, "domain_permission_grants", None) or []):
+      safe_domain = normalize_domain_key(raw_domain)
+      if safe_domain:
+        granted_domain_keys.add(safe_domain)
+    filtered_tools: set[str] = set()
+    effective_tool_policy_map: dict[str, str] = {}
+    for tool_name in active_tools:
+      tool_meta = tool_registry.get_tool_meta(tool_name) if hasattr(tool_registry, "get_tool_meta") else {}
+      plugin_id = str(plugin_marketplace.sanitize_plugin_id(tool_meta.get("plugin_id")) or "").strip().lower()
+      if not plugin_id:
+        filtered_tools.add(tool_name)
+        continue
+      policy = normalize_plugin_permission_policy(
+        plugin_permission_map.get(plugin_id, DEFAULT_PLUGIN_PERMISSION_POLICY),
+        DEFAULT_PLUGIN_PERMISSION_POLICY,
+      )
+      if policy == "deny":
+        continue
+      if policy == "ask" and plugin_id not in granted_plugin_ids:
+        continue
+      tool_key = f"{plugin_id}::{tool_name}"
+      tool_policy = normalize_plugin_permission_policy(
+        tool_permission_map.get(tool_key, policy),
+        policy,
+      )
+      effective_tool_policy_map[tool_key] = tool_policy
+      if tool_policy == "deny":
+        continue
+      if tool_policy == "ask" and tool_key not in granted_tool_keys:
+        continue
+      filtered_tools.add(tool_name)
+    runtime = RuntimeChatContext(
+      chat_id=chat_id,
+      mood=incoming_mood,
+      user_name=payload.context.user.name.strip(),
+      timezone=payload.context.user.timezone.strip() or "UTC",
+      plugin_permission_grants=granted_plugin_ids,
+      tool_permission_grants=granted_tool_keys,
+      domain_permission_grants=granted_domain_keys,
+      tool_permission_policies=effective_tool_policy_map,
+      domain_permission_policies=domain_permission_map,
+      domain_default_policy=domain_default_policy,
+    )
+    return user_text, chat_id, chat_title, incoming_mood, runtime, filtered_tools, user_message_id
+
+  def ensure_context_window_not_overflow(
+    payload: ChatRequest,
+    active_tools: set[str],
+  ) -> dict[str, Any]:
+    if not hasattr(model_engine, "get_context_usage"):
+      return {}
+
+    tool_definitions = (
+      tool_registry.build_tool_definition_map(active_tools)
+      if hasattr(tool_registry, "build_tool_definition_map")
+      else {}
+    )
+    tool_schemas = (
+      tool_registry.build_llm_schema_map(active_tools)
+      if hasattr(tool_registry, "build_llm_schema_map")
+      else {}
+    )
+
+    try:
+      usage_payload = model_engine.get_context_usage(
+        model_id=str(model_engine.get_selected_model_id() or "").strip().lower(),
+        draft_text=str(payload.message or ""),
+        pending_assistant_text="",
+        history=list(getattr(payload.context, "history", None) or []),
+        attachments=list(payload.attachments or []),
+        history_variants=[],
+        active_tools=active_tools,
+        tool_definitions=tool_definitions,
+        tool_schemas=tool_schemas,
+      )
+    except RuntimeError:
+      raise HTTPException(
+        status_code=409,
+        detail={
+          "code": "context_usage_unavailable",
+          "message": (
+            "Точный подсчёт токенов недоступен: отправка остановлена, "
+            "чтобы не допустить переполнение контекста."
+          ),
+        },
+      )
+    except ValueError as exc:
+      raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    usage = usage_payload.get("usage") if isinstance(usage_payload, dict) else {}
+    if not isinstance(usage, dict):
+      return usage_payload if isinstance(usage_payload, dict) else {}
+
+    effective_tokens = int(usage.get("effective_tokens") or usage.get("used_tokens") or 0)
+    context_window = int(usage.get("context_window") or 0)
+    if context_window > 0 and effective_tokens > context_window:
+      raise HTTPException(
+        status_code=400,
+        detail={
+          "code": "context_overflow",
+          "message": (
+            "Контекст переполнен: запрос остановлен до отправки в модель. "
+            "Уменьшите историю/вложения или увеличьте context window."
+          ),
+          "used_tokens": int(usage.get("used_tokens") or 0),
+          "effective_tokens": effective_tokens,
+          "context_window": context_window,
+          "remaining_tokens": int(usage.get("remaining_tokens") or 0),
+        },
+      )
+    return usage_payload if isinstance(usage_payload, dict) else {}
 
   def _extract_tool_event_mood(output: Any) -> str:
     if not isinstance(output, dict):
@@ -678,10 +912,80 @@ def register_api_routes(
         return tool_mood
     return normalize_mood(result_mood, incoming_mood)
 
+  def estimate_completion_tokens(text: str) -> int:
+    safe_text = str(text or "")
+    if not safe_text:
+      return 0
+    estimator = getattr(model_engine, "_estimate_token_count_exact", None)
+    if callable(estimator):
+      try:
+        estimated = estimator(safe_text)
+        if isinstance(estimated, tuple):
+          return max(0, int(estimated[0] or 0))
+        return max(0, int(estimated or 0))
+      except Exception:
+        pass
+    return max(1, len(safe_text) // 4)
+
+  def resolve_selected_model_max_tokens() -> int:
+    selected_model_id = str(model_engine.get_selected_model_id() or "").strip().lower()
+    if not selected_model_id:
+      return 0
+    if hasattr(model_engine, "get_context_usage"):
+      try:
+        usage_payload = model_engine.get_context_usage(
+          model_id=selected_model_id,
+          draft_text="",
+          pending_assistant_text="",
+          history=[],
+          attachments=[],
+          history_variants=[],
+          active_tools=set(),
+          tool_definitions={},
+          tool_schemas={},
+        )
+        params_payload = usage_payload.get("params") if isinstance(usage_payload, dict) else {}
+        max_tokens = int((params_payload or {}).get("max_tokens") or 0)
+        if max_tokens > 0:
+          return max_tokens
+      except Exception:
+        pass
+    tier_key = "compact"
+    if hasattr(model_engine, "get_selected_tier"):
+      tier_key = str(model_engine.get_selected_tier() or "").strip().lower() or "compact"
+    if hasattr(model_engine, "get_model_params"):
+      try:
+        params = model_engine.get_model_params(selected_model_id, tier_key=tier_key)
+        return max(0, int((params or {}).get("max_tokens") or 0))
+      except Exception:
+        return 0
+    return 0
+
+  def build_generation_actions_meta(
+    *,
+    source_user_text: str,
+    source_user_message_id: str = "",
+    final_reply: str = "",
+  ) -> dict[str, Any]:
+    completion_tokens = estimate_completion_tokens(final_reply)
+    completion_limit = resolve_selected_model_max_tokens()
+    allow_continue = (
+      completion_limit > 0
+      and completion_tokens >= max(1, completion_limit - 2)
+    )
+    return {
+      "source_user_text": str(source_user_text or ""),
+      "source_user_message_id": str(source_user_message_id or "").strip(),
+      "allow_retry": False,
+      "allow_continue": bool(allow_continue),
+      "allow_regenerate": True,
+    }
+
   def build_chat_response(
     *,
     payload: ChatRequest,
     user_text: str,
+    user_message_id: str = "",
     chat_id: str,
     incoming_mood: str,
     active_tools: set[str],
@@ -703,6 +1007,11 @@ def register_api_routes(
         if hasattr(tool_registry, "build_tool_definition_map")
         else {}
       ),
+    )
+    generation_actions_meta = build_generation_actions_meta(
+      source_user_text=user_text,
+      source_user_message_id=user_message_id,
+      final_reply=str(result.reply or ""),
     )
     for event in result.tool_events:
       tool_text, tool_meta_suffix = format_tool_event_for_chat(event)
@@ -734,10 +1043,12 @@ def register_api_routes(
         "meta_suffix": str(result.model_name or "модель"),
         "system_prompt": system_prompt_value,
         "tool_events": [event.model_dump() for event in result.tool_events],
+        "generation_actions": generation_actions_meta,
       },
     )
 
-    token_estimate = max(1, len(user_text) // 4 + len(result.reply) // 4)
+    completion_tokens = max(1, estimate_completion_tokens(str(result.reply or "")))
+    token_estimate = max(1, len(user_text) // 4 + completion_tokens)
     return ChatResponse(
       chat_id=chat_id,
       reply=result.reply,
@@ -746,9 +1057,10 @@ def register_api_routes(
       tool_events=result.tool_events,
       usage={
         "prompt_tokens": token_estimate,
-        "completion_tokens": max(1, len(result.reply) // 4),
-        "total_tokens": token_estimate + max(1, len(result.reply) // 4),
+        "completion_tokens": completion_tokens,
+        "total_tokens": token_estimate + completion_tokens,
       },
+      generation_actions=generation_actions_meta,
     )
 
   def _format_sse(event: str, payload: dict[str, Any]) -> str:
@@ -757,7 +1069,7 @@ def register_api_routes(
 
   @app.post("/chat", response_model=ChatResponse)
   def chat(payload: ChatRequest) -> ChatResponse:
-    user_text, chat_id, _chat_title, incoming_mood, runtime, active_tools = prepare_chat_turn(payload)
+    user_text, chat_id, _chat_title, incoming_mood, runtime, active_tools, user_message_id = prepare_chat_turn(payload)
     require_vision_runtime = _payload_has_image_attachments(payload)
     try:
       ensure_selected_model_ready(
@@ -772,6 +1084,8 @@ def register_api_routes(
           "startup": model_engine.get_startup_snapshot(),
         },
       ) from exc
+
+    ensure_context_window_not_overflow(payload, active_tools)
 
     try:
       result = model_engine.complete(
@@ -792,6 +1106,7 @@ def register_api_routes(
     return build_chat_response(
       payload=payload,
       user_text=user_text,
+      user_message_id=user_message_id,
       chat_id=chat_id,
       incoming_mood=incoming_mood,
       active_tools=active_tools,
@@ -800,7 +1115,7 @@ def register_api_routes(
 
   @app.post("/chat/stream")
   def chat_stream(payload: ChatRequest) -> StreamingResponse:
-    user_text, chat_id, chat_title, incoming_mood, runtime, active_tools = prepare_chat_turn(payload)
+    user_text, chat_id, chat_title, incoming_mood, runtime, active_tools, user_message_id = prepare_chat_turn(payload)
 
     def stream_events() -> Generator[str, None, None]:
       selected_model_id = model_engine.get_selected_model_id()
@@ -825,7 +1140,14 @@ def register_api_routes(
 
       assistant_message_id: str | None = None
       assistant_stream_text = ""
+      assistant_segment_text = ""
+      assistant_segments: list[str] = []
       tool_message_by_invocation: dict[str, str] = {}
+      generation_actions_meta = build_generation_actions_meta(
+        source_user_text=user_text,
+        source_user_message_id=user_message_id,
+        final_reply="",
+      )
       stream_started_at = time.perf_counter()
       first_delta_at: float | None = None
       delta_count = 0
@@ -896,6 +1218,25 @@ def register_api_routes(
             meta=meta_payload,
           )
         return assistant_message_id
+
+      def close_assistant_segment(
+        *,
+        model_label: str,
+        mood: str,
+      ) -> None:
+        nonlocal assistant_message_id, assistant_segment_text
+        safe_text = str(assistant_segment_text or "")
+        if not safe_text.strip():
+          return
+        upsert_assistant_message(
+          safe_text,
+          model_label=model_label,
+          mood=mood,
+          streaming=False,
+        )
+        assistant_segments.append(safe_text)
+        assistant_segment_text = ""
+        assistant_message_id = None
 
       def is_user_cancelled_error(error: RuntimeError) -> bool:
         normalized = str(error or "").strip().lower()
@@ -980,6 +1321,16 @@ def register_api_routes(
           stream_model_id = loaded_model_id_after_ready
           stream_model_label = resolve_model_display_name(stream_model_id)
 
+        try:
+          ensure_context_window_not_overflow(payload, active_tools)
+        except HTTPException as exc:
+          detail = exc.detail
+          if isinstance(detail, dict):
+            message = str(detail.get("message") or "Контекст переполнен.")
+          else:
+            message = str(detail or "Контекст переполнен.")
+          raise RuntimeError(message) from exc
+
         result: Any = None
         queue: queue_lib.Queue[tuple[str, Any]] = queue_lib.Queue()
 
@@ -1033,6 +1384,10 @@ def register_api_routes(
               if not isinstance(tool_payload, dict):
                 tool_payload = {}
               if kind == "tool_start":
+                close_assistant_segment(
+                  model_label=stream_model_label,
+                  mood=normalize_mood(incoming_mood, "neutral"),
+                )
                 tool_invocation_id = str(tool_payload.get("invocation_id") or "").strip()
                 tool_name = str(tool_payload.get("name") or "tool")
                 tool_display_name = str(tool_payload.get("display_name") or tool_name).strip() or tool_name
@@ -1104,10 +1459,17 @@ def register_api_routes(
             if not safe_delta:
               continue
             assistant_stream_text += safe_delta
+            assistant_segment_text += safe_delta
             delta_count += 1
             delta_chars += len(safe_delta)
             if first_delta_at is None:
               first_delta_at = time.perf_counter()
+            upsert_assistant_message(
+              assistant_segment_text,
+              model_label=stream_model_label,
+              mood=normalize_mood(incoming_mood, "neutral"),
+              streaming=True,
+            )
             yield _format_sse("delta", {"text": safe_delta})
             continue
 
@@ -1140,11 +1502,22 @@ def register_api_routes(
             else {}
           ),
         )
-        final_reply = str(result.reply or assistant_stream_text or "").strip()
-        if not final_reply:
+        streamed_reply = str(assistant_stream_text or "")
+        model_reply = str(result.reply or "")
+        final_reply = assistant_segment_text if assistant_segment_text.strip() else model_reply
+        if is_repetition_runaway(final_reply):
+          final_reply = compact_repetitions(final_reply)
+        if not str(final_reply).strip():
           final_reply = "Не удалось сформировать ответ."
-        stream_diagnostics = build_stream_diagnostics(final_reply)
-        token_estimate = max(1, len(user_text) // 4 + len(final_reply) // 4)
+        full_reply_for_stats = streamed_reply if streamed_reply.strip() else final_reply
+        generation_actions_meta = build_generation_actions_meta(
+          source_user_text=user_text,
+          source_user_message_id=user_message_id,
+          final_reply=final_reply,
+        )
+        stream_diagnostics = build_stream_diagnostics(full_reply_for_stats)
+        completion_tokens = max(1, estimate_completion_tokens(full_reply_for_stats))
+        token_estimate = max(1, len(user_text) // 4 + completion_tokens)
         response_model = ChatResponse(
           chat_id=chat_id,
           reply=final_reply,
@@ -1153,9 +1526,10 @@ def register_api_routes(
           tool_events=result.tool_events,
           usage={
             "prompt_tokens": token_estimate,
-            "completion_tokens": max(1, len(final_reply) // 4),
-            "total_tokens": token_estimate + max(1, len(final_reply) // 4),
+            "completion_tokens": completion_tokens,
+            "total_tokens": token_estimate + completion_tokens,
           },
+          generation_actions=generation_actions_meta,
         )
         upsert_assistant_message(
           final_reply,
@@ -1166,6 +1540,7 @@ def register_api_routes(
             "system_prompt": system_prompt_value,
             "tool_events": [event.model_dump() for event in result.tool_events],
             "stream": stream_diagnostics,
+            "generation_actions": generation_actions_meta,
           },
         )
         yield _format_sse(
@@ -1179,11 +1554,12 @@ def register_api_routes(
             "tool_events": [event.model_dump() for event in response_model.tool_events],
             "usage": response_model.usage,
             "stream": stream_diagnostics,
+            "generation_actions": generation_actions_meta,
           },
         )
       except RuntimeError as exc:
         if is_user_cancelled_error(exc):
-          cancelled_reply = str(assistant_stream_text or "").strip()
+          cancelled_reply = str(assistant_segment_text or "").strip()
           cancelled_model = str(stream_model_label or selected_model_label or "модель")
           cancelled_mood = normalize_mood(incoming_mood, "neutral")
           stream_diagnostics = build_stream_diagnostics(cancelled_reply)
@@ -1194,6 +1570,7 @@ def register_api_routes(
             "streaming": False,
             "cancelled": True,
             "stream": stream_diagnostics,
+            "generation_actions": generation_actions_meta,
           }
           if assistant_message_id is not None and cancelled_reply:
             storage.update_message(
@@ -1227,11 +1604,12 @@ def register_api_routes(
               },
               "cancelled": True,
               "stream": stream_diagnostics,
+              "generation_actions": generation_actions_meta,
             },
           )
           return
 
-        error_text = assistant_stream_text or str(exc)
+        error_text = assistant_segment_text or str(exc)
         error_label = stream_model_label
         stream_diagnostics = build_stream_diagnostics(error_text)
         error_meta: dict[str, Any] = {
@@ -1241,6 +1619,7 @@ def register_api_routes(
           "streaming": False,
           "error": str(exc),
           "stream": stream_diagnostics,
+          "generation_actions": generation_actions_meta,
         }
         if assistant_message_id is None:
           assistant_message_id = storage.append_message(
