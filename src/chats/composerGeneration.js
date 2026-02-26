@@ -1016,6 +1016,9 @@ export function createComposerGenerationController({
     const seenToolInvocations = new Set();
     const toolRowsByInvocationId = new Map();
     let lastInsertedToolRowBeforeAssistant = null;
+    // Tracks the cumulative character offset in latestPartial where the current (last) assistant row's text begins.
+    // Each time text is "frozen" into a completed row before a tool call, this advances to latestPartial.length.
+    let frozenTextLength = 0;
 
     const resolveAssistantRow = () => {
       const recoveredRow = recoverAssistantRowForActiveGeneration();
@@ -1063,6 +1066,37 @@ export function createComposerGenerationController({
       });
       insertToolRowNearAssistant(row);
       return row;
+    };
+
+    const snapshotAssistantTextBeforeTool = () => {
+      const displayText = latestPartial.slice(frozenTextLength);
+      if (!displayText.trim()) {
+        return;
+      }
+      const activeRow = resolveAssistantRow();
+      if (!(activeRow instanceof HTMLElement)) {
+        return;
+      }
+      updateMessageRowContent(activeRow, {
+        text: displayText,
+        metaSuffix: streamMetaSuffix,
+        timestamp: new Date(),
+        pending: false,
+        streamMode: "",
+      });
+      frozenTextLength = latestPartial.length;
+      const newRow = appendMessage("assistant", "", streamMetaSuffix, {
+        persist: false,
+        chatId: requestSessionId,
+        pending: true,
+        pendingLabel: ASSISTANT_PENDING_LABEL,
+      });
+      assistantRow = newRow;
+      if (activeGeneration && activeGeneration.id === generationId) {
+        activeGeneration.assistantRow = newRow;
+        activeGeneration.latestText = "";
+      }
+      lastInsertedToolRowBeforeAssistant = null;
     };
 
     const runAssistantAttempt = async (requestText, { antiLoopMode = false } = {}) => requestAssistantReply(requestText, requestSessionId, {
@@ -1126,6 +1160,7 @@ export function createComposerGenerationController({
           const toolMeta = resolveToolMeta(payload.name);
 
           if (phase === "start") {
+            snapshotAssistantTextBeforeTool();
             if (invId && seenToolInvocations.has(invId)) {
               return;
             }
@@ -1178,16 +1213,17 @@ export function createComposerGenerationController({
         },
         onPartial: (partialText) => {
           latestPartial = normalizeTextInput(partialText);
+          const displayPartial = latestPartial.slice(frozenTextLength);
           contextGuard?.setPendingAssistantText?.(latestPartial);
           if (activeGeneration && activeGeneration.id === generationId) {
-            activeGeneration.latestText = latestPartial;
+            activeGeneration.latestText = displayPartial;
             activeGeneration.latestMetaSuffix = streamMetaSuffix;
           }
           const activeRow = resolveAssistantRow();
           if (activeRow) {
-            const hasPartialText = latestPartial.trim().length > 0;
+            const hasPartialText = displayPartial.trim().length > 0;
             updateMessageRowContent(activeRow, {
-              text: hasPartialText ? latestPartial : "",
+              text: hasPartialText ? displayPartial : "",
               metaSuffix: streamMetaSuffix,
               timestamp: new Date(),
               pending: !hasPartialText,
@@ -1212,7 +1248,7 @@ export function createComposerGenerationController({
             const activeRow = resolveAssistantRow();
             if (activeRow) {
               updateMessageRowContent(activeRow, {
-                text: latestPartial,
+                text: displayPartial,
                 metaSuffix: `${streamMetaSuffix} • anti-loop`,
                 timestamp: new Date(),
                 pending: false,
@@ -1233,6 +1269,7 @@ export function createComposerGenerationController({
         antiLoopAutoRetryUsed = true;
         antiLoopAbortTriggered = false;
         latestPartial = "";
+        frozenTextLength = 0;
         contextGuard?.setPendingAssistantText?.("");
 
         appendAndInsertToolRow({
@@ -1281,6 +1318,7 @@ export function createComposerGenerationController({
       }
 
       const finalText = normalizeTextInput(reply.text || latestPartial || "Бэкенд вернул пустой ответ.");
+      const finalDisplayText = frozenTextLength > 0 ? finalText.slice(frozenTextLength) : finalText;
       const finalMetaSuffix = String(reply.metaSuffix || streamMetaSuffix || initialMetaSuffix);
       latestStreamMode = String(reply?.stream?.mode || "").trim().toLowerCase();
       const generationActionsMeta = buildGenerationActionsMeta({
@@ -1289,7 +1327,7 @@ export function createComposerGenerationController({
         backendGenerationActions: reply?.generationActions,
       });
       if (activeGeneration && activeGeneration.id === generationId) {
-        activeGeneration.latestText = finalText;
+        activeGeneration.latestText = finalDisplayText;
         activeGeneration.latestMetaSuffix = finalMetaSuffix;
       }
       const generatedChatTitle = sanitizeSessionTitle(String(reply.chatTitle || "").trim(), "");
@@ -1325,7 +1363,7 @@ export function createComposerGenerationController({
       const activeRow = resolveAssistantRow();
       if (activeRow) {
         updateMessageRowContent(activeRow, {
-          text: finalText,
+          text: finalDisplayText,
           metaSuffix: finalMetaSuffix,
           timestamp: new Date(),
           streamMode: latestStreamMode,
@@ -1346,7 +1384,7 @@ export function createComposerGenerationController({
       const persisted = persistChatMessage({
         chatId: requestSessionId,
         role: "assistant",
-        text: finalText,
+        text: finalDisplayText,
         metaSuffix: finalMetaSuffix,
         meta: assistantPersistMeta,
         timestamp: new Date().toISOString(),
