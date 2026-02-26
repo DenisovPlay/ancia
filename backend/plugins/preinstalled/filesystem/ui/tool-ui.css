@@ -1,0 +1,8 @@
+[data-tool-plugin-id="filesystem"] .tool-call-status-icon {
+  color: #93c5fd;
+}
+
+[data-tool-plugin-id="filesystem"] .tool-call-card {
+  border-color: rgba(147, 197, 253, 0.3);
+  background: linear-gradient(120deg, rgba(10, 20, 45, 0.68), rgba(27, 27, 31, 0.72));
+}
