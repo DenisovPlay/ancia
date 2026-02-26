@@ -17,7 +17,9 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 try:
+  from backend.access_control import user_can_download_models
   from backend.common import normalize_mood, utc_now_iso
+  from backend.deployment import DEPLOYMENT_MODE_REMOTE_SERVER, resolve_deployment_mode
   from backend.plugin_permissions import (
     DEFAULT_DOMAIN_PERMISSION_POLICY,
     DEFAULT_PLUGIN_PERMISSION_POLICY,
@@ -48,7 +50,9 @@ try:
     ToolEvent,
   )
 except ModuleNotFoundError:
+  from access_control import user_can_download_models  # type: ignore
   from common import normalize_mood, utc_now_iso  # type: ignore
+  from deployment import DEPLOYMENT_MODE_REMOTE_SERVER, resolve_deployment_mode  # type: ignore
   from plugin_permissions import (  # type: ignore
     DEFAULT_DOMAIN_PERMISSION_POLICY,
     DEFAULT_PLUGIN_PERMISSION_POLICY,
@@ -94,6 +98,7 @@ def register_api_routes(
   plugins_preinstalled_dir: str,
   build_system_prompt_fn: Callable[..., str],
   refresh_tool_registry_fn: Callable[[], None] | None = None,
+  auth_service: Any | None = None,
 ) -> None:
   settings_service = SettingsService(storage=storage, model_engine=model_engine)
   get_autonomous_mode = settings_service.get_autonomous_mode
@@ -102,7 +107,6 @@ def register_api_routes(
   PLUGIN_REGISTRY_URL_SETTING_KEY = "plugin_registry_url"
   DEFAULT_PLUGIN_REGISTRY_URL = (
     os.getenv("ANCIA_PLUGIN_REGISTRY_URL", "").strip()
-    or "https://raw.githubusercontent.com/DenisovPlay/ancia-plugins/main/index.json"
   )
   MAX_REGISTRY_DOWNLOAD_BYTES = 1024 * 1024
   plugins_user_path = Path(plugins_user_dir).resolve()
@@ -117,6 +121,27 @@ def register_api_routes(
     max_registry_download_bytes=MAX_REGISTRY_DOWNLOAD_BYTES,
     utc_now_fn=utc_now_iso,
   )
+  _tool_registry_refresh_interval_sec = max(
+    1.0,
+    float(os.getenv("ANCIA_TOOL_REGISTRY_REFRESH_INTERVAL_SEC", "8") or 8),
+  )
+  _tool_registry_refresh_lock = threading.Lock()
+  _tool_registry_last_refresh_monotonic = 0.0
+
+  def maybe_refresh_tool_registry(force: bool = False) -> None:
+    nonlocal _tool_registry_last_refresh_monotonic
+    if not callable(refresh_tool_registry_fn):
+      plugin_manager.reload()
+      return
+    now_monotonic = time.monotonic()
+    if not force and (now_monotonic - _tool_registry_last_refresh_monotonic) < _tool_registry_refresh_interval_sec:
+      return
+    with _tool_registry_refresh_lock:
+      now_monotonic = time.monotonic()
+      if not force and (now_monotonic - _tool_registry_last_refresh_monotonic) < _tool_registry_refresh_interval_sec:
+        return
+      refresh_tool_registry_fn()
+      _tool_registry_last_refresh_monotonic = now_monotonic
 
   def normalize_http_url(url_like: Any) -> str:
     return plugin_marketplace.normalize_http_url(url_like)
@@ -130,13 +155,14 @@ def register_api_routes(
   def _bootstrap_preinstalled_plugins() -> None:
     try:
       bootstrap_result = plugin_marketplace.ensure_preinstalled_plugins(autonomous_mode=False)
-      if (bootstrap_result.get("installed") or bootstrap_result.get("updated")) and callable(refresh_tool_registry_fn):
-        refresh_tool_registry_fn()
+      if (bootstrap_result.get("installed") or bootstrap_result.get("updated")):
+        maybe_refresh_tool_registry(force=True)
     except Exception:
       # Bootstrap preinstalled plugins must not break backend startup.
       return
 
-  if not get_autonomous_mode():
+  should_bootstrap_preinstalled = str(os.getenv("ANCIA_ENABLE_PLUGIN_BOOTSTRAP", "") or "").strip() == "1"
+  if should_bootstrap_preinstalled and not get_autonomous_mode():
     bootstrap_thread = threading.Thread(
       target=_bootstrap_preinstalled_plugins,
       name="ancia-plugin-bootstrap",
@@ -162,6 +188,7 @@ def register_api_routes(
       "status": service_state,
       "service": "ancia-local-backend",
       "time": utc_now_iso(),
+      "deployment_mode": resolve_deployment_mode(storage),
       "model": {
         "name": model_engine.model_name,
         "selected_model": selected_model_id,
@@ -201,6 +228,7 @@ def register_api_routes(
     default_runtime_config=DEFAULT_RUNTIME_CONFIG,
     default_onboarding_state=DEFAULT_ONBOARDING_STATE,
     refresh_tool_registry_fn=refresh_tool_registry_fn,
+    auth_service=auth_service,
   )
 
   register_plugin_routes(
@@ -543,9 +571,98 @@ def register_api_routes(
         raise RuntimeError("Превышено время ожидания загрузки модели.")
       time.sleep(0.25)
 
+  def _resolve_owner_user_id(request: Request | None = None) -> str:
+    if request is None:
+      return ""
+    deployment_mode = str(getattr(request.state, "deployment_mode", "") or "").strip().lower()
+    if deployment_mode != DEPLOYMENT_MODE_REMOTE_SERVER:
+      return ""
+    auth_payload = getattr(request.state, "auth", None)
+    if not isinstance(auth_payload, dict):
+      return ""
+    user_payload = auth_payload.get("user")
+    if not isinstance(user_payload, dict):
+      return ""
+    return str(user_payload.get("id") or "").strip()
+
+  def _auth_user_from_request(request: Request | None = None) -> dict[str, Any]:
+    if request is None:
+      return {}
+    auth_payload = getattr(request.state, "auth", None)
+    if not isinstance(auth_payload, dict):
+      return {}
+    user_payload = auth_payload.get("user")
+    return user_payload if isinstance(user_payload, dict) else {}
+
+  def _request_can_download_models(request: Request | None = None) -> bool:
+    if request is None:
+      return True
+    deployment_mode = str(getattr(request.state, "deployment_mode", "") or "").strip().lower()
+    if deployment_mode != DEPLOYMENT_MODE_REMOTE_SERVER:
+      return True
+    return user_can_download_models(_auth_user_from_request(request))
+
+  def _is_model_cached_or_loading(model_id: str) -> bool:
+    safe_model_id = str(model_id or "").strip().lower()
+    if not safe_model_id:
+      return False
+
+    runtime_snapshot = (
+      model_engine.get_runtime_snapshot()
+      if hasattr(model_engine, "get_runtime_snapshot")
+      else {}
+    )
+    loaded_model_id = str(runtime_snapshot.get("loaded_model_id") or "").strip().lower()
+    if loaded_model_id == safe_model_id:
+      return True
+
+    startup = runtime_snapshot.get("startup") if isinstance(runtime_snapshot, dict) else {}
+    startup_details = startup.get("details") if isinstance(startup, dict) and isinstance(startup.get("details"), dict) else {}
+    startup_model_id = str(startup_details.get("model_id") or "").strip().lower()
+    startup_status = str(startup.get("status") or "").strip().lower()
+    if startup_model_id == safe_model_id and startup_status in {"loading", "booting"}:
+      return True
+
+    if not hasattr(model_engine, "get_local_cache_map"):
+      return False
+    cache_map = model_engine.get_local_cache_map()
+    if not isinstance(cache_map, dict):
+      return False
+    cache_entry = cache_map.get(safe_model_id)
+    if isinstance(cache_entry, dict):
+      return bool(cache_entry.get("cached"))
+    return bool(cache_entry)
+
+  def _require_model_download_access_for_request(request: Request, *, model_id: str) -> None:
+    if _request_can_download_models(request):
+      return
+    if _is_model_cached_or_loading(model_id):
+      return
+    raise HTTPException(
+      status_code=403,
+      detail="Недостаточно прав: загрузка новых моделей запрещена для этого аккаунта.",
+    )
+
   def prepare_chat_turn(
     payload: ChatRequest,
+    *,
+    owner_user_id: str = "",
   ) -> tuple[str, str, str, str, RuntimeChatContext, set[str], str]:
+    MAX_ATTACHMENTS_TOTAL_SIZE = 52_428_800
+    MAX_ATTACHMENTS_TOTAL_TEXT = 500_000
+
+    def _sanitize_attachment_for_storage(item: dict[str, Any]) -> dict[str, Any]:
+      safe_item = dict(item or {})
+      data_url_value = str(safe_item.get("dataUrl") or "").strip()
+      if data_url_value:
+        safe_item["hasDataUrl"] = True
+        safe_item["dataUrlLength"] = len(data_url_value)
+      safe_item.pop("dataUrl", None)
+      text_content = str(safe_item.get("textContent") or "")
+      if text_content and len(text_content) > 5000:
+        safe_item["textContent"] = text_content[:5000] + "…"
+      return safe_item
+
     user_text = payload.message.strip()
     attachments = list(payload.attachments or [])
     if not user_text and not attachments:
@@ -562,8 +679,16 @@ def register_api_routes(
       return bool(re.match(r"^новая\s+сессия\b", safe_title))
 
     chat_id = str(payload.context.chat_id or "default").strip() or "default"
-    existing_chat = storage.get_chat(chat_id)
-    existing_messages = storage.get_chat_messages(chat_id, limit=1) if existing_chat is not None else []
+    existing_chat = storage.get_chat(chat_id, owner_user_id=owner_user_id)
+    existing_messages = (
+      storage.get_chat_messages(
+        chat_id,
+        limit=1,
+        owner_user_id=owner_user_id,
+      )
+      if existing_chat is not None
+      else []
+    )
     is_first_turn = existing_chat is None or len(existing_messages) == 0
     requested_chat_title = str(payload.context.chat_title or "").strip()
     existing_chat_title = str(existing_chat["title"]) if existing_chat is not None else ""
@@ -589,7 +714,12 @@ def register_api_routes(
         chat_title = generated_title
 
     incoming_mood = normalize_mood(payload.context.mood, "neutral")
-    storage.ensure_chat(chat_id, chat_title, incoming_mood)
+    storage.ensure_chat(
+      chat_id,
+      chat_title,
+      incoming_mood,
+      owner_user_id=owner_user_id,
+    )
     should_update_title = (
       existing_chat is not None
       and bool(chat_title)
@@ -597,7 +727,7 @@ def register_api_routes(
       and (not is_placeholder_chat_title(chat_title) or existing_is_placeholder)
     )
     if should_update_title:
-      storage.update_chat(chat_id, title=chat_title)
+      storage.update_chat(chat_id, title=chat_title, owner_user_id=owner_user_id)
 
     # История для модели:
     # - по умолчанию берём backend-БД (источник истины),
@@ -625,7 +755,11 @@ def register_api_routes(
         if str(tail.role or "").strip().lower() == "user" and str(tail.text or "").strip() == user_text:
           client_history_override = client_history_override[:-1]
 
-    stored_history = storage.get_chat_messages(chat_id, limit=24)
+    stored_history = storage.get_chat_messages(
+      chat_id,
+      limit=24,
+      owner_user_id=owner_user_id,
+    )
     history_from_storage: list[HistoryMessage] = []
     for entry in stored_history:
       role = str(entry.get("role") or "").strip().lower()
@@ -645,9 +779,30 @@ def register_api_routes(
 
     attachment_payloads: list[dict[str, Any]] = []
     attachment_preview_lines: list[str] = []
+    total_attachment_size = 0
+    total_attachment_text = 0
     for index, attachment in enumerate(attachments, start=1):
       payload_item = attachment.model_dump()
-      attachment_payloads.append(payload_item)
+      try:
+        attachment_size = max(0, int(payload_item.get("size") or 0))
+      except (TypeError, ValueError):
+        attachment_size = 0
+      total_attachment_size += attachment_size
+      text_content = str(payload_item.get("textContent") or "")
+      data_url = str(payload_item.get("dataUrl") or "")
+      total_attachment_text += len(text_content) + len(data_url)
+      if total_attachment_size > MAX_ATTACHMENTS_TOTAL_SIZE:
+        raise HTTPException(
+          status_code=413,
+          detail=f"Суммарный размер вложений превышает {MAX_ATTACHMENTS_TOTAL_SIZE // (1024 * 1024)} MB.",
+        )
+      if total_attachment_text > MAX_ATTACHMENTS_TOTAL_TEXT:
+        raise HTTPException(
+          status_code=413,
+          detail="Суммарный объём текстовых данных вложений слишком большой.",
+        )
+
+      attachment_payloads.append(_sanitize_attachment_for_storage(payload_item))
       safe_name = str(payload_item.get("name") or f"file-{index}").strip()
       safe_kind = str(payload_item.get("kind") or "file").strip().lower()
       safe_mime = str(payload_item.get("mimeType") or "").strip()
@@ -662,10 +817,10 @@ def register_api_routes(
       if safe_size > 0:
         meta_parts.append(f"{safe_size} bytes")
       label_parts.append(f"({', '.join(meta_parts)})")
-      text_content = str(payload_item.get("textContent") or "").strip()
-      if text_content:
-        preview = text_content[:220].replace("\n", " ")
-        if len(text_content) > 220:
+      safe_text_content = str(payload_item.get("textContent") or "").strip()
+      if safe_text_content:
+        preview = safe_text_content[:220].replace("\n", " ")
+        if len(safe_text_content) > 220:
           preview += "…"
         label_parts.append(f"— {preview}")
       attachment_preview_lines.append(f"{index}. {' '.join(label_parts)}")
@@ -701,6 +856,7 @@ def register_api_routes(
           "has_attachments": bool(attachment_payloads),
           "request_id": request_id,
         },
+        owner_user_id=owner_user_id,
       )
 
     context_guard_event_raw = getattr(payload.context, "context_guard_event", None)
@@ -727,27 +883,27 @@ def register_api_routes(
             "tool_badge": event_badge,
             "context_guard_event": True,
           },
+          owner_user_id=owner_user_id,
         )
 
     autonomous_mode = get_autonomous_mode()
-    if callable(refresh_tool_registry_fn):
-      refresh_tool_registry_fn()
-    else:
-      plugin_manager.reload()
+    maybe_refresh_tool_registry(force=False)
     active_tools = plugin_manager.resolve_active_tools(autonomous_mode=autonomous_mode)
     active_tools = {tool for tool in active_tools if tool_registry.has_tool(tool)}
     plugin_permission_map = read_plugin_permissions(
       storage,
       sanitize_plugin_id=plugin_marketplace.sanitize_plugin_id,
+      owner_user_id=owner_user_id,
     )
     tool_permission_map = read_tool_permissions(
       storage,
       sanitize_plugin_id=plugin_marketplace.sanitize_plugin_id,
       sanitize_tool_name=lambda value: str(value or "").strip().lower(),
+      owner_user_id=owner_user_id,
     )
-    domain_permission_map = read_domain_permissions(storage)
+    domain_permission_map = read_domain_permissions(storage, owner_user_id=owner_user_id)
     domain_default_policy = normalize_domain_default_policy(
-      read_domain_default_policy(storage),
+      read_domain_default_policy(storage, owner_user_id=owner_user_id),
       DEFAULT_DOMAIN_PERMISSION_POLICY,
     )
     granted_plugin_ids = {
@@ -990,13 +1146,14 @@ def register_api_routes(
     incoming_mood: str,
     active_tools: set[str],
     result: Any,
+    owner_user_id: str = "",
   ) -> ChatResponse:
     final_mood = resolve_final_chat_mood(
       incoming_mood=incoming_mood,
       result_mood=str(getattr(result, "mood", "") or ""),
       tool_events=list(getattr(result, "tool_events", []) or []),
     )
-    storage.update_chat_mood(chat_id, final_mood)
+    storage.update_chat_mood(chat_id, final_mood, owner_user_id=owner_user_id)
 
     system_prompt_value = build_system_prompt_fn(
       system_prompt,
@@ -1032,6 +1189,7 @@ def register_api_routes(
           "status": event.status,
           "tool_output": event.output,
         },
+        owner_user_id=owner_user_id,
       )
     storage.append_message(
       chat_id=chat_id,
@@ -1045,6 +1203,7 @@ def register_api_routes(
         "tool_events": [event.model_dump() for event in result.tool_events],
         "generation_actions": generation_actions_meta,
       },
+      owner_user_id=owner_user_id,
     )
 
     completion_tokens = max(1, estimate_completion_tokens(str(result.reply or "")))
@@ -1068,9 +1227,17 @@ def register_api_routes(
     return f"event: {event}\ndata: {body}\n\n"
 
   @app.post("/chat", response_model=ChatResponse)
-  def chat(payload: ChatRequest) -> ChatResponse:
-    user_text, chat_id, _chat_title, incoming_mood, runtime, active_tools, user_message_id = prepare_chat_turn(payload)
+  def chat(payload: ChatRequest, request: Request) -> ChatResponse:
+    owner_user_id = _resolve_owner_user_id(request)
+    user_text, chat_id, _chat_title, incoming_mood, runtime, active_tools, user_message_id = prepare_chat_turn(
+      payload,
+      owner_user_id=owner_user_id,
+    )
     require_vision_runtime = _payload_has_image_attachments(payload)
+    _require_model_download_access_for_request(
+      request,
+      model_id=str(model_engine.get_selected_model_id() or "").strip().lower(),
+    )
     try:
       ensure_selected_model_ready(
         timeout_seconds=240.0,
@@ -1111,11 +1278,20 @@ def register_api_routes(
       incoming_mood=incoming_mood,
       active_tools=active_tools,
       result=result,
+      owner_user_id=owner_user_id,
     )
 
   @app.post("/chat/stream")
-  def chat_stream(payload: ChatRequest) -> StreamingResponse:
-    user_text, chat_id, chat_title, incoming_mood, runtime, active_tools, user_message_id = prepare_chat_turn(payload)
+  def chat_stream(payload: ChatRequest, request: Request) -> StreamingResponse:
+    owner_user_id = _resolve_owner_user_id(request)
+    user_text, chat_id, chat_title, incoming_mood, runtime, active_tools, user_message_id = prepare_chat_turn(
+      payload,
+      owner_user_id=owner_user_id,
+    )
+    _require_model_download_access_for_request(
+      request,
+      model_id=str(model_engine.get_selected_model_id() or "").strip().lower(),
+    )
 
     def stream_events() -> Generator[str, None, None]:
       selected_model_id = model_engine.get_selected_model_id()
@@ -1140,8 +1316,6 @@ def register_api_routes(
 
       assistant_message_id: str | None = None
       assistant_stream_text = ""
-      assistant_segment_text = ""
-      assistant_segments: list[str] = []
       tool_message_by_invocation: dict[str, str] = {}
       generation_actions_meta = build_generation_actions_meta(
         source_user_text=user_text,
@@ -1209,6 +1383,7 @@ def register_api_routes(
             role="assistant",
             text=text,
             meta=meta_payload,
+            owner_user_id=owner_user_id,
           )
         else:
           storage.update_message(
@@ -1216,6 +1391,7 @@ def register_api_routes(
             assistant_message_id,
             text=text,
             meta=meta_payload,
+            owner_user_id=owner_user_id,
           )
         return assistant_message_id
 
@@ -1224,8 +1400,7 @@ def register_api_routes(
         model_label: str,
         mood: str,
       ) -> None:
-        nonlocal assistant_message_id, assistant_segment_text
-        safe_text = str(assistant_segment_text or "")
+        safe_text = str(assistant_stream_text or "")
         if not safe_text.strip():
           return
         upsert_assistant_message(
@@ -1234,9 +1409,6 @@ def register_api_routes(
           mood=mood,
           streaming=False,
         )
-        assistant_segments.append(safe_text)
-        assistant_segment_text = ""
-        assistant_message_id = None
 
       def is_user_cancelled_error(error: RuntimeError) -> bool:
         normalized = str(error or "").strip().lower()
@@ -1408,6 +1580,7 @@ def register_api_routes(
                     tool_message_by_invocation[tool_invocation_id],
                     text=tool_text,
                     meta=tool_meta,
+                    owner_user_id=owner_user_id,
                   )
                 else:
                   tool_message_id = storage.append_message(
@@ -1415,6 +1588,7 @@ def register_api_routes(
                     role="tool",
                     text=tool_text,
                     meta=tool_meta,
+                    owner_user_id=owner_user_id,
                   )
                   if tool_invocation_id:
                     tool_message_by_invocation[tool_invocation_id] = tool_message_id
@@ -1441,6 +1615,7 @@ def register_api_routes(
                     tool_message_by_invocation[tool_invocation_id],
                     text=tool_text,
                     meta=tool_meta,
+                    owner_user_id=owner_user_id,
                   )
                 else:
                   tool_message_id = storage.append_message(
@@ -1448,6 +1623,7 @@ def register_api_routes(
                     role="tool",
                     text=tool_text,
                     meta=tool_meta,
+                    owner_user_id=owner_user_id,
                   )
                   if tool_invocation_id:
                     tool_message_by_invocation[tool_invocation_id] = tool_message_id
@@ -1459,13 +1635,12 @@ def register_api_routes(
             if not safe_delta:
               continue
             assistant_stream_text += safe_delta
-            assistant_segment_text += safe_delta
             delta_count += 1
             delta_chars += len(safe_delta)
             if first_delta_at is None:
               first_delta_at = time.perf_counter()
             upsert_assistant_message(
-              assistant_segment_text,
+              assistant_stream_text,
               model_label=stream_model_label,
               mood=normalize_mood(incoming_mood, "neutral"),
               streaming=True,
@@ -1491,7 +1666,7 @@ def register_api_routes(
           result_mood=str(getattr(result, "mood", "") or ""),
           tool_events=list(getattr(result, "tool_events", []) or []),
         )
-        storage.update_chat_mood(chat_id, final_mood)
+        storage.update_chat_mood(chat_id, final_mood, owner_user_id=owner_user_id)
         system_prompt_value = build_system_prompt_fn(
           system_prompt,
           payload,
@@ -1504,7 +1679,7 @@ def register_api_routes(
         )
         streamed_reply = str(assistant_stream_text or "")
         model_reply = str(result.reply or "")
-        final_reply = assistant_segment_text if assistant_segment_text.strip() else model_reply
+        final_reply = streamed_reply if streamed_reply.strip() else model_reply
         if is_repetition_runaway(final_reply):
           final_reply = compact_repetitions(final_reply)
         if not str(final_reply).strip():
@@ -1559,7 +1734,7 @@ def register_api_routes(
         )
       except RuntimeError as exc:
         if is_user_cancelled_error(exc):
-          cancelled_reply = str(assistant_segment_text or "").strip()
+          cancelled_reply = str(assistant_stream_text or "").strip()
           cancelled_model = str(stream_model_label or selected_model_label or "модель")
           cancelled_mood = normalize_mood(incoming_mood, "neutral")
           stream_diagnostics = build_stream_diagnostics(cancelled_reply)
@@ -1578,6 +1753,7 @@ def register_api_routes(
               assistant_message_id,
               text=cancelled_reply,
               meta=cancelled_meta,
+              owner_user_id=owner_user_id,
             )
           elif assistant_message_id is None and cancelled_reply:
             assistant_message_id = storage.append_message(
@@ -1585,6 +1761,7 @@ def register_api_routes(
               role="assistant",
               text=cancelled_reply,
               meta=cancelled_meta,
+              owner_user_id=owner_user_id,
             )
           prompt_tokens = max(1, len(user_text) // 4)
           completion_tokens = max(0, len(cancelled_reply) // 4)
@@ -1609,7 +1786,7 @@ def register_api_routes(
           )
           return
 
-        error_text = assistant_segment_text or str(exc)
+        error_text = assistant_stream_text or str(exc)
         error_label = stream_model_label
         stream_diagnostics = build_stream_diagnostics(error_text)
         error_meta: dict[str, Any] = {
@@ -1627,6 +1804,7 @@ def register_api_routes(
             role="assistant",
             text=error_text,
             meta=error_meta,
+            owner_user_id=owner_user_id,
           )
         else:
           storage.update_message(
@@ -1634,6 +1812,7 @@ def register_api_routes(
             assistant_message_id,
             text=error_text,
             meta=error_meta,
+            owner_user_id=owner_user_id,
           )
         yield _format_sse(
           "error",
@@ -1669,15 +1848,20 @@ def register_api_routes(
     }
 
   @app.get("/chats/{chat_id}/history")
-  def chat_history(chat_id: str, limit: int = 40) -> dict[str, Any]:
+  def chat_history(chat_id: str, request: Request, limit: int = 40) -> dict[str, Any]:
+    owner_user_id = _resolve_owner_user_id(request)
     safe_chat_id = str(chat_id or "").strip()
     if not safe_chat_id:
       raise HTTPException(status_code=400, detail="chat_id is required")
-    if storage.get_chat(safe_chat_id) is None:
+    if storage.get_chat(safe_chat_id, owner_user_id=owner_user_id) is None:
       raise HTTPException(status_code=404, detail=f"Chat '{safe_chat_id}' not found")
 
     safe_limit = max(1, min(200, int(limit)))
-    history = storage.get_chat_messages(safe_chat_id, safe_limit)
+    history = storage.get_chat_messages(
+      safe_chat_id,
+      safe_limit,
+      owner_user_id=owner_user_id,
+    )
     return {
       "chat_id": safe_chat_id,
       "history": history,

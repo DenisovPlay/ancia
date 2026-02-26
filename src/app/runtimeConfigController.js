@@ -14,9 +14,13 @@ export function createRuntimeConfigController({
 }) {
   function applyRuntimeConfig(partial = {}) {
     const previousConfig = { ...runtimeConfig };
-    const next = normalizeRuntimeConfig({
+    const merged = {
       ...runtimeConfig,
       ...partial,
+      mode: "backend",
+    };
+    const next = normalizeRuntimeConfig({
+      ...merged,
     });
 
     Object.assign(runtimeConfig, next);
@@ -25,6 +29,7 @@ export function createRuntimeConfigController({
     backendClient.setConfig({
       baseUrl: runtimeConfig.backendUrl,
       apiKey: runtimeConfig.apiKey,
+      authToken: runtimeConfig.authToken,
       timeoutMs: runtimeConfig.timeoutMs,
     });
 
@@ -41,7 +46,7 @@ export function createRuntimeConfigController({
   }
 
   async function hydrateSettingsFromBackend({ silent = true } = {}) {
-    if (runtimeConfig.mode !== "backend" || !runtimeConfig.backendUrl) {
+    if (!runtimeConfig.backendUrl) {
       return false;
     }
     try {
@@ -73,7 +78,7 @@ export function createRuntimeConfigController({
     includeOnboarding = false,
     autonomousMode = undefined,
   } = {}) {
-    if (runtimeConfig.mode !== "backend" || !runtimeConfig.backendUrl) {
+    if (!runtimeConfig.backendUrl) {
       return false;
     }
 

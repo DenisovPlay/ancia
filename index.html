@@ -214,17 +214,52 @@
           </button>
         </article>
 
-        <!-- Шаг 1: Приватность -->
+        <!-- Шаг 1: Режим запуска -->
         <article data-onboarding-step="1"
-          class="onboarding-step hidden flex flex-col items-center justify-center gap-7 py-10 text-center"
+          class="onboarding-step hidden flex flex-col items-center justify-center gap-6 py-10 text-center"
           aria-hidden="true">
-          <div class="grid h-16 w-16 shrink-0 place-items-center rounded-xl border border-emerald-900/40 bg-emerald-950/40 text-emerald-400">
-            <span data-icon="shield-check" data-icon-class="ui-icon-xl"></span>
+          <div class="grid h-16 w-16 shrink-0 place-items-center rounded-xl border border-cyan-900/40 bg-cyan-950/40 text-cyan-400">
+            <span data-icon="globe" data-icon-class="ui-icon-xl"></span>
           </div>
           <div class="flex flex-col items-center gap-3">
-            <h2 class="text-2xl font-semibold tracking-tight text-zinc-100">Полная приватность</h2>
-            <p class="text-sm leading-relaxed text-zinc-400">Данные обрабатываются локально<br>и не покидают контур
-              ZeniEnclave.</p>
+            <h2 class="text-2xl font-semibold tracking-tight text-zinc-100">Выберите режим</h2>
+            <p class="text-sm leading-relaxed text-zinc-400">Этот выбор можно изменить позже в настройках сервера.</p>
+          </div>
+          <div class="w-full max-w-[420px] space-y-2.5 text-left">
+            <label
+              class="flex cursor-pointer items-start gap-3 rounded-lg border border-zinc-700 bg-zinc-900/70 px-3 py-2.5 text-sm text-zinc-200">
+              <input id="onboarding-deployment-local" name="onboarding-deployment-mode" type="radio" value="local"
+                class="mt-0.5 h-4 w-4 rounded-full border-zinc-700 bg-zinc-900 accent-zinc-400" />
+              <span class="flex flex-col gap-1">
+                <span class="font-medium">Локально</span>
+                <span class="text-xs text-zinc-500">Без аккаунтов. Всё работает на вашем устройстве.</span>
+              </span>
+            </label>
+            <label
+              class="flex cursor-pointer items-start gap-3 rounded-lg border border-zinc-700 bg-zinc-900/70 px-3 py-2.5 text-sm text-zinc-200">
+              <input id="onboarding-deployment-remote-client" name="onboarding-deployment-mode" type="radio"
+                value="remote_client"
+                class="mt-0.5 h-4 w-4 rounded-full border-zinc-700 bg-zinc-900 accent-zinc-400" />
+              <span class="flex flex-col gap-1">
+                <span class="font-medium">Через удалённый сервер</span>
+                <span class="text-xs text-zinc-500">Вы клиент. Вычисления и аккаунты находятся на сервере.</span>
+              </span>
+            </label>
+            <label
+              class="flex cursor-pointer items-start gap-3 rounded-lg border border-zinc-700 bg-zinc-900/70 px-3 py-2.5 text-sm text-zinc-200">
+              <input id="onboarding-deployment-remote-server" name="onboarding-deployment-mode" type="radio"
+                value="remote_server"
+                class="mt-0.5 h-4 w-4 rounded-full border-zinc-700 bg-zinc-900 accent-zinc-400" />
+              <span class="flex flex-col gap-1">
+                <span class="font-medium">Сам удалённый сервер</span>
+                <span class="text-xs text-zinc-500">Вы запускаете сервер, он управляет аккаунтами и доступом.</span>
+              </span>
+            </label>
+            <label class="block space-y-1.5 pt-1">
+              <span class="text-[11px] uppercase tracking-[0.14em] text-zinc-500">URL бэкенда</span>
+              <input id="onboarding-backend-url" type="text" autocomplete="url" placeholder="http://127.0.0.1:5055"
+                class="w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 outline-none focus:border-zinc-500" />
+            </label>
           </div>
           <button type="button" data-onboarding-next-step="2"
             class="inline-flex items-center justify-center active:scale-95 duration-300 rounded-lg border border-zinc-600 bg-zinc-100 px-5 py-2 text-sm font-medium text-zinc-950 transition hover:bg-zinc-200">
@@ -232,8 +267,27 @@
           </button>
         </article>
 
-        <!-- Шаг 2: Плагины -->
+        <!-- Шаг 2: Приватность -->
         <article data-onboarding-step="2"
+          class="onboarding-step hidden flex flex-col items-center justify-center gap-7 py-10 text-center"
+          aria-hidden="true">
+          <div
+            class="grid h-16 w-16 shrink-0 place-items-center rounded-xl border border-emerald-900/40 bg-emerald-950/40 text-emerald-400">
+            <span data-icon="shield-check" data-icon-class="ui-icon-xl"></span>
+          </div>
+          <div class="flex flex-col items-center gap-3">
+            <h2 class="text-2xl font-semibold tracking-tight text-zinc-100">Полная приватность</h2>
+            <p class="text-sm leading-relaxed text-zinc-400">Данные обрабатываются локально<br>или на вашем удалённом
+              сервере.</p>
+          </div>
+          <button type="button" data-onboarding-next-step="3"
+            class="inline-flex items-center justify-center active:scale-95 duration-300 rounded-lg border border-zinc-600 bg-zinc-100 px-5 py-2 text-sm font-medium text-zinc-950 transition hover:bg-zinc-200">
+            Дальше
+          </button>
+        </article>
+
+        <!-- Шаг 3: Плагины -->
+        <article data-onboarding-step="3"
           class="onboarding-step hidden flex flex-col items-center justify-center gap-7 py-10 text-center"
           aria-hidden="true">
           <div class="grid h-16 w-16 shrink-0 place-items-center rounded-xl border border-sky-900/40 bg-sky-950/40 text-sky-400">
@@ -244,14 +298,14 @@
             <p class="text-sm leading-relaxed text-zinc-400">Подключайте плагины, инструменты<br>и интеграции без единой
               строки кода.</p>
           </div>
-          <button type="button" data-onboarding-next-step="3"
+          <button type="button" data-onboarding-next-step="4"
             class="inline-flex items-center justify-center active:scale-95 duration-300 rounded-lg border border-zinc-600 bg-zinc-100 px-5 py-2 text-sm font-medium text-zinc-950 transition hover:bg-zinc-200">
             Дальше
           </button>
         </article>
 
-        <!-- Шаг 3: Настройки -->
-        <article data-onboarding-step="3"
+        <!-- Шаг 4: Настройки -->
+        <article data-onboarding-step="4"
           class="onboarding-step hidden flex flex-col items-center gap-7 py-10 text-center" aria-hidden="true">
           <div class="grid h-16 w-16 shrink-0 place-items-center rounded-xl border border-violet-900/40 bg-violet-950/40 text-violet-400">
             <span data-icon="sliders" data-icon-class="ui-icon-xl"></span>
@@ -285,6 +339,7 @@
         <span class="onboarding-dot" data-onboarding-dot="1"></span>
         <span class="onboarding-dot" data-onboarding-dot="2"></span>
         <span class="onboarding-dot" data-onboarding-dot="3"></span>
+        <span class="onboarding-dot" data-onboarding-dot="4"></span>
       </div>
     </section>
   </div>

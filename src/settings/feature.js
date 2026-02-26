@@ -3,11 +3,12 @@ import { createSettingsFontController } from "./fontController.js";
 import { createSettingsRuntimeController } from "./runtimeController.js";
 import { createSettingsEventBindings } from "./eventBindings.js";
 
-const VALID_SETTINGS_SECTIONS = new Set(["personalization", "interface", "developer", "about"]);
+const VALID_SETTINGS_SECTIONS = new Set(["personalization", "interface", "developer", "server", "about"]);
 const SETTINGS_SECTION_TITLE = {
   personalization: "Персонализация",
   interface: "Интерфейс",
-  developer: "Для разработчиков",
+  developer: "Расширенные",
+  server: "Настройки сервера",
   about: "О приложении",
 };
 const SETTINGS_SECTION_TRANSITION_MS = 190;
@@ -95,7 +96,7 @@ export function createSettingsFeature({
   const settingsSections = [...document.querySelectorAll("[data-settings-section]")];
   const settingsSaveButtons = [elements.settingsSaveConfig].filter(Boolean);
   const settingsFields = [
-    elements.settingsRuntimeMode,
+    elements.settingsDeploymentMode,
     elements.settingsBackendUrl,
     elements.settingsApiKey,
     elements.settingsTimeoutMs,
@@ -108,6 +109,7 @@ export function createSettingsFeature({
     elements.settingsModelFallbackProfile,
     elements.settingsModelScenarioAutoApply,
     elements.settingsModelScenarioProfile,
+    elements.settingsServerAllowRegistration,
     elements.settingsBootMood,
     elements.settingsDefaultTransition,
     elements.settingsUserName,
@@ -167,6 +169,14 @@ export function createSettingsFeature({
     resetSettingsValidation: settingsRuntimeController.resetSettingsValidation,
     collectSettingsForm: settingsRuntimeController.collectSettingsForm,
     validateSettingsDraft: settingsRuntimeController.validateSettingsDraft,
+    refreshServerAuthState: settingsRuntimeController.refreshServerAuthState,
+    refreshServerAuditLog: settingsRuntimeController.refreshServerAuditLog,
+    loginServer: settingsRuntimeController.loginServer,
+    registerServerUser: settingsRuntimeController.registerServerUser,
+    bootstrapServerAdmin: settingsRuntimeController.bootstrapServerAdmin,
+    logoutServer: settingsRuntimeController.logoutServer,
+    createServerUser: settingsRuntimeController.createServerUser,
+    handleServerUserAction: settingsRuntimeController.handleServerUserAction,
     pushToast,
     backendClient,
     checkBackendConnection: settingsRuntimeController.checkBackendConnection,
@@ -189,6 +199,11 @@ export function createSettingsFeature({
     settingsSectionController.applySection(settingsSectionController.getCurrentSection(), { animate: false });
     settingsSectionController.applyFilter(elements.settingsSectionSearch?.value || "");
     settingsRuntimeController.syncSettingsDirtyState();
+    void settingsRuntimeController.refreshServerAuthState({
+      includeUsers: String(runtimeConfig.deploymentMode || "local").trim().toLowerCase() === "remote_server",
+      includeAudit: true,
+      silent: true,
+    });
   }
 
   function applyCurrentSection({ animate = true } = {}) {

@@ -6,10 +6,26 @@ function normalizeUrl(urlLike, { backendBaseUrl = "" } = {}) {
   if (!raw) {
     return "";
   }
+  const backendOrigin = (() => {
+    try {
+      return backendBaseUrl ? new URL(String(backendBaseUrl)).origin : "";
+    } catch {
+      return "";
+    }
+  })();
+  const appOrigin = String(window.location.origin || "").trim();
   const isAbsolute = /^[a-z][a-z0-9+.-]*:/i.test(raw);
   try {
     if (isAbsolute) {
-      return new URL(raw).toString();
+      const absolute = new URL(raw);
+      if (!/^https?:$/i.test(String(absolute.protocol || ""))) {
+        return "";
+      }
+      const origin = String(absolute.origin || "");
+      if (origin !== backendOrigin && origin !== appOrigin) {
+        return "";
+      }
+      return absolute.toString();
     }
   } catch {
     return "";

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from typing import Any, Callable
@@ -7,7 +8,13 @@ from urllib import error as url_error
 from urllib import parse as url_parse
 from urllib import request as url_request
 
+try:
+  from backend.netguard import ensure_safe_outbound_url, normalize_http_url as normalize_http_url_base
+except ModuleNotFoundError:
+  from netguard import ensure_safe_outbound_url, normalize_http_url as normalize_http_url_base  # type: ignore
+
 SAFE_PLUGIN_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_.-]{1,63}$")
+SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
 def sanitize_plugin_id(value: Any) -> str:
@@ -20,18 +27,13 @@ def sanitize_plugin_id(value: Any) -> str:
 
 
 def normalize_http_url(url_like: Any) -> str:
-  raw_url = str(url_like or "").strip()
-  if not raw_url:
-    raise ValueError("URL is required")
-  parsed = url_parse.urlparse(raw_url)
-  if not parsed.scheme:
-    raw_url = f"https://{raw_url}"
-    parsed = url_parse.urlparse(raw_url)
-  if parsed.scheme not in {"http", "https"}:
-    raise ValueError("Only http/https URLs are allowed")
-  if not parsed.netloc:
-    raise ValueError("URL host is required")
-  return parsed.geturl()
+  normalized = normalize_http_url_base(url_like, allow_http=True)
+  return ensure_safe_outbound_url(
+    normalized,
+    allow_http=True,
+    allow_loopback=False,
+    allow_private=False,
+  )
 
 
 def normalize_registry_url(url_like: Any) -> str:
@@ -72,8 +74,8 @@ def resolve_plugin_registry_url(*, storage: Any, setting_key: str, default_url: 
     return default_url
 
 
-def fetch_remote_json(url: str, *, max_bytes: int) -> Any:
-  payload = fetch_remote_bytes(url, max_bytes=max_bytes)
+def fetch_remote_json(url: str, *, max_bytes: int, expected_sha256: str = "") -> Any:
+  payload = fetch_remote_bytes(url, max_bytes=max_bytes, expected_sha256=expected_sha256)
   try:
     text = payload.decode("utf-8")
     return json.loads(text)
@@ -81,7 +83,7 @@ def fetch_remote_json(url: str, *, max_bytes: int) -> Any:
     raise RuntimeError("Registry payload is not valid JSON") from exc
 
 
-def fetch_remote_bytes(url: str, *, max_bytes: int) -> bytes:
+def fetch_remote_bytes(url: str, *, max_bytes: int, expected_sha256: str = "") -> bytes:
   try:
     safe_url = normalize_registry_url(url)
   except ValueError as exc:
@@ -107,6 +109,14 @@ def fetch_remote_bytes(url: str, *, max_bytes: int) -> bytes:
 
   if len(raw) > max_bytes:
     raise RuntimeError("Registry payload is too large")
+
+  safe_expected_hash = str(expected_sha256 or "").strip().lower()
+  if safe_expected_hash:
+    if not SHA256_PATTERN.match(safe_expected_hash):
+      raise RuntimeError("Invalid sha256 checksum format")
+    actual_hash = hashlib.sha256(raw).hexdigest().lower()
+    if actual_hash != safe_expected_hash:
+      raise RuntimeError("Checksum mismatch for downloaded payload")
   return raw
 
 
@@ -152,6 +162,23 @@ def normalize_registry_item(payload: Any) -> dict[str, Any] | None:
     except ValueError:
       package_url = ""
 
+  package_sha256 = str(
+    payload.get("package_sha256")
+    or payload.get("packageSha256")
+    or payload.get("sha256")
+    or ""
+  ).strip().lower()
+  if package_sha256 and not SHA256_PATTERN.match(package_sha256):
+    package_sha256 = ""
+
+  manifest_sha256 = str(
+    payload.get("manifest_sha256")
+    or payload.get("manifestSha256")
+    or ""
+  ).strip().lower()
+  if manifest_sha256 and not SHA256_PATTERN.match(manifest_sha256):
+    manifest_sha256 = ""
+
   raw_keywords = payload.get("keywords")
   keywords: list[str] = []
   if isinstance(raw_keywords, list):
@@ -185,6 +212,8 @@ def normalize_registry_item(payload: Any) -> dict[str, Any] | None:
     "repo_url": repo_url,
     "manifest_url": manifest_url,
     "package_url": package_url,
+    "manifest_sha256": manifest_sha256,
+    "package_sha256": package_sha256,
     "source": str(payload.get("source") or "registry").strip().lower() or "registry",
     "preinstalled": bool(payload.get("preinstalled", False)),
     "keywords": unique_keywords,

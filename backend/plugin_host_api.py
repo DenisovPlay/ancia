@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 try:
   from backend.common import normalize_mood
   from backend.plugin_permissions import (
+    DEFAULT_DOMAIN_PERMISSION_POLICY,
     normalize_domain_key,
     normalize_domain_default_policy,
     normalize_plugin_permission_policy,
@@ -25,6 +26,7 @@ try:
 except ModuleNotFoundError:
   from common import normalize_mood  # type: ignore
   from plugin_permissions import (  # type: ignore
+    DEFAULT_DOMAIN_PERMISSION_POLICY,
     normalize_domain_key,
     normalize_domain_default_policy,
     normalize_plugin_permission_policy,
@@ -79,11 +81,16 @@ class PluginHostApi:
         self._runtime_local.payload = previous
 
   @staticmethod
-  def _resolve_domain_policy(domain: str, policies: dict[str, str], *, default_policy: str = "allow") -> str:
+  def _resolve_domain_policy(
+    domain: str,
+    policies: dict[str, str],
+    *,
+    default_policy: str = DEFAULT_DOMAIN_PERMISSION_POLICY,
+  ) -> str:
     safe_domain = normalize_domain_key(domain)
     if not safe_domain:
-      return normalize_domain_default_policy(default_policy, "allow")
-    safe_default_policy = normalize_domain_default_policy(default_policy, "allow")
+      return normalize_domain_default_policy(default_policy, DEFAULT_DOMAIN_PERMISSION_POLICY)
+    safe_default_policy = normalize_domain_default_policy(default_policy, DEFAULT_DOMAIN_PERMISSION_POLICY)
     labels = safe_domain.split(".")
     candidates = [safe_domain]
     for index in range(1, len(labels) - 1):
@@ -124,8 +131,12 @@ class PluginHostApi:
       else {}
     )
     default_policy = normalize_domain_default_policy(
-      getattr(resolved_runtime, "domain_default_policy", "allow") if resolved_runtime is not None else "allow",
-      "allow",
+      (
+        getattr(resolved_runtime, "domain_default_policy", DEFAULT_DOMAIN_PERMISSION_POLICY)
+        if resolved_runtime is not None
+        else DEFAULT_DOMAIN_PERMISSION_POLICY
+      ),
+      DEFAULT_DOMAIN_PERMISSION_POLICY,
     )
     policy = self._resolve_domain_policy(safe_domain, domain_policy_map, default_policy=default_policy)
     if policy == "deny":

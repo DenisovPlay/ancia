@@ -8,6 +8,14 @@ export function createSettingsEventBindings({
   resetSettingsValidation,
   collectSettingsForm,
   validateSettingsDraft,
+  refreshServerAuthState,
+  refreshServerAuditLog,
+  loginServer,
+  registerServerUser,
+  bootstrapServerAdmin,
+  logoutServer,
+  createServerUser,
+  handleServerUserAction,
   pushToast,
   backendClient,
   checkBackendConnection,
@@ -120,6 +128,94 @@ export function createSettingsEventBindings({
         elements.settingsModelScenarioProfile.disabled = !Boolean(elements.settingsModelScenarioAutoApply?.checked);
       }
       syncSettingsDirtyState();
+    });
+
+    elements.settingsUsersRefresh?.addEventListener("click", () => {
+      void refreshServerAuthState?.({ includeUsers: true, includeAudit: true, silent: false });
+    });
+
+    elements.settingsAuditRefresh?.addEventListener("click", () => {
+      void refreshServerAuditLog?.({ silent: false });
+    });
+
+    elements.settingsAuditStatus?.addEventListener("change", () => {
+      void refreshServerAuditLog?.({ silent: true });
+    });
+
+    elements.settingsAuditLimit?.addEventListener("change", () => {
+      void refreshServerAuditLog?.({ silent: true });
+    });
+
+    [elements.settingsAuditActionPrefix, elements.settingsAuditActorUserId].forEach((field) => {
+      field?.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter") {
+          return;
+        }
+        event.preventDefault();
+        void refreshServerAuditLog?.({ silent: false });
+      });
+    });
+
+    elements.settingsLoginButton?.addEventListener("click", () => {
+      void loginServer?.({
+        username: elements.settingsLoginUsername?.value,
+        password: elements.settingsLoginPassword?.value,
+        remember: true,
+      });
+    });
+
+    elements.settingsRegisterButton?.addEventListener("click", () => {
+      void registerServerUser?.({
+        username: elements.settingsLoginUsername?.value,
+        password: elements.settingsLoginPassword?.value,
+      });
+    });
+
+    elements.settingsBootstrapAdmin?.addEventListener("click", () => {
+      void bootstrapServerAdmin?.({
+        username: elements.settingsBootstrapUsername?.value,
+        password: elements.settingsBootstrapPassword?.value,
+      });
+    });
+
+    elements.settingsLogoutButton?.addEventListener("click", () => {
+      void logoutServer?.();
+    });
+
+    elements.settingsCreateUserButton?.addEventListener("click", () => {
+      const createTask = createServerUser?.({
+        username: elements.settingsCreateUserUsername?.value,
+        password: elements.settingsCreateUserPassword?.value,
+        role: elements.settingsCreateUserRole?.value,
+        allowModelsDownload: elements.settingsCreateUserModelDownload?.checked,
+        allowPluginsDownload: elements.settingsCreateUserPluginDownload?.checked,
+      });
+      if (!createTask || typeof createTask.then !== "function") {
+        return;
+      }
+      void createTask.then((ok) => {
+        if (ok && elements.settingsCreateUserPassword instanceof HTMLInputElement) {
+          elements.settingsCreateUserPassword.value = "";
+        }
+        if (ok && elements.settingsCreateUserModelDownload instanceof HTMLInputElement) {
+          elements.settingsCreateUserModelDownload.checked = false;
+        }
+        if (ok && elements.settingsCreateUserPluginDownload instanceof HTMLInputElement) {
+          elements.settingsCreateUserPluginDownload.checked = false;
+        }
+      });
+    });
+
+    elements.settingsUsersList?.addEventListener("click", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) {
+        return;
+      }
+      const actionButton = target.closest("[data-server-user-action]");
+      if (!(actionButton instanceof HTMLElement)) {
+        return;
+      }
+      void handleServerUserAction?.(actionButton);
     });
 
     bindSettingsFieldListeners();

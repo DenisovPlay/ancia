@@ -77,11 +77,11 @@ class PluginMarketplaceService:
   def normalize_http_url(self, url_like: Any) -> str:
     return normalize_http_url(url_like)
 
-  def fetch_remote_json(self, url: str, *, max_bytes: int) -> Any:
-    return fetch_remote_json(url, max_bytes=max_bytes)
+  def fetch_remote_json(self, url: str, *, max_bytes: int, expected_sha256: str = "") -> Any:
+    return fetch_remote_json(url, max_bytes=max_bytes, expected_sha256=expected_sha256)
 
-  def fetch_remote_bytes(self, url: str, *, max_bytes: int) -> bytes:
-    return fetch_remote_bytes(url, max_bytes=max_bytes)
+  def fetch_remote_bytes(self, url: str, *, max_bytes: int, expected_sha256: str = "") -> bytes:
+    return fetch_remote_bytes(url, max_bytes=max_bytes, expected_sha256=expected_sha256)
 
   def load_registry_items(self, *, autonomous_mode: bool) -> dict[str, Any]:
     return load_registry_items(
@@ -218,8 +218,10 @@ class PluginMarketplaceService:
       "locked": bool(getattr(descriptor, "locked", False)),
       "allow_update": bool(getattr(descriptor, "allow_update", True)),
       "requires_network": bool(getattr(descriptor, "requires_network", False)),
-      "installed_at": self._utc_now_fn(),
     }
+    installed_at = str(payload.get("installed_at") or payload.get("installedAt") or "").strip()
+    if installed_at:
+      normalized["installed_at"] = installed_at
     return normalized
 
   def normalize_install_manifest(self, payload: Any) -> dict[str, Any]:
@@ -345,6 +347,7 @@ class PluginMarketplaceService:
     *,
     manifest_url: str,
     expected_plugin_id: str = "",
+    expected_manifest_sha256: str = "",
     source: str = "user",
     preinstalled: bool = False,
     repo_url: str = "",
@@ -353,7 +356,11 @@ class PluginMarketplaceService:
     install_scope: str = "user",
   ) -> dict[str, Any]:
     safe_manifest_url = self.normalize_http_url(manifest_url)
-    payload = self.fetch_remote_json(safe_manifest_url, max_bytes=512 * 1024)
+    payload = self.fetch_remote_json(
+      safe_manifest_url,
+      max_bytes=512 * 1024,
+      expected_sha256=expected_manifest_sha256,
+    )
     normalized = self._normalize_install_manifest(
       payload,
       source=source,
@@ -380,6 +387,7 @@ class PluginMarketplaceService:
     *,
     package_url: str,
     expected_plugin_id: str = "",
+    expected_package_sha256: str = "",
     source: str = "user",
     preinstalled: bool = False,
     repo_url: str = "",
@@ -388,7 +396,11 @@ class PluginMarketplaceService:
     install_scope: str = "user",
   ) -> dict[str, Any]:
     safe_package_url = self.normalize_http_url(package_url)
-    package_bytes = self.fetch_remote_bytes(safe_package_url, max_bytes=20 * 1024 * 1024)
+    package_bytes = self.fetch_remote_bytes(
+      safe_package_url,
+      max_bytes=20 * 1024 * 1024,
+      expected_sha256=expected_package_sha256,
+    )
 
     safe_expected_plugin_id = self.sanitize_plugin_id(expected_plugin_id)
     with tempfile.TemporaryDirectory(prefix="ancia-plugin-") as temp_dir_raw:
@@ -475,6 +487,11 @@ class PluginMarketplaceService:
         manifest_url = str(registry_item.get("manifest_url") or "").strip()
       if not package_url:
         package_url = str(registry_item.get("package_url") or "").strip()
+      manifest_sha256 = str(registry_item.get("manifest_sha256") or "").strip().lower()
+      package_sha256 = str(registry_item.get("package_sha256") or "").strip().lower()
+    else:
+      manifest_sha256 = ""
+      package_sha256 = ""
 
     if requested_plugin_id and requested_plugin_id in self.builtin_plugin_ids and not package_url and not manifest_url:
       raise ValueError("Встроенный плагин уже установлен.")
@@ -483,6 +500,7 @@ class PluginMarketplaceService:
       return self.install_from_package_url(
         package_url=package_url,
         expected_plugin_id=requested_plugin_id,
+        expected_package_sha256=package_sha256,
         source=source,
         preinstalled=preinstalled,
         repo_url=repo_url,
@@ -494,6 +512,7 @@ class PluginMarketplaceService:
       return self.install_from_manifest_url(
         manifest_url=manifest_url,
         expected_plugin_id=requested_plugin_id,
+        expected_manifest_sha256=manifest_sha256,
         source=source,
         preinstalled=preinstalled,
         repo_url=repo_url,
@@ -555,13 +574,22 @@ class PluginMarketplaceService:
       if registry_item is not None:
         manifest_url = str(registry_item.get("manifest_url") or "").strip()
         package_url = str(registry_item.get("package_url") or "").strip()
+        manifest_sha256 = str(registry_item.get("manifest_sha256") or "").strip().lower()
+        package_sha256 = str(registry_item.get("package_sha256") or "").strip().lower()
         if not repo_url:
           repo_url = str(registry_item.get("repo_url") or "").strip()
+      else:
+        manifest_sha256 = ""
+        package_sha256 = ""
+    else:
+      manifest_sha256 = ""
+      package_sha256 = ""
 
     if package_url:
       self.install_from_package_url(
         package_url=package_url,
         expected_plugin_id=safe_plugin_id,
+        expected_package_sha256=package_sha256,
         source=source,
         preinstalled=preinstalled,
         repo_url=repo_url,
@@ -573,6 +601,7 @@ class PluginMarketplaceService:
       self.install_from_manifest_url(
         manifest_url=manifest_url,
         expected_plugin_id=safe_plugin_id,
+        expected_manifest_sha256=manifest_sha256,
         source=source,
         preinstalled=preinstalled,
         repo_url=repo_url,
@@ -620,7 +649,15 @@ class PluginMarketplaceService:
       manifest_url = str(item.get("manifest_url") or "").strip()
       package_url = str(item.get("package_url") or "").strip()
       repo_url = str(item.get("repo_url") or "").strip()
+      manifest_sha256 = str(item.get("manifest_sha256") or "").strip().lower()
+      package_sha256 = str(item.get("package_sha256") or "").strip().lower()
       if not manifest_url and not package_url:
+        continue
+      if package_url and not package_sha256:
+        errors.append(f"{plugin_id}: missing package_sha256 for preinstalled package")
+        continue
+      if manifest_url and not package_url and not manifest_sha256:
+        errors.append(f"{plugin_id}: missing manifest_sha256 for preinstalled manifest")
         continue
       try:
         if plugin_id in installed_ids:
@@ -631,6 +668,7 @@ class PluginMarketplaceService:
           self.install_from_package_url(
             package_url=package_url,
             expected_plugin_id=plugin_id,
+            expected_package_sha256=package_sha256,
             source=str(item.get("source") or "preinstalled").strip().lower() or "preinstalled",
             preinstalled=True,
             repo_url=repo_url,
@@ -644,6 +682,7 @@ class PluginMarketplaceService:
           self.install_from_manifest_url(
             manifest_url=manifest_url,
             expected_plugin_id=plugin_id,
+            expected_manifest_sha256=manifest_sha256,
             source=str(item.get("source") or "preinstalled").strip().lower() or "preinstalled",
             preinstalled=True,
             repo_url=repo_url,

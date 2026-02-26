@@ -47,18 +47,18 @@ class ChatContext(BaseModel):
 
 
 class AttachmentRef(BaseModel):
-  id: str = ""
-  name: str = ""
-  kind: str = "file"
-  mimeType: str = ""
-  size: int = 0
-  textContent: str = ""
-  dataUrl: str = ""
+  id: str = Field(default="", max_length=128)
+  name: str = Field(default="", max_length=256)
+  kind: str = Field(default="file", max_length=32)
+  mimeType: str = Field(default="", max_length=160)
+  size: int = Field(default=0, ge=0, le=52_428_800)
+  textContent: str = Field(default="", max_length=120_000)
+  dataUrl: str = Field(default="", max_length=2_000_000)
 
 
 class ChatRequest(BaseModel):
-  message: str = ""
-  attachments: list[AttachmentRef] = Field(default_factory=list)
+  message: str = Field(default="", max_length=100_000)
+  attachments: list[AttachmentRef] = Field(default_factory=list, max_length=8)
   context: ChatContext = Field(default_factory=ChatContext)
 
 
@@ -170,4 +170,4 @@ class RuntimeChatContext:
   domain_permission_grants: set[str] = field(default_factory=set)
   tool_permission_policies: dict[str, str] = field(default_factory=dict)
   domain_permission_policies: dict[str, str] = field(default_factory=dict)
-  domain_default_policy: str = "allow"
+  domain_default_policy: str = "deny"

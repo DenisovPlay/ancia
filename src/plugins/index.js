@@ -20,12 +20,16 @@ function escapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
-function normalizeDomainDefaultPolicy(value) {
+const BACKEND_DOMAIN_DEFAULT_POLICY = "deny";
+
+function normalizeDomainDefaultPolicy(value, fallback = BACKEND_DOMAIN_DEFAULT_POLICY) {
   const safe = String(value || "").trim().toLowerCase();
-  if (safe === "deny") {
-    return "deny";
+  if (safe === "allow" || safe === "deny") {
+    return safe;
   }
-  return "allow";
+  return String(fallback || BACKEND_DOMAIN_DEFAULT_POLICY).trim().toLowerCase() === "allow"
+    ? "allow"
+    : "deny";
 }
 
 export function createPluginsFeature({
@@ -93,7 +97,7 @@ export function createPluginsFeature({
   let pluginPermissionPolicies = {};
   let toolPermissionPolicies = {};
   let domainPermissionPolicies = {};
-  let domainDefaultPolicy = "allow";
+  let domainDefaultPolicy = BACKEND_DOMAIN_DEFAULT_POLICY;
   let toolCatalog = [];
 
   function findPluginById(pluginIdRaw) {
@@ -586,11 +590,15 @@ export function createPluginsFeature({
       ]);
 
       autonomousMode = Boolean(installedPayload?.autonomous_mode ?? registryPayload?.autonomous_mode);
-      domainDefaultPolicy = normalizeDomainDefaultPolicy(
+      const domainDefaultPolicyRaw = (
         permissionsPayload?.domain_default_policy
-        || permissionsPayload?.default_domain_policy
-        || installedPayload?.plugin_domain_default_policy
-        || "allow",
+        ?? permissionsPayload?.default_domain_policy
+        ?? installedPayload?.plugin_domain_default_policy
+        ?? BACKEND_DOMAIN_DEFAULT_POLICY
+      );
+      domainDefaultPolicy = normalizeDomainDefaultPolicy(
+        domainDefaultPolicyRaw,
+        BACKEND_DOMAIN_DEFAULT_POLICY,
       );
 
       const sourceItems = Array.isArray(registryPayload?.plugins) && registryPayload.plugins.length > 0
@@ -929,7 +937,7 @@ export function createPluginsFeature({
     domainPanelNode?.addEventListener("change", async (event) => {
       const target = event.target;
       if (target === domainDefaultPolicyNode) {
-        await applyDomainDefaultPolicy(domainDefaultPolicyNode?.value || "allow");
+        await applyDomainDefaultPolicy(domainDefaultPolicyNode?.value || domainDefaultPolicy);
         return;
       }
       if (!(target instanceof HTMLSelectElement)) {

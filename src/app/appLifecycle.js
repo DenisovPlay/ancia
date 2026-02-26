@@ -136,32 +136,40 @@ export async function runAppStartup({
 }) {
   await setupTauriTitlebarDragging(elements.titlebar);
 
-  let startupResult = { ready: false, skipped: false };
-  if (runtimeConfig.mode === "backend") {
-    setPreloaderStatus("Подключение к бэкенду...");
-    startupResult = await waitForBackendStartup();
+  const shouldShowOnboarding = Boolean(onboardingController?.shouldShowOnboarding?.());
+  const onboardingState = onboardingController?.getState?.() || null;
+  const isInitialOnboarding = shouldShowOnboarding && !Boolean(onboardingState?.completed);
+  if (isInitialOnboarding) {
+    updateConnectionState(BACKEND_STATUS.idle, "Первичная настройка: выберите режим запуска");
+    setPreloaderStatus("Открываем первичную настройку...");
+    await showDesktopWindow();
+    revealAppShell();
+    await hidePreloader();
+    onboardingController?.openOnboarding?.();
+    return;
+  }
 
-    if (startupResult.ready) {
-      await hydrateSettingsFromBackend({ silent: true });
-      await persistSettingsToBackend({
-        includeRuntime: true,
-        includeOnboarding: true,
-        autonomousMode: runtimeConfig.autonomousMode,
-      });
-      await getChatFeature()?.syncChatStoreFromBackend({ preserveActive: true, silent: true });
-    } else if (!startupResult.skipped) {
-      if (elements.preloaderRetry) {
-        elements.preloaderRetry.classList.remove("hidden");
-        elements.preloaderRetry.addEventListener("click", () => window.location.reload());
-      }
-      const orb = elements.preloader?.querySelector(".app-preloader__orb");
-      if (orb) orb.style.display = "none";
-      await revealMainWindow();
-      return; // Stop app initialization
+  let startupResult = { ready: false, skipped: false };
+  setPreloaderStatus("Подключение к бэкенду...");
+  startupResult = await waitForBackendStartup();
+
+  if (startupResult.ready) {
+    await hydrateSettingsFromBackend({ silent: true });
+    await persistSettingsToBackend({
+      includeRuntime: true,
+      includeOnboarding: true,
+      autonomousMode: runtimeConfig.autonomousMode,
+    });
+    await getChatFeature()?.syncChatStoreFromBackend({ preserveActive: true, silent: true });
+  } else if (!startupResult.skipped) {
+    if (elements.preloaderRetry) {
+      elements.preloaderRetry.classList.remove("hidden");
+      elements.preloaderRetry.addEventListener("click", () => window.location.reload());
     }
-  } else {
-    updateConnectionState(BACKEND_STATUS.idle, "Активен режим симуляции");
-    setPreloaderStatus("Запуск в режиме симуляции...");
+    const orb = elements.preloader?.querySelector(".app-preloader__orb");
+    if (orb) orb.style.display = "none";
+    await revealMainWindow();
+    return; // Stop app initialization
   }
 
   await showDesktopWindow();
@@ -171,7 +179,7 @@ export async function runAppStartup({
     onboardingController.openOnboarding();
   }
 
-  if (runtimeConfig.mode === "backend" && runtimeConfig.autoReconnect && !startupResult.ready) {
+  if (runtimeConfig.autoReconnect && !startupResult.ready) {
     void getSettingsFeature()?.checkBackendConnection();
   }
 }

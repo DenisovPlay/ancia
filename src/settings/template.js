@@ -29,7 +29,11 @@ export const settingsPageTemplate = `
       </button>
       <button type="button" data-settings-section-target="developer" data-active="false"
         class="route-pill flex items-center gap-2.5 p-2.5 active:scale-95 duration-300 w-full rounded-lg border border-zinc-800 text-left text-sm">
-        <span class="icon-button justify-start">${icon("developers", "ui-icon-lg")}<span>Разработчик</span></span>
+        <span class="icon-button justify-start">${icon("developers", "ui-icon-lg")}<span>Расширенные</span></span>
+      </button>
+      <button type="button" data-settings-section-target="server" data-active="false"
+        class="route-pill flex items-center gap-2.5 p-2.5 active:scale-95 duration-300 w-full rounded-lg border border-zinc-800 text-left text-sm">
+        <span class="icon-button justify-start">${icon("shield-check", "ui-icon-lg")}<span>Сервер</span></span>
       </button>
       <button type="button" data-settings-section-target="about" data-active="false"
         class="route-pill flex items-center gap-2.5 p-2.5 active:scale-95 duration-300 w-full rounded-lg border border-zinc-800 text-left text-sm">
@@ -135,25 +139,6 @@ export const settingsPageTemplate = `
 
       <article data-settings-section="developer" class="settings-section hidden rounded-xl border border-zinc-800/60 divide-y divide-zinc-800/60">
         <div class="${rowCls} px-3.5">
-          <span class="${labelCls}">Режим</span>
-          <select id="settings-runtime-mode" class="${inputCls} w-44 text-right">
-            <option value="mock">Симуляция</option>
-            <option value="backend">Бэкенд</option>
-          </select>
-        </div>
-        <div class="${rowCls} px-3.5">
-          <span class="${labelCls}">URL бэкенда</span>
-          <input id="settings-backend-url" type="text" placeholder="http://127.0.0.1:5055" class="${inputCls} flex-1 min-w-0 text-right" />
-        </div>
-        <div class="${rowCls} px-3.5">
-          <span class="${labelCls}">API-ключ</span>
-          <input id="settings-api-key" type="password" autocomplete="off" placeholder="Токен доступа" class="${inputCls} flex-1 min-w-0 text-right" />
-        </div>
-        <div class="${rowCls} px-3.5">
-          <span class="${labelCls}">Таймаут (мс)</span>
-          <input id="settings-timeout-ms" type="number" min="500" step="100" class="${inputCls} w-24 text-right" />
-        </div>
-        <div class="${rowCls} px-3.5">
           <span class="${labelCls}">Переход (мс)</span>
           <input id="settings-default-transition" type="number" min="120" step="50" class="${inputCls} w-24 text-right" />
         </div>
@@ -173,12 +158,6 @@ export const settingsPageTemplate = `
             <option value="offline">Офлайн</option>
             <option value="error">Ошибка</option>
           </select>
-        </div>
-        <div class="${rowCls} px-3.5">
-          <label class="flex items-center gap-3 w-full cursor-pointer">
-            <input id="settings-auto-reconnect" type="checkbox" class="h-4 w-4 rounded border-zinc-700 bg-zinc-950 accent-zinc-400" />
-            <span class="text-sm text-zinc-300">Авто-проверка соединения</span>
-          </label>
         </div>
         <div class="${rowCls} px-3.5">
           <label class="flex items-center gap-3 w-full cursor-pointer">
@@ -233,17 +212,175 @@ export const settingsPageTemplate = `
             <option value="long_context">Длинный контекст</option>
           </select>
         </div>
-        <div class="px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2">
-          <div class="flex items-center gap-2">
-            <span id="settings-connection-badge" class="rounded-md border border-zinc-800 bg-zinc-900 px-2 py-0.5 text-[10px] uppercase tracking-wide text-zinc-400">не проверен</span>
-            <p id="settings-connection-meta" class="text-xs text-zinc-600">Сервер не проверялся</p>
+      </article>
+
+      <article data-settings-section="server" class="settings-section hidden space-y-3">
+        <section class="rounded-xl border border-zinc-800/60 bg-zinc-950/50">
+          <div class="border-b border-zinc-800/60 px-3.5 py-2.5">
+            <p class="text-xs uppercase tracking-[0.12em] text-zinc-500">Режим работы</p>
           </div>
-          <button id="settings-test-connection" type="button"
-            class="icon-button active:scale-95 duration-300 rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-xs text-zinc-300 transition hover:bg-zinc-800">
-            ${icon("inspector")}
-            <span>Проверить</span>
-          </button>
-        </div>
+          <div class="space-y-3 px-3.5 py-3">
+            <select id="settings-deployment-mode" class="${inputCls} w-full min-w-[260px]">
+                <option value="local">Локально (без аккаунтов)</option>
+                <option value="remote_client">Через удалённый сервер (клиент)</option>
+                <option value="remote_server">Сам удалённый сервер</option>
+            </select>
+            <p id="settings-server-mode-hint" class="text-xs text-zinc-500">Выберите, как будет работать приложение: локально, как клиент или как сервер.</p>
+          </div>
+        </section>
+
+        <section class="rounded-xl border border-zinc-800/60 bg-zinc-950/50">
+          <div class="border-b border-zinc-800/60 px-3.5 py-2.5">
+            <p class="text-xs uppercase tracking-[0.12em] text-zinc-500">Подключение к backend</p>
+          </div>
+          <div class="space-y-3 px-3.5 py-3">
+            <div class="flex flex-wrap gap-2">
+              <input id="settings-backend-url" type="text" placeholder="http://127.0.0.1:5055" class="${inputCls} min-w-[260px] flex-1" />
+              <input id="settings-api-key" type="password" autocomplete="off" placeholder="Токен доступа (опционально)" class="${inputCls} min-w-[220px] flex-1" />
+              <input id="settings-timeout-ms" type="number" min="500" step="100" class="${inputCls} w-28 text-right" />
+              <button id="settings-test-connection" type="button"
+                class="icon-button active:scale-95 duration-300 rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-xs text-zinc-300 transition hover:bg-zinc-800">
+                ${icon("inspector")}
+                <span>Проверить</span>
+              </button>
+            </div>
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <label class="inline-flex items-center gap-2 text-xs text-zinc-400">
+                <input id="settings-auto-reconnect" type="checkbox" class="h-4 w-4 rounded border-zinc-700 bg-zinc-950 accent-zinc-400" />
+                <span>Автоматически проверять соединение</span>
+              </label>
+              <div class="flex items-center gap-2">
+                <span id="settings-connection-badge" class="rounded-md border border-zinc-800 bg-zinc-900 px-2 py-0.5 text-[10px] uppercase tracking-wide text-zinc-400">не проверен</span>
+                <p id="settings-connection-meta" class="text-xs text-zinc-600">Сервер не проверялся</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="rounded-xl border border-zinc-800/60 bg-zinc-950/50">
+          <div class="border-b border-zinc-800/60 px-3.5 py-2.5">
+            <p class="text-xs uppercase tracking-[0.12em] text-zinc-500">Аккаунт и доступ</p>
+          </div>
+          <div class="space-y-3 px-3.5 py-3">
+            <div id="settings-server-auth-status-row" class="flex items-center justify-between gap-3">
+              <span class="${labelCls}">Статус авторизации</span>
+              <span id="settings-auth-status" class="rounded-md border border-zinc-800 bg-zinc-900 px-2 py-0.5 text-[10px] uppercase tracking-wide text-zinc-400">unknown</span>
+            </div>
+
+            <div id="settings-server-registration-row" class="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-zinc-800/60 bg-zinc-900/20 px-2.5 py-2">
+              <span class="text-xs text-zinc-500">Публичная регистрация</span>
+              <label class="flex items-center gap-2 cursor-pointer">
+                <input id="settings-server-allow-registration" type="checkbox" class="h-4 w-4 rounded border-zinc-700 bg-zinc-950 accent-zinc-400" />
+                <span class="text-xs text-zinc-300">Разрешить регистрацию новых пользователей</span>
+              </label>
+            </div>
+
+            <div id="settings-server-bootstrap-panel" class="space-y-2 rounded-lg border border-zinc-800/60 bg-zinc-900/20 px-2.5 py-2.5">
+              <p class="text-xs uppercase tracking-[0.12em] text-zinc-500">Инициализация первого администратора</p>
+              <div class="flex flex-wrap gap-2">
+                <input id="settings-bootstrap-username" type="text" placeholder="admin" class="${inputCls} flex-1 min-w-[140px]" />
+                <input id="settings-bootstrap-password" type="password" placeholder="пароль админа" class="${inputCls} flex-1 min-w-[160px]" />
+                <button id="settings-bootstrap-admin" type="button"
+                  class="icon-button active:scale-95 duration-300 rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-xs text-zinc-200 transition hover:bg-zinc-800">
+                  ${icon("shield-check")}
+                  <span>Создать администратора</span>
+                </button>
+              </div>
+            </div>
+
+            <div id="settings-server-session-panel" class="space-y-2 rounded-lg border border-zinc-800/60 bg-zinc-900/20 px-2.5 py-2.5">
+              <p class="text-xs uppercase tracking-[0.12em] text-zinc-500">Сессия</p>
+              <div class="flex flex-wrap gap-2">
+                <input id="settings-login-username" type="text" placeholder="логин" class="${inputCls} flex-1 min-w-[140px]" />
+                <input id="settings-login-password" type="password" placeholder="пароль" class="${inputCls} flex-1 min-w-[160px]" />
+                <button id="settings-login-button" type="button"
+                  class="icon-button active:scale-95 duration-300 rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-xs text-zinc-200 transition hover:bg-zinc-800">
+                  ${icon("check")}
+                  <span>Войти</span>
+                </button>
+                <button id="settings-register-button" type="button"
+                  class="icon-button active:scale-95 duration-300 rounded-lg border border-emerald-900/40 bg-emerald-950/20 px-3 py-1.5 text-xs text-emerald-300 transition hover:bg-emerald-950/40">
+                  ${icon("chat-plus")}
+                  <span>Регистрация</span>
+                </button>
+                <button id="settings-logout-button" type="button"
+                  class="icon-button active:scale-95 duration-300 rounded-lg border border-red-900/40 bg-red-950/30 px-3 py-1.5 text-xs text-red-300 transition hover:bg-red-950/50">
+                  ${icon("x-mark")}
+                  <span>Выйти</span>
+                </button>
+              </div>
+              <p id="settings-auth-user" class="text-xs text-zinc-500">Не авторизован</p>
+            </div>
+          </div>
+        </section>
+
+        <section id="settings-server-users-panel" class="rounded-xl border border-zinc-800/60 bg-zinc-950/50">
+          <div class="flex items-center justify-between gap-2 border-b border-zinc-800/60 px-3.5 py-2.5">
+            <p class="text-xs uppercase tracking-[0.12em] text-zinc-500">Управление пользователями</p>
+            <button id="settings-users-refresh" type="button"
+              class="icon-button active:scale-95 duration-300 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-1.5 text-xs text-zinc-300 transition hover:bg-zinc-800">
+              ${icon("refresh")}
+              <span>Обновить</span>
+            </button>
+          </div>
+          <div class="space-y-2 px-3.5 py-3">
+            <div class="flex flex-wrap gap-2">
+              <input id="settings-create-user-username" type="text" placeholder="новый логин" class="${inputCls} flex-1 min-w-[140px]" />
+              <input id="settings-create-user-password" type="password" placeholder="пароль" class="${inputCls} flex-1 min-w-[140px]" />
+              <select id="settings-create-user-role" class="${inputCls} w-28">
+                <option value="user">user</option>
+                <option value="admin">admin</option>
+              </select>
+              <button id="settings-create-user-button" type="button"
+                class="icon-button active:scale-95 duration-300 rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-xs text-zinc-200 transition hover:bg-zinc-800">
+                ${icon("chat-plus")}
+                <span>Добавить</span>
+              </button>
+            </div>
+            <div class="flex flex-wrap gap-3">
+              <label class="inline-flex items-center gap-2 text-xs text-zinc-400">
+                <input id="settings-create-user-model-download" type="checkbox" class="h-4 w-4 rounded border-zinc-700 bg-zinc-950 accent-zinc-400" />
+                <span>Разрешить загрузку моделей</span>
+              </label>
+              <label class="inline-flex items-center gap-2 text-xs text-zinc-400">
+                <input id="settings-create-user-plugin-download" type="checkbox" class="h-4 w-4 rounded border-zinc-700 bg-zinc-950 accent-zinc-400" />
+                <span>Разрешить загрузку плагинов</span>
+              </label>
+            </div>
+            <div id="settings-users-list" class="space-y-1.5"></div>
+          </div>
+        </section>
+
+        <section id="settings-server-audit-panel" class="rounded-xl border border-zinc-800/60 bg-zinc-950/50">
+          <div class="flex items-center justify-between gap-2 border-b border-zinc-800/60 px-3.5 py-2.5">
+            <p class="text-xs uppercase tracking-[0.12em] text-zinc-500">Аудит действий</p>
+            <button id="settings-audit-refresh" type="button"
+              class="icon-button active:scale-95 duration-300 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-1.5 text-xs text-zinc-300 transition hover:bg-zinc-800">
+              ${icon("refresh")}
+              <span>Обновить</span>
+            </button>
+          </div>
+          <div class="space-y-2 px-3.5 py-3">
+            <div class="flex flex-wrap gap-2">
+              <input id="settings-audit-action-prefix" type="text" placeholder="Фильтр действия (например plugin.)" class="${inputCls} flex-1 min-w-[200px]" />
+              <input id="settings-audit-actor-user-id" type="text" placeholder="ID пользователя (опционально)" class="${inputCls} flex-1 min-w-[170px]" />
+              <select id="settings-audit-status" class="${inputCls} w-32">
+                <option value="all">all</option>
+                <option value="ok">ok</option>
+                <option value="error">error</option>
+                <option value="denied">denied</option>
+              </select>
+              <select id="settings-audit-limit" class="${inputCls} w-28">
+                <option value="50">50</option>
+                <option value="100">100</option>
+                <option value="200" selected>200</option>
+                <option value="500">500</option>
+              </select>
+            </div>
+            <p id="settings-audit-meta" class="text-xs text-zinc-600">Аудит не загружен.</p>
+            <div id="settings-audit-list" class="max-h-72 space-y-1.5 overflow-y-auto pr-1"></div>
+          </div>
+        </section>
       </article>
 
       <article data-settings-section="about" class="settings-section hidden rounded-xl border border-zinc-800/60 divide-y divide-zinc-800/60">

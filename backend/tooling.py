@@ -13,6 +13,11 @@ from urllib import request as url_request
 
 from pydantic import BaseModel, Field
 
+try:
+  from backend.netguard import ensure_safe_outbound_url, normalize_http_url as normalize_http_url_base
+except ModuleNotFoundError:
+  from netguard import ensure_safe_outbound_url, normalize_http_url as normalize_http_url_base  # type: ignore
+
 
 ToolHandler = Callable[[dict[str, Any], Any], dict[str, Any]]
 SAFE_TOOL_NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_.-]{1,127}$")
@@ -561,18 +566,13 @@ class PluginManager:
     return entries
 
 def normalize_http_url(url_like: str) -> str:
-  raw = str(url_like or "").strip()
-  if not raw:
-    raise ValueError("URL is required")
-  if not re.match(r"^[a-zA-Z][a-zA-Z0-9+\-.]*://", raw):
-    raw = f"https://{raw}"
-
-  parsed = url_parse.urlparse(raw)
-  if parsed.scheme not in {"http", "https"}:
-    raise ValueError("Only http/https URLs are allowed")
-  if not parsed.netloc:
-    raise ValueError("URL must contain a host")
-  return parsed.geturl()
+  normalized = normalize_http_url_base(url_like, allow_http=True)
+  return ensure_safe_outbound_url(
+    normalized,
+    allow_http=True,
+    allow_loopback=False,
+    allow_private=False,
+  )
 
 
 def _resolve_charset(content_type: str, fallback: str = "utf-8") -> str:
@@ -585,7 +585,12 @@ def _resolve_charset(content_type: str, fallback: str = "utf-8") -> str:
 
 
 def fetch_web_url(url: str, *, timeout_sec: float = 12.0, max_bytes: int = 2_500_000) -> dict[str, Any]:
-  safe_url = normalize_http_url(url)
+  safe_url = ensure_safe_outbound_url(
+    url,
+    allow_http=True,
+    allow_loopback=False,
+    allow_private=False,
+  )
   safe_timeout = max(3.0, min(30.0, float(timeout_sec)))
   safe_max_bytes = max(128_000, min(8_000_000, int(max_bytes)))
 

@@ -3,7 +3,7 @@ const APP_CONFIG_KEY = "ancia.runtime.config.v1";
 const APP_ONBOARDING_KEY = "ancia.onboarding.state.v1";
 
 export const ONBOARDING_VERSION = 4;
-export const ONBOARDING_STEPS_COUNT = 4;
+export const ONBOARDING_STEPS_COUNT = 5;
 
 export const BACKEND_STATUS = {
   idle: "idle",
@@ -22,6 +22,12 @@ export const BACKEND_STATUS_LABEL = {
 export const RUNTIME_MODE_LABEL = {
   mock: "симуляция",
   backend: "сервер",
+};
+
+export const DEPLOYMENT_MODE_LABEL = {
+  local: "локально",
+  remote_client: "удаленный клиент",
+  remote_server: "удаленный сервер",
 };
 
 export const MOOD_NAME_LABEL = {
@@ -195,8 +201,13 @@ const MODEL_SCENARIO_PROFILE_KEYS = new Set(MODEL_SCENARIO_PROFILE_ORDER);
 
 export const DEFAULT_RUNTIME_CONFIG = {
   mode: "backend",
+  deploymentMode: "local",
   backendUrl: "http://127.0.0.1:5055",
   apiKey: "",
+  authToken: "",
+  authUsername: "",
+  authRemember: true,
+  serverAllowRegistration: false,
   timeoutMs: 12000,
   modelId: DEFAULT_MODEL_ID,
   devicePreset: "auto",
@@ -296,9 +307,23 @@ export function normalizeRuntimeConfig(partial = {}) {
     ...(partial || {}),
   };
 
-  config.mode = config.mode === "backend" ? "backend" : "mock";
+  {
+    const safeDeploymentMode = String(config.deploymentMode || "local").trim().toLowerCase();
+    config.deploymentMode = (
+      safeDeploymentMode === "remote_client" || safeDeploymentMode === "remote_server"
+        ? safeDeploymentMode
+        : "local"
+    );
+  }
+  // Deployment contour is the single source of truth for runtime behavior.
+  // Local/remote client/remote server always use backend mode.
+  config.mode = "backend";
   config.backendUrl = String(config.backendUrl || "").trim();
   config.apiKey = String(config.apiKey || "").trim();
+  config.authToken = String(config.authToken || "").trim();
+  config.authUsername = String(config.authUsername || "").trim();
+  config.authRemember = Boolean(config.authRemember ?? true);
+  config.serverAllowRegistration = Boolean(config.serverAllowRegistration ?? false);
   config.timeoutMs = clamp(Number(config.timeoutMs || DEFAULT_RUNTIME_CONFIG.timeoutMs), 500, 120000);
   config.modelId = normalizeModelId(config.modelId);
   config.devicePreset = normalizeDevicePreset(config.devicePreset);

@@ -20,6 +20,11 @@ export function createOnboardingController({
   getSettingsFeature,
   persistSettingsToBackend,
 }) {
+  const DEPLOYMENT_LOCAL = "local";
+  const DEPLOYMENT_REMOTE_CLIENT = "remote_client";
+  const DEPLOYMENT_REMOTE_SERVER = "remote_server";
+  const DEPLOYMENT_STEP_INDEX = 1;
+  const DEFAULT_LOCAL_BACKEND_URL = "http://127.0.0.1:5055";
   let isBound = false;
   let onboardingStepIndex = 0;
   let onboardingIsOpen = false;
@@ -28,7 +33,62 @@ export function createOnboardingController({
 
   const resolveStepCount = () => Math.max(1, onboardingStepPanels.length || ONBOARDING_STEPS_COUNT);
 
+  function normalizeDeploymentMode(value) {
+    const normalized = String(value || DEPLOYMENT_LOCAL).trim().toLowerCase();
+    if (normalized === DEPLOYMENT_REMOTE_CLIENT || normalized === DEPLOYMENT_REMOTE_SERVER) {
+      return normalized;
+    }
+    return DEPLOYMENT_LOCAL;
+  }
+
+  function getSelectedDeploymentMode() {
+    const checked = document.querySelector('input[name="onboarding-deployment-mode"]:checked');
+    if (checked instanceof HTMLInputElement) {
+      return normalizeDeploymentMode(checked.value);
+    }
+    return normalizeDeploymentMode(runtimeConfig.deploymentMode);
+  }
+
+  function setSelectedDeploymentMode(value) {
+    const safeMode = normalizeDeploymentMode(value);
+    if (elements.onboardingDeploymentLocal instanceof HTMLInputElement) {
+      elements.onboardingDeploymentLocal.checked = safeMode === DEPLOYMENT_LOCAL;
+    }
+    if (elements.onboardingDeploymentRemoteClient instanceof HTMLInputElement) {
+      elements.onboardingDeploymentRemoteClient.checked = safeMode === DEPLOYMENT_REMOTE_CLIENT;
+    }
+    if (elements.onboardingDeploymentRemoteServer instanceof HTMLInputElement) {
+      elements.onboardingDeploymentRemoteServer.checked = safeMode === DEPLOYMENT_REMOTE_SERVER;
+    }
+  }
+
+  function isHttpUrl(value) {
+    try {
+      const parsed = new URL(String(value || "").trim());
+      return parsed.protocol === "http:" || parsed.protocol === "https:";
+    } catch {
+      return false;
+    }
+  }
+
+  function resolveBackendUrlDraft() {
+    const raw = String(elements.onboardingBackendUrl?.value || "").trim();
+    if (raw) {
+      return raw;
+    }
+    const fromRuntime = String(runtimeConfig.backendUrl || "").trim();
+    if (fromRuntime) {
+      return fromRuntime;
+    }
+    return DEFAULT_LOCAL_BACKEND_URL;
+  }
+
   function hydrateForm() {
+    setSelectedDeploymentMode(runtimeConfig.deploymentMode);
+    if (elements.onboardingBackendUrl) {
+      elements.onboardingBackendUrl.value = String(runtimeConfig.backendUrl || DEFAULT_LOCAL_BACKEND_URL);
+      clearFieldValidation(elements.onboardingBackendUrl);
+    }
     if (elements.onboardingLanguage) {
       elements.onboardingLanguage.value = runtimeConfig.userLanguage;
     }
@@ -60,8 +120,18 @@ export function createOnboardingController({
   }
 
   function collectForm() {
+    const selectedDeploymentMode = getSelectedDeploymentMode();
+    const backendUrl = resolveBackendUrlDraft();
     return normalizeRuntimeConfig({
       ...runtimeConfig,
+      mode: "backend",
+      deploymentMode: selectedDeploymentMode,
+      backendUrl,
+      authToken: selectedDeploymentMode === DEPLOYMENT_LOCAL ? "" : runtimeConfig.authToken,
+      authUsername: selectedDeploymentMode === DEPLOYMENT_LOCAL ? "" : runtimeConfig.authUsername,
+      serverAllowRegistration: selectedDeploymentMode === DEPLOYMENT_REMOTE_SERVER
+        ? Boolean(runtimeConfig.serverAllowRegistration)
+        : false,
       userLanguage: elements.onboardingLanguage?.value ?? runtimeConfig.userLanguage,
       userTimezone: elements.onboardingTimezone?.value ?? runtimeConfig.userTimezone,
       userName: elements.onboardingUserName?.value ?? runtimeConfig.userName,
@@ -132,6 +202,39 @@ export function createOnboardingController({
 
   function validateStep(stepIndex) {
     const lastStepIndex = Math.max(0, resolveStepCount() - 1);
+    if (stepIndex === DEPLOYMENT_STEP_INDEX) {
+      const deploymentMode = getSelectedDeploymentMode();
+      if (
+        deploymentMode !== DEPLOYMENT_LOCAL
+        && deploymentMode !== DEPLOYMENT_REMOTE_CLIENT
+        && deploymentMode !== DEPLOYMENT_REMOTE_SERVER
+      ) {
+        pushToast("Выберите режим запуска.", { tone: "error" });
+        return false;
+      }
+
+      const backendUrl = String(elements.onboardingBackendUrl?.value || "").trim();
+      if (deploymentMode === DEPLOYMENT_REMOTE_CLIENT && !backendUrl) {
+        if (elements.onboardingBackendUrl) {
+          elements.onboardingBackendUrl.classList.add("field-invalid");
+          elements.onboardingBackendUrl.setAttribute("aria-invalid", "true");
+        }
+        pushToast("Для удалённого клиента укажите URL сервера.", { tone: "error" });
+        return false;
+      }
+      if (backendUrl && !isHttpUrl(backendUrl)) {
+        if (elements.onboardingBackendUrl) {
+          elements.onboardingBackendUrl.classList.add("field-invalid");
+          elements.onboardingBackendUrl.setAttribute("aria-invalid", "true");
+        }
+        pushToast("URL бэкенда должен начинаться с http:// или https://.", { tone: "error" });
+        return false;
+      }
+      if (elements.onboardingBackendUrl) {
+        clearFieldValidation(elements.onboardingBackendUrl);
+      }
+    }
+
     if (stepIndex < lastStepIndex) {
       return true;
     }
@@ -231,6 +334,9 @@ export function createOnboardingController({
       const nextConfig = collectForm();
       applyRuntimeConfig(nextConfig);
       getSettingsFeature()?.hydrateSettingsForm();
+      if (nextConfig.mode === "backend" && nextConfig.autoReconnect) {
+        void getSettingsFeature()?.checkBackendConnection();
+      }
     }
 
     onboardingState = {
@@ -241,6 +347,8 @@ export function createOnboardingController({
       data: skipped
         ? {}
         : {
+          deploymentMode: runtimeConfig.deploymentMode,
+          backendUrl: runtimeConfig.backendUrl,
           userName: runtimeConfig.userName,
           userLanguage: runtimeConfig.userLanguage,
           uiDensity: runtimeConfig.uiDensity,
@@ -350,6 +458,27 @@ export function createOnboardingController({
 
     elements.onboardingUiFontScale?.addEventListener("input", () => {
       clearFieldValidation(elements.onboardingUiFontScale);
+    });
+
+    elements.onboardingBackendUrl?.addEventListener("input", () => {
+      clearFieldValidation(elements.onboardingBackendUrl);
+    });
+
+    [
+      elements.onboardingDeploymentLocal,
+      elements.onboardingDeploymentRemoteClient,
+      elements.onboardingDeploymentRemoteServer,
+    ].forEach((node) => {
+      node?.addEventListener("change", () => {
+        const selectedMode = getSelectedDeploymentMode();
+        if (
+          (selectedMode === DEPLOYMENT_LOCAL || selectedMode === DEPLOYMENT_REMOTE_SERVER)
+          && elements.onboardingBackendUrl instanceof HTMLInputElement
+          && !String(elements.onboardingBackendUrl.value || "").trim()
+        ) {
+          elements.onboardingBackendUrl.value = DEFAULT_LOCAL_BACKEND_URL;
+        }
+      });
     });
 
     onboardingNextStepButtons.forEach((button) => {

@@ -199,9 +199,6 @@ export async function waitForBackendStartup({
   timeoutMs,
   pollMs,
 }) {
-  if (runtimeConfig.mode !== "backend") {
-    return { ready: false, skipped: true };
-  }
   if (!runtimeConfig.backendUrl) {
     const errorMessage = "Не задан URL бэкенда.";
     updateConnectionState(BACKEND_STATUS.error, errorMessage);
@@ -212,10 +209,37 @@ export async function waitForBackendStartup({
   const startedAt = performance.now();
   let lastError = "";
   const canQueryDesktopStartup = isLocalDesktopBackendUrl(runtimeConfig.backendUrl);
+  let localRecoveryAttempted = false;
 
   while (performance.now() - startedAt < timeoutMs) {
     try {
       const health = await backendClient.ping();
+      const requestedDeploymentMode = String(runtimeConfig?.deploymentMode || "").trim().toLowerCase();
+      const backendDeploymentMode = String(health?.deployment_mode || "").trim().toLowerCase();
+      if (
+        !localRecoveryAttempted
+        && canQueryDesktopStartup
+        && requestedDeploymentMode === "local"
+        && backendDeploymentMode === "remote_server"
+      ) {
+        localRecoveryAttempted = true;
+        try {
+          updateConnectionState(
+            BACKEND_STATUS.checking,
+            "Локальный backend был в серверном режиме. Переключаем на локальный режим...",
+          );
+          setPreloaderStatus("Переключаем backend на локальный режим...", 70);
+          await backendClient.updateSettings({
+            runtime_config: {
+              deploymentMode: "local",
+              serverAllowRegistration: false,
+            },
+          });
+          continue;
+        } catch (error) {
+          lastError = error?.message ? String(error.message) : "не удалось переключить backend на local";
+        }
+      }
       const startup = resolveBackendStartupState(health);
       setPreloaderStatus(startup.message, startup.progressPercent);
 

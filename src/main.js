@@ -147,6 +147,7 @@ const pluginUiRuntime = getPluginUiRuntime();
 const backendClient = new BackendClient({
   baseUrl: runtimeConfig.backendUrl,
   apiKey: runtimeConfig.apiKey,
+  authToken: runtimeConfig.authToken,
   timeoutMs: runtimeConfig.timeoutMs,
 });
 let chatFeature = null;

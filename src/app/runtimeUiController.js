@@ -1,6 +1,6 @@
 import {
   BACKEND_STATUS_LABEL,
-  RUNTIME_MODE_LABEL,
+  DEPLOYMENT_MODE_LABEL,
   MOOD_NAME_LABEL,
   getModelLabelById,
 } from "../runtimeConfig.js";
@@ -60,7 +60,7 @@ export function createRuntimeUiController({
   }
 
   function updateRuntimeBadges() {
-    const modeLabel = RUNTIME_MODE_LABEL[runtimeConfig.mode] || runtimeConfig.mode;
+    const modeLabel = DEPLOYMENT_MODE_LABEL[runtimeConfig.deploymentMode] || "локально";
     const modelLabel = getModelLabelById(runtimeConfig.modelId, runtimeConfig.modelId);
 
     if (elements.runtimeMode) {
@@ -71,18 +71,14 @@ export function createRuntimeUiController({
     }
     if (elements.titlebarBackendChip) {
       const connectionLabel = BACKEND_STATUS_LABEL[connectionState.status] || BACKEND_STATUS_LABEL[BACKEND_STATUS.idle];
-      elements.titlebarBackendChip.textContent = runtimeConfig.mode === "backend"
-        ? `${modeLabel} • ${connectionLabel}`
-        : modeLabel;
-      const chipPalette = runtimeConfig.mode === "backend"
-        ? connectionState.status === BACKEND_STATUS.connected
-          ? "border-emerald-900/50 bg-emerald-950/40 text-emerald-400"
-          : connectionState.status === BACKEND_STATUS.error
-            ? "border-red-900/50 bg-red-950/40 text-red-400"
-            : connectionState.status === BACKEND_STATUS.checking
-              ? "border-amber-900/50 bg-amber-950/40 text-amber-400"
-              : "border-zinc-800 bg-zinc-900 text-zinc-400"
-        : "border-zinc-800 bg-zinc-900 text-zinc-400";
+      elements.titlebarBackendChip.textContent = `${modeLabel} • ${connectionLabel}`;
+      const chipPalette = connectionState.status === BACKEND_STATUS.connected
+        ? "border-emerald-900/50 bg-emerald-950/40 text-emerald-400"
+        : connectionState.status === BACKEND_STATUS.error
+          ? "border-red-900/50 bg-red-950/40 text-red-400"
+          : connectionState.status === BACKEND_STATUS.checking
+            ? "border-amber-900/50 bg-amber-950/40 text-amber-400"
+            : "border-zinc-800 bg-zinc-900 text-zinc-400";
       elements.titlebarBackendChip.className = `rounded-md border px-2 py-0.5 text-[10px] uppercase tracking-wide ${chipPalette}`;
     }
   }

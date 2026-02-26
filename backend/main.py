@@ -1,16 +1,32 @@
 from __future__ import annotations
 
+import ipaddress
 import logging
 import os
 from pathlib import Path
 
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 try:
+  from backend.auth_service import AuthService
+  from backend.deployment import (
+    DEPLOYMENT_MODE_REMOTE_SERVER,
+    allow_credentials_for_mode,
+    resolve_cors_origins_for_mode,
+    resolve_deployment_mode,
+  )
   from backend.plugin_host_api import PluginHostApi
   from backend.storage import AppStorage
 except ModuleNotFoundError:
+  from auth_service import AuthService  # type: ignore
+  from deployment import (  # type: ignore
+    DEPLOYMENT_MODE_REMOTE_SERVER,
+    allow_credentials_for_mode,
+    resolve_cors_origins_for_mode,
+    resolve_deployment_mode,
+  )
   from plugin_host_api import PluginHostApi  # type: ignore
   from storage import AppStorage  # type: ignore
 
@@ -80,56 +96,86 @@ def load_system_prompt() -> str:
 
 
 LOGGER = logging.getLogger("ancia.backend.main")
-PROD_CORS_DEFAULT_ORIGINS = [
-  "tauri://localhost",
-  "https://tauri.localhost",
-  "http://tauri.localhost",
-  "http://127.0.0.1:1420",
-  "http://localhost:1420",
-]
+
+PUBLIC_PATH_PREFIXES = (
+  "/health",
+  "/auth/config",
+  "/auth/login",
+  "/auth/bootstrap",
+  "/auth/register",
+  "/plugins/assets/",
+)
+PUBLIC_PATH_EXACT = {
+  "/",
+  "/docs",
+  "/openapi.json",
+  "/redoc",
+}
 
 
-def _parse_cors_origins(raw_value: str) -> list[str]:
-  return [
-    origin.strip()
-    for origin in str(raw_value or "").split(",")
-    if origin.strip()
-  ]
+def _extract_bearer_token(request: Request) -> str:
+  header = str(request.headers.get("authorization") or "").strip()
+  if not header:
+    return ""
+  prefix = "bearer "
+  if header.lower().startswith(prefix):
+    return header[len(prefix):].strip()
+  return ""
 
 
-def resolve_cors_origins() -> tuple[list[str], str]:
-  profile = str(os.getenv("ANCIA_CORS_PROFILE", "dev") or "dev").strip().lower()
-  raw_origins = str(os.getenv("ANCIA_CORS_ALLOW_ORIGINS", "") or "").strip()
+def _is_public_path(path: str) -> bool:
+  safe_path = str(path or "").strip() or "/"
+  if safe_path in PUBLIC_PATH_EXACT:
+    return True
+  return any(safe_path.startswith(prefix) for prefix in PUBLIC_PATH_PREFIXES)
 
-  if profile == "prod":
-    if raw_origins:
-      parsed = _parse_cors_origins(raw_origins)
-      origins = [origin for origin in parsed if origin != "*"]
-      if not origins:
-        origins = PROD_CORS_DEFAULT_ORIGINS.copy()
-    else:
-      origins = PROD_CORS_DEFAULT_ORIGINS.copy()
-    return origins, "prod"
 
-  # dev profile: wildcard by default for local iteration.
-  if not raw_origins or raw_origins == "*":
-    return ["*"], "dev"
+def _is_loopback_client(request: Request | None) -> bool:
+  if request is None:
+    return False
+  host = str(getattr(getattr(request, "client", None), "host", "") or "").strip().lower()
+  if not host:
+    return False
+  if host in {"localhost", "127.0.0.1", "::1"}:
+    return True
+  try:
+    return ipaddress.ip_address(host).is_loopback
+  except ValueError:
+    return False
 
-  parsed = _parse_cors_origins(raw_origins)
-  return parsed or ["*"], "dev"
+
+def _is_local_recovery_request(request: Request | None) -> bool:
+  if request is None:
+    return False
+  # Do not trust forwarded requests (reverse proxy / external edge).
+  forwarded = str(request.headers.get("forwarded") or "").strip()
+  xff = str(request.headers.get("x-forwarded-for") or "").strip()
+  if forwarded or xff:
+    return False
+  return _is_loopback_client(request)
 
 
 def make_app() -> FastAPI:
   app = FastAPI(title="Ancia Local Agent Backend", version="0.1.0")
-  cors_origins, cors_profile = resolve_cors_origins()
+
+  data_dir = resolve_data_dir()
+  data_dir.mkdir(parents=True, exist_ok=True)
+
+  storage = AppStorage(data_dir / "app.db")
+  deployment_mode = resolve_deployment_mode(storage)
+  cors_origins = resolve_cors_origins_for_mode(deployment_mode)
   app.add_middleware(
     CORSMiddleware,
-    allow_origins=cors_origins or ["*"],
-    allow_credentials=False,
+    allow_origins=cors_origins,
+    allow_credentials=allow_credentials_for_mode(deployment_mode),
     allow_methods=["*"],
     allow_headers=["*"],
   )
-  LOGGER.info("CORS profile '%s' active (%d origins)", cors_profile, len(cors_origins))
+  LOGGER.info(
+    "Deployment mode '%s' active; CORS origins: %d",
+    deployment_mode,
+    len(cors_origins),
+  )
 
   # Приходит часть OPTIONS не как CORS preflight (без Origin/Access-Control-Request-Method),
   # поэтому FastAPI по умолчанию отвечает 405. Ловим все OPTIONS и отдаём 204.
@@ -137,10 +183,60 @@ def make_app() -> FastAPI:
   def options_passthrough(full_path: str) -> Response:
     return Response(status_code=204)
 
-  data_dir = resolve_data_dir()
-  data_dir.mkdir(parents=True, exist_ok=True)
+  auth_service = AuthService(storage=storage)
+  app.state.auth_service = auth_service
 
-  storage = AppStorage(data_dir / "app.db")
+  @app.middleware("http")
+  async def security_middleware(request: Request, call_next):
+    path = str(request.url.path or "/").strip() or "/"
+    if request.method.upper() == "OPTIONS":
+      return await call_next(request)
+
+    runtime_mode = resolve_deployment_mode(storage)
+    request.state.deployment_mode = runtime_mode
+    request.state.auth = None
+
+    if runtime_mode != DEPLOYMENT_MODE_REMOTE_SERVER:
+      # local / remote_client modes are non-account modes on this backend.
+      return await call_next(request)
+
+    if _is_public_path(path):
+      return await call_next(request)
+
+    # Desktop recovery path:
+    # allow switching remote_server -> local from trusted loopback request.
+    if (
+      request.method.upper() == "PATCH"
+      and path == "/settings"
+      and _is_local_recovery_request(request)
+    ):
+      return await call_next(request)
+
+    token = _extract_bearer_token(request)
+    if not token:
+      return JSONResponse(
+        status_code=401,
+        content={"detail": "Authentication required."},
+      )
+
+    auth_payload = auth_service.authenticate_token(token, renew=True)
+    if not isinstance(auth_payload, dict):
+      return JSONResponse(
+        status_code=401,
+        content={"detail": "Invalid or expired session."},
+      )
+    request.state.auth = auth_payload
+
+    user_payload = auth_payload.get("user") if isinstance(auth_payload.get("user"), dict) else {}
+    role = str(user_payload.get("role") or "user").strip().lower()
+    if path.startswith("/admin/") and role != "admin":
+      return JSONResponse(
+        status_code=403,
+        content={"detail": "Admin access required."},
+      )
+
+    return await call_next(request)
+
   system_prompt = load_system_prompt()
   model_engine = PythonModelEngine(storage, base_system_prompt=system_prompt)
   auto_load_enabled = os.getenv("ANCIA_ENABLE_MODEL_EAGER_LOAD", "").strip() == "1"
@@ -203,6 +299,7 @@ def make_app() -> FastAPI:
     plugins_preinstalled_dir=str(plugins_preinstalled_dir),
     build_system_prompt_fn=build_system_prompt,
     refresh_tool_registry_fn=refresh_tool_registry,
+    auth_service=auth_service,
   )
 
   return app

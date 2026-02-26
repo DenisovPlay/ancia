@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import mimetypes
+import os
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response
 
 try:
+  from backend.access_control import user_can_download_plugins
+  from backend.deployment import DEPLOYMENT_MODE_REMOTE_SERVER
   from backend.plugin_permissions import (
     DEFAULT_DOMAIN_PERMISSION_POLICY,
     DEFAULT_PLUGIN_PERMISSION_POLICY,
@@ -29,6 +32,8 @@ try:
     write_tool_permissions,
   )
 except ModuleNotFoundError:
+  from access_control import user_can_download_plugins  # type: ignore
+  from deployment import DEPLOYMENT_MODE_REMOTE_SERVER  # type: ignore
   from plugin_permissions import (  # type: ignore
     DEFAULT_DOMAIN_PERMISSION_POLICY,
     DEFAULT_PLUGIN_PERMISSION_POLICY,
@@ -61,6 +66,88 @@ def register_plugin_routes(
   get_autonomous_mode: Callable[[], bool],
   refresh_tool_registry_fn: Callable[[], None] | None = None,
 ) -> None:
+  def _deployment_mode_from_request(request: Request | None = None) -> str:
+    if request is None:
+      return ""
+    return str(getattr(request.state, "deployment_mode", "") or "").strip().lower()
+
+  def _auth_payload(request: Request | None = None) -> dict[str, Any]:
+    if request is None:
+      return {}
+    payload = getattr(request.state, "auth", None)
+    return payload if isinstance(payload, dict) else {}
+
+  def _auth_user(request: Request | None = None) -> dict[str, Any]:
+    payload = _auth_payload(request)
+    user = payload.get("user")
+    return user if isinstance(user, dict) else {}
+
+  def _is_admin_user(request: Request | None = None) -> bool:
+    user = _auth_user(request)
+    role = str(user.get("role") or "user").strip().lower()
+    return role == "admin"
+
+  def _resolve_owner_user_id(request: Request | None = None) -> str:
+    if _deployment_mode_from_request(request) != DEPLOYMENT_MODE_REMOTE_SERVER:
+      return ""
+    user = _auth_user(request)
+    return str(user.get("id") or "").strip()
+
+  def _require_admin_if_remote(request: Request) -> None:
+    if _deployment_mode_from_request(request) == DEPLOYMENT_MODE_REMOTE_SERVER and not _is_admin_user(request):
+      raise HTTPException(status_code=403, detail="Admin access required.")
+
+  def _require_plugin_download_access_if_remote(
+    request: Request,
+    *,
+    action: str,
+    target_id: str = "",
+  ) -> None:
+    if _deployment_mode_from_request(request) != DEPLOYMENT_MODE_REMOTE_SERVER:
+      return
+    if user_can_download_plugins(_auth_user(request)):
+      return
+    _append_audit_event(
+      request=request,
+      action=action,
+      target_type="plugin",
+      target_id=target_id,
+      status="denied",
+      details={"reason": "plugins_download_permission_required"},
+    )
+    raise HTTPException(
+      status_code=403,
+      detail="Недостаточно прав: загрузка и обновление плагинов запрещены для этого аккаунта.",
+    )
+
+  def _append_audit_event(
+    *,
+    request: Request | None,
+    action: str,
+    target_type: str = "",
+    target_id: str = "",
+    status: str = "ok",
+    details: dict[str, Any] | None = None,
+  ) -> None:
+    if not hasattr(storage, "append_audit_event"):
+      return
+    user = _auth_user(request)
+    ip_address = str(getattr(getattr(request, "client", None), "host", "") or "") if request is not None else ""
+    try:
+      storage.append_audit_event(
+        actor_user_id=str(user.get("id") or ""),
+        actor_username=str(user.get("username") or ""),
+        actor_role=str(user.get("role") or ""),
+        action=action,
+        target_type=target_type,
+        target_id=target_id,
+        status=status,
+        details=details if isinstance(details, dict) else {},
+        ip_address=ip_address,
+      )
+    except Exception:
+      return
+
   def _sanitize_plugin_id(value: Any) -> str:
     if hasattr(plugin_marketplace, "sanitize_plugin_id"):
       return str(plugin_marketplace.sanitize_plugin_id(value) or "").strip().lower()
@@ -110,54 +197,61 @@ def register_plugin_routes(
     tools.sort(key=lambda item: (item["plugin_id"], item["tool_name"]))
     return tools
 
-  def _read_plugin_permission_map() -> dict[str, str]:
-    return read_plugin_permissions(storage, sanitize_plugin_id=_sanitize_plugin_id)
+  def _read_plugin_permission_map(owner_user_id: str = "") -> dict[str, str]:
+    return read_plugin_permissions(
+      storage,
+      sanitize_plugin_id=_sanitize_plugin_id,
+      owner_user_id=owner_user_id,
+    )
 
-  def _write_plugin_permission_map(policies: Any) -> dict[str, str]:
+  def _write_plugin_permission_map(policies: Any, owner_user_id: str = "") -> dict[str, str]:
     return write_plugin_permissions(
       storage,
       policies,
       sanitize_plugin_id=_sanitize_plugin_id,
+      owner_user_id=owner_user_id,
     )
 
-  def _read_tool_permission_map() -> dict[str, str]:
+  def _read_tool_permission_map(owner_user_id: str = "") -> dict[str, str]:
     return read_tool_permissions(
       storage,
       sanitize_plugin_id=_sanitize_plugin_id,
       sanitize_tool_name=_sanitize_tool_name,
+      owner_user_id=owner_user_id,
     )
 
-  def _write_tool_permission_map(policies: Any) -> dict[str, str]:
+  def _write_tool_permission_map(policies: Any, owner_user_id: str = "") -> dict[str, str]:
     return write_tool_permissions(
       storage,
       policies,
       sanitize_plugin_id=_sanitize_plugin_id,
       sanitize_tool_name=_sanitize_tool_name,
+      owner_user_id=owner_user_id,
     )
 
-  def _read_domain_permission_map() -> dict[str, str]:
-    return read_domain_permissions(storage)
+  def _read_domain_permission_map(owner_user_id: str = "") -> dict[str, str]:
+    return read_domain_permissions(storage, owner_user_id=owner_user_id)
 
-  def _write_domain_permission_map(policies: Any) -> dict[str, str]:
-    return write_domain_permissions(storage, policies)
+  def _write_domain_permission_map(policies: Any, owner_user_id: str = "") -> dict[str, str]:
+    return write_domain_permissions(storage, policies, owner_user_id=owner_user_id)
 
-  def _read_domain_default_policy() -> str:
-    return read_domain_default_policy(storage)
+  def _read_domain_default_policy(owner_user_id: str = "") -> str:
+    return read_domain_default_policy(storage, owner_user_id=owner_user_id)
 
-  def _write_domain_default_policy(policy: Any) -> str:
-    return write_domain_default_policy(storage, policy)
+  def _write_domain_default_policy(policy: Any, owner_user_id: str = "") -> str:
+    return write_domain_default_policy(storage, policy, owner_user_id=owner_user_id)
 
-  def _build_permissions_payload() -> dict[str, Any]:
+  def _build_permissions_payload(owner_user_id: str = "") -> dict[str, Any]:
     installed_plugin_ids = _list_installed_plugin_ids()
     installed_tools = _list_installed_tools()
     installed_tool_keys = [item["tool_key"] for item in installed_tools]
-    stored_policies = _read_plugin_permission_map()
+    stored_policies = _read_plugin_permission_map(owner_user_id)
     effective_policies = build_effective_plugin_permissions(
       installed_plugin_ids,
       stored_policies,
       sanitize_plugin_id=_sanitize_plugin_id,
     )
-    stored_tool_policies = _read_tool_permission_map()
+    stored_tool_policies = _read_tool_permission_map(owner_user_id)
     effective_tool_policies = build_effective_tool_permissions(
       installed_tool_keys,
       stored_tool_policies,
@@ -165,13 +259,13 @@ def register_plugin_routes(
       sanitize_plugin_id=_sanitize_plugin_id,
       sanitize_tool_name=_sanitize_tool_name,
     )
-    stored_domain_policies = _read_domain_permission_map()
+    stored_domain_policies = _read_domain_permission_map(owner_user_id)
     effective_domain_policies = build_effective_domain_permissions(
       list(stored_domain_policies.keys()),
       stored_domain_policies,
     )
     domain_default_policy = normalize_domain_default_policy(
-      _read_domain_default_policy(),
+      _read_domain_default_policy(owner_user_id),
       DEFAULT_DOMAIN_PERMISSION_POLICY,
     )
     return {
@@ -190,15 +284,15 @@ def register_plugin_routes(
       "tools_total": len(installed_tool_keys),
     }
 
-  def _inject_permissions_into_plugins_payload(payload: dict[str, Any]) -> dict[str, Any]:
+  def _inject_permissions_into_plugins_payload(payload: dict[str, Any], owner_user_id: str = "") -> dict[str, Any]:
     if not isinstance(payload, dict):
       return payload
     plugins = payload.get("plugins")
     if not isinstance(plugins, list):
       return payload
-    policy_map = _read_plugin_permission_map()
-    tool_policy_map = _read_tool_permission_map()
-    domain_policy_map = _read_domain_permission_map()
+    policy_map = _read_plugin_permission_map(owner_user_id)
+    tool_policy_map = _read_tool_permission_map(owner_user_id)
+    domain_policy_map = _read_domain_permission_map(owner_user_id)
     installed_plugin_ids = [
       _sanitize_plugin_id(item.get("id"))
       for item in plugins
@@ -243,7 +337,7 @@ def register_plugin_routes(
       domain_policy_map,
     )
     payload["plugin_domain_default_policy"] = normalize_domain_default_policy(
-      _read_domain_default_policy(),
+      _read_domain_default_policy(owner_user_id),
       DEFAULT_DOMAIN_PERMISSION_POLICY,
     )
     return payload
@@ -267,28 +361,31 @@ def register_plugin_routes(
       return HTTPException(status_code=502, detail=str(exc))
     return HTTPException(status_code=500, detail=str(exc))
 
-  def _list_plugins_payload() -> dict[str, Any]:
+  def _list_plugins_payload(owner_user_id: str = "") -> dict[str, Any]:
     payload = plugin_marketplace.list_plugins_payload(autonomous_mode=get_autonomous_mode())
-    return _inject_permissions_into_plugins_payload(payload)
+    return _inject_permissions_into_plugins_payload(payload, owner_user_id)
 
-  def _registry_payload() -> dict[str, Any]:
+  def _registry_payload(owner_user_id: str = "") -> dict[str, Any]:
     payload = plugin_marketplace.build_registry_plugins_payload(autonomous_mode=get_autonomous_mode())
-    return _inject_permissions_into_plugins_payload(payload)
+    return _inject_permissions_into_plugins_payload(payload, owner_user_id)
 
   @app.get("/plugins")
-  def list_plugins() -> dict[str, Any]:
-    return _list_plugins_payload()
+  def list_plugins(request: Request) -> dict[str, Any]:
+    owner_user_id = _resolve_owner_user_id(request)
+    return _list_plugins_payload(owner_user_id)
 
   @app.get("/plugins/permissions")
-  def get_plugin_permissions() -> dict[str, Any]:
-    return _build_permissions_payload()
+  def get_plugin_permissions(request: Request) -> dict[str, Any]:
+    owner_user_id = _resolve_owner_user_id(request)
+    return _build_permissions_payload(owner_user_id)
 
   @app.patch("/plugins/permissions")
-  def update_plugin_permissions(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+  def update_plugin_permissions(request: Request, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    owner_user_id = _resolve_owner_user_id(request)
     body = payload or {}
-    current_plugin = _read_plugin_permission_map()
-    current_tool = _read_tool_permission_map()
-    current_domain = _read_domain_permission_map()
+    current_plugin = _read_plugin_permission_map(owner_user_id)
+    current_tool = _read_tool_permission_map(owner_user_id)
+    current_domain = _read_domain_permission_map(owner_user_id)
     installed_plugin_ids = set(_list_installed_plugin_ids())
     installed_tool_keys = {item["tool_key"] for item in _list_installed_tools()}
     updates_raw = body.get("policies")
@@ -403,25 +500,42 @@ def register_plugin_routes(
 
     if updates:
       merged_plugin = {**current_plugin, **updates}
-      _write_plugin_permission_map(merged_plugin)
+      _write_plugin_permission_map(merged_plugin, owner_user_id)
     if tool_updates:
       merged_tool = {**current_tool, **tool_updates}
-      _write_tool_permission_map(merged_tool)
+      _write_tool_permission_map(merged_tool, owner_user_id)
     if domain_updates or domain_removals:
       merged_domain = {**current_domain, **domain_updates}
       for domain in domain_removals:
         merged_domain.pop(domain, None)
-      _write_domain_permission_map(merged_domain)
+      _write_domain_permission_map(merged_domain, owner_user_id)
     if domain_default_policy:
-      _write_domain_default_policy(domain_default_policy)
-    return _build_permissions_payload()
+      _write_domain_default_policy(domain_default_policy, owner_user_id)
+    _append_audit_event(
+      request=request,
+      action="plugins.permissions.update",
+      target_type="plugin_permissions",
+      target_id=owner_user_id or "global",
+      status="ok",
+      details={
+        "plugin_updates": len(updates),
+        "tool_updates": len(tool_updates),
+        "domain_updates": len(domain_updates),
+        "domain_removals": len(domain_removals),
+        "domain_default_updated": bool(domain_default_policy),
+      },
+    )
+    return _build_permissions_payload(owner_user_id)
 
   @app.get("/plugins/registry")
-  def plugins_registry() -> dict[str, Any]:
-    return _registry_payload()
+  def plugins_registry(request: Request) -> dict[str, Any]:
+    owner_user_id = _resolve_owner_user_id(request)
+    return _registry_payload(owner_user_id)
 
   @app.patch("/plugins/registry")
-  def update_plugins_registry(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+  def update_plugins_registry(request: Request, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    _require_admin_if_remote(request)
+    owner_user_id = _resolve_owner_user_id(request)
     body = payload or {}
     registry_url_input = str(
       body.get("registry_url")
@@ -432,7 +546,15 @@ def register_plugin_routes(
 
     if not registry_url_input:
       storage.set_setting(plugin_registry_url_setting_key, default_plugin_registry_url)
-      return _registry_payload()
+      _append_audit_event(
+        request=request,
+        action="plugins.registry.update",
+        target_type="plugin_registry",
+        target_id="default",
+        status="ok",
+        details={"registry_url": default_plugin_registry_url},
+      )
+      return _registry_payload(owner_user_id)
 
     try:
       normalized_registry_url = plugin_marketplace.normalize_http_url(registry_url_input)
@@ -440,20 +562,43 @@ def register_plugin_routes(
       raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     storage.set_setting(plugin_registry_url_setting_key, normalized_registry_url)
-    return _registry_payload()
+    _append_audit_event(
+      request=request,
+      action="plugins.registry.update",
+      target_type="plugin_registry",
+      target_id="custom",
+      status="ok",
+      details={"registry_url": normalized_registry_url},
+    )
+    return _registry_payload(owner_user_id)
 
   @app.post("/plugins/install")
-  def install_plugin(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+  def install_plugin(request: Request, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    _require_plugin_download_access_if_remote(
+      request,
+      action="plugins.install",
+      target_id=str((payload or {}).get("id") or (payload or {}).get("plugin_id") or ""),
+    )
+    owner_user_id = _resolve_owner_user_id(request)
     body = payload or {}
     autonomous_mode = get_autonomous_mode()
     try:
       installed_manifest = plugin_marketplace.install_plugin(body, autonomous_mode=autonomous_mode)
       _refresh_plugins_and_tools()
     except Exception as exc:
-      raise _to_http_error(exc) from exc
+      http_exc = _to_http_error(exc)
+      _append_audit_event(
+        request=request,
+        action="plugins.install",
+        target_type="plugin",
+        target_id=str(body.get("id") or body.get("plugin_id") or ""),
+        status="error",
+        details={"detail": str(http_exc.detail)},
+      )
+      raise http_exc from exc
 
     safe_plugin_id = plugin_marketplace.sanitize_plugin_id(installed_manifest.get("id"))
-    plugins_payload = _list_plugins_payload()
+    plugins_payload = _list_plugins_payload(owner_user_id)
     plugin = next(
       (
         item for item in (plugins_payload.get("plugins") or [])
@@ -464,6 +609,14 @@ def register_plugin_routes(
     if plugin is None:
       raise HTTPException(status_code=500, detail="Плагин установлен, но не найден после перезагрузки.")
 
+    _append_audit_event(
+      request=request,
+      action="plugins.install",
+      target_type="plugin",
+      target_id=safe_plugin_id,
+      status="ok",
+      details={"autonomous_mode": bool(plugins_payload.get("autonomous_mode"))},
+    )
     return {
       "plugin": plugin,
       "plugins": plugins_payload,
@@ -473,14 +626,37 @@ def register_plugin_routes(
     }
 
   @app.delete("/plugins/{plugin_id}/uninstall")
-  def uninstall_plugin(plugin_id: str) -> dict[str, Any]:
+  def uninstall_plugin(plugin_id: str, request: Request) -> dict[str, Any]:
+    _require_plugin_download_access_if_remote(
+      request,
+      action="plugins.uninstall",
+      target_id=str(plugin_id or ""),
+    )
+    owner_user_id = _resolve_owner_user_id(request)
     try:
       result = plugin_marketplace.uninstall_plugin(plugin_id)
       _refresh_plugins_and_tools()
     except Exception as exc:
-      raise _to_http_error(exc) from exc
+      http_exc = _to_http_error(exc)
+      _append_audit_event(
+        request=request,
+        action="plugins.uninstall",
+        target_type="plugin",
+        target_id=str(plugin_id or ""),
+        status="error",
+        details={"detail": str(http_exc.detail)},
+      )
+      raise http_exc from exc
 
-    plugins_payload = _list_plugins_payload()
+    plugins_payload = _list_plugins_payload(owner_user_id)
+    _append_audit_event(
+      request=request,
+      action="plugins.uninstall",
+      target_type="plugin",
+      target_id=str(plugin_id or ""),
+      status="ok",
+      details={"result": result},
+    )
     return {
       "ok": True,
       **result,
@@ -489,48 +665,120 @@ def register_plugin_routes(
     }
 
   @app.post("/plugins/{plugin_id}/enable")
-  def enable_plugin(plugin_id: str) -> dict[str, Any]:
+  def enable_plugin(plugin_id: str, request: Request) -> dict[str, Any]:
+    _require_admin_if_remote(request)
     plugin_manager.reload()
     try:
       plugin = plugin_manager.set_enabled(plugin_id, True)
       _refresh_plugins_and_tools()
     except KeyError as exc:
+      _append_audit_event(
+        request=request,
+        action="plugins.enable",
+        target_type="plugin",
+        target_id=str(plugin_id or ""),
+        status="error",
+        details={"detail": f"Plugin '{plugin_id}' not found"},
+      )
       raise HTTPException(status_code=404, detail=f"Plugin '{plugin_id}' not found") from exc
     except PermissionError as exc:
+      _append_audit_event(
+        request=request,
+        action="plugins.enable",
+        target_type="plugin",
+        target_id=str(plugin_id or ""),
+        status="denied",
+        details={"detail": str(exc)},
+      )
       raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     autonomous_mode = get_autonomous_mode()
+    _append_audit_event(
+      request=request,
+      action="plugins.enable",
+      target_type="plugin",
+      target_id=str(plugin_id or ""),
+      status="ok",
+      details={"autonomous_mode": autonomous_mode},
+    )
     return {
       "plugin": plugin_marketplace.serialize_plugin(plugin, autonomous_mode=autonomous_mode),
       "autonomous_mode": autonomous_mode,
     }
 
   @app.post("/plugins/{plugin_id}/disable")
-  def disable_plugin(plugin_id: str) -> dict[str, Any]:
+  def disable_plugin(plugin_id: str, request: Request) -> dict[str, Any]:
+    _require_admin_if_remote(request)
     plugin_manager.reload()
     try:
       plugin = plugin_manager.set_enabled(plugin_id, False)
       _refresh_plugins_and_tools()
     except KeyError as exc:
+      _append_audit_event(
+        request=request,
+        action="plugins.disable",
+        target_type="plugin",
+        target_id=str(plugin_id or ""),
+        status="error",
+        details={"detail": f"Plugin '{plugin_id}' not found"},
+      )
       raise HTTPException(status_code=404, detail=f"Plugin '{plugin_id}' not found") from exc
     except PermissionError as exc:
+      _append_audit_event(
+        request=request,
+        action="plugins.disable",
+        target_type="plugin",
+        target_id=str(plugin_id or ""),
+        status="denied",
+        details={"detail": str(exc)},
+      )
       raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     autonomous_mode = get_autonomous_mode()
+    _append_audit_event(
+      request=request,
+      action="plugins.disable",
+      target_type="plugin",
+      target_id=str(plugin_id or ""),
+      status="ok",
+      details={"autonomous_mode": autonomous_mode},
+    )
     return {
       "plugin": plugin_marketplace.serialize_plugin(plugin, autonomous_mode=autonomous_mode),
       "autonomous_mode": autonomous_mode,
     }
 
   @app.post("/plugins/{plugin_id}/update")
-  def update_plugin(plugin_id: str) -> dict[str, Any]:
+  def update_plugin(plugin_id: str, request: Request) -> dict[str, Any]:
+    _require_plugin_download_access_if_remote(
+      request,
+      action="plugins.update",
+      target_id=str(plugin_id or ""),
+    )
     autonomous_mode = get_autonomous_mode()
     try:
       plugin_payload = plugin_marketplace.update_plugin(plugin_id, autonomous_mode=autonomous_mode)
       _refresh_plugins_and_tools()
     except Exception as exc:
-      raise _to_http_error(exc) from exc
+      http_exc = _to_http_error(exc)
+      _append_audit_event(
+        request=request,
+        action="plugins.update",
+        target_type="plugin",
+        target_id=str(plugin_id or ""),
+        status="error",
+        details={"detail": str(http_exc.detail)},
+      )
+      raise http_exc from exc
 
+    _append_audit_event(
+      request=request,
+      action="plugins.update",
+      target_type="plugin",
+      target_id=str(plugin_id or ""),
+      status="ok",
+      details={"plugin_id": str(plugin_payload.get("id") or "")},
+    )
     return {
       "plugin": plugin_payload,
       "status": "updated",
@@ -541,6 +789,7 @@ def register_plugin_routes(
   @app.get("/plugins/ui/extensions")
   def list_plugin_ui_extensions() -> dict[str, Any]:
     autonomous_mode = get_autonomous_mode()
+    allow_remote_ui_extensions = str(os.getenv("ANCIA_ALLOW_REMOTE_UI_EXTENSIONS", "") or "").strip() == "1"
     plugin_manager.reload()
 
     extensions: list[dict[str, Any]] = []
@@ -576,9 +825,14 @@ def register_plugin_routes(
             encoded_path = "/".join(quote(part) for part in rel_parts)
             resolved_url = f"/plugins/assets/{quote(plugin_id)}/{encoded_path}"
         elif ext_url:
+          if not allow_remote_ui_extensions:
+            continue
           if autonomous_mode and ext_url.lower().startswith(("http://", "https://")):
             continue
-          resolved_url = ext_url
+          try:
+            resolved_url = plugin_marketplace.normalize_http_url(ext_url)
+          except Exception:
+            continue
 
         if not resolved_url:
           continue

@@ -9,11 +9,12 @@ PLUGIN_TOOL_PERMISSION_POLICIES_SETTING_KEY = "plugin_tool_permission_policies"
 PLUGIN_DOMAIN_PERMISSION_POLICIES_SETTING_KEY = "plugin_domain_permission_policies"
 PLUGIN_DOMAIN_DEFAULT_POLICY_SETTING_KEY = "plugin_domain_default_policy"
 DEFAULT_PLUGIN_PERMISSION_POLICY = "allow"
-DEFAULT_DOMAIN_PERMISSION_POLICY = "allow"
+DEFAULT_DOMAIN_PERMISSION_POLICY = "deny"
 VALID_PLUGIN_PERMISSION_POLICIES = {"allow", "ask", "deny"}
 VALID_DOMAIN_DEFAULT_POLICIES = {"allow", "deny"}
 SAFE_TOOL_NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_.-]{1,127}$")
 SAFE_DOMAIN_PATTERN = re.compile(r"^[a-z0-9.-]{1,253}$")
+USER_SCOPE_KEY_SEPARATOR = "::user::"
 
 
 def normalize_plugin_permission_policy(value: Any, fallback: str = DEFAULT_PLUGIN_PERMISSION_POLICY) -> str:
@@ -99,6 +100,70 @@ def normalize_domain_key(value: Any) -> str:
   return raw
 
 
+def build_scoped_setting_key(setting_key: str, *, owner_user_id: str = "") -> str:
+  safe_key = str(setting_key or "").strip()
+  safe_owner = str(owner_user_id or "").strip()
+  if not safe_owner:
+    return safe_key
+  return f"{safe_key}{USER_SCOPE_KEY_SEPARATOR}{safe_owner}"
+
+
+def _read_setting_json_scoped(
+  storage: Any,
+  setting_key: str,
+  fallback: Any,
+  *,
+  owner_user_id: str = "",
+) -> Any:
+  if storage is None or not hasattr(storage, "get_setting_json"):
+    return fallback
+  scoped_key = build_scoped_setting_key(setting_key, owner_user_id=owner_user_id)
+  if scoped_key != setting_key:
+    scoped_value = storage.get_setting_json(scoped_key, None)
+    if scoped_value is None:
+      return fallback
+    return scoped_value
+  return storage.get_setting_json(setting_key, fallback)
+
+
+def _write_setting_json_scoped(
+  storage: Any,
+  setting_key: str,
+  value: Any,
+  *,
+  owner_user_id: str = "",
+) -> None:
+  if storage is None or not hasattr(storage, "set_setting_json"):
+    return
+  scoped_key = build_scoped_setting_key(setting_key, owner_user_id=owner_user_id)
+  storage.set_setting_json(scoped_key, value)
+
+
+def _read_setting_scoped(
+  storage: Any,
+  setting_key: str,
+  *,
+  owner_user_id: str = "",
+) -> str | None:
+  if storage is None or not hasattr(storage, "get_setting"):
+    return None
+  scoped_key = build_scoped_setting_key(setting_key, owner_user_id=owner_user_id)
+  return storage.get_setting(scoped_key)
+
+
+def _write_setting_scoped(
+  storage: Any,
+  setting_key: str,
+  value: str,
+  *,
+  owner_user_id: str = "",
+) -> None:
+  if storage is None or not hasattr(storage, "set_setting"):
+    return
+  scoped_key = build_scoped_setting_key(setting_key, owner_user_id=owner_user_id)
+  storage.set_setting(scoped_key, value)
+
+
 def normalize_plugin_permissions_map(
   payload: Any,
   *,
@@ -155,10 +220,14 @@ def read_plugin_permissions(
   storage: Any,
   *,
   sanitize_plugin_id: Callable[[Any], str] | None = None,
+  owner_user_id: str = "",
 ) -> dict[str, str]:
-  if storage is None or not hasattr(storage, "get_setting_json"):
-    return {}
-  raw = storage.get_setting_json(PLUGIN_PERMISSION_POLICIES_SETTING_KEY, {})
+  raw = _read_setting_json_scoped(
+    storage,
+    PLUGIN_PERMISSION_POLICIES_SETTING_KEY,
+    {},
+    owner_user_id=owner_user_id,
+  )
   return normalize_plugin_permissions_map(raw, sanitize_plugin_id=sanitize_plugin_id)
 
 
@@ -167,10 +236,14 @@ def read_tool_permissions(
   *,
   sanitize_plugin_id: Callable[[Any], str] | None = None,
   sanitize_tool_name: Callable[[Any], str] | None = None,
+  owner_user_id: str = "",
 ) -> dict[str, str]:
-  if storage is None or not hasattr(storage, "get_setting_json"):
-    return {}
-  raw = storage.get_setting_json(PLUGIN_TOOL_PERMISSION_POLICIES_SETTING_KEY, {})
+  raw = _read_setting_json_scoped(
+    storage,
+    PLUGIN_TOOL_PERMISSION_POLICIES_SETTING_KEY,
+    {},
+    owner_user_id=owner_user_id,
+  )
   return normalize_tool_permissions_map(
     raw,
     sanitize_plugin_id=sanitize_plugin_id,
@@ -178,17 +251,22 @@ def read_tool_permissions(
   )
 
 
-def read_domain_permissions(storage: Any) -> dict[str, str]:
-  if storage is None or not hasattr(storage, "get_setting_json"):
-    return {}
-  raw = storage.get_setting_json(PLUGIN_DOMAIN_PERMISSION_POLICIES_SETTING_KEY, {})
+def read_domain_permissions(storage: Any, *, owner_user_id: str = "") -> dict[str, str]:
+  raw = _read_setting_json_scoped(
+    storage,
+    PLUGIN_DOMAIN_PERMISSION_POLICIES_SETTING_KEY,
+    {},
+    owner_user_id=owner_user_id,
+  )
   return normalize_domain_permissions_map(raw)
 
 
-def read_domain_default_policy(storage: Any) -> str:
-  if storage is None or not hasattr(storage, "get_setting"):
-    return DEFAULT_DOMAIN_PERMISSION_POLICY
-  raw = storage.get_setting(PLUGIN_DOMAIN_DEFAULT_POLICY_SETTING_KEY)
+def read_domain_default_policy(storage: Any, *, owner_user_id: str = "") -> str:
+  raw = _read_setting_scoped(
+    storage,
+    PLUGIN_DOMAIN_DEFAULT_POLICY_SETTING_KEY,
+    owner_user_id=owner_user_id,
+  )
   if raw is None:
     raw = DEFAULT_DOMAIN_PERMISSION_POLICY
   return normalize_domain_default_policy(raw, DEFAULT_DOMAIN_PERMISSION_POLICY)
@@ -199,10 +277,15 @@ def write_plugin_permissions(
   policies: Any,
   *,
   sanitize_plugin_id: Callable[[Any], str] | None = None,
+  owner_user_id: str = "",
 ) -> dict[str, str]:
   normalized = normalize_plugin_permissions_map(policies, sanitize_plugin_id=sanitize_plugin_id)
-  if storage is not None and hasattr(storage, "set_setting_json"):
-    storage.set_setting_json(PLUGIN_PERMISSION_POLICIES_SETTING_KEY, normalized)
+  _write_setting_json_scoped(
+    storage,
+    PLUGIN_PERMISSION_POLICIES_SETTING_KEY,
+    normalized,
+    owner_user_id=owner_user_id,
+  )
   return normalized
 
 
@@ -212,28 +295,41 @@ def write_tool_permissions(
   *,
   sanitize_plugin_id: Callable[[Any], str] | None = None,
   sanitize_tool_name: Callable[[Any], str] | None = None,
+  owner_user_id: str = "",
 ) -> dict[str, str]:
   normalized = normalize_tool_permissions_map(
     policies,
     sanitize_plugin_id=sanitize_plugin_id,
     sanitize_tool_name=sanitize_tool_name,
   )
-  if storage is not None and hasattr(storage, "set_setting_json"):
-    storage.set_setting_json(PLUGIN_TOOL_PERMISSION_POLICIES_SETTING_KEY, normalized)
+  _write_setting_json_scoped(
+    storage,
+    PLUGIN_TOOL_PERMISSION_POLICIES_SETTING_KEY,
+    normalized,
+    owner_user_id=owner_user_id,
+  )
   return normalized
 
 
-def write_domain_permissions(storage: Any, policies: Any) -> dict[str, str]:
+def write_domain_permissions(storage: Any, policies: Any, *, owner_user_id: str = "") -> dict[str, str]:
   normalized = normalize_domain_permissions_map(policies)
-  if storage is not None and hasattr(storage, "set_setting_json"):
-    storage.set_setting_json(PLUGIN_DOMAIN_PERMISSION_POLICIES_SETTING_KEY, normalized)
+  _write_setting_json_scoped(
+    storage,
+    PLUGIN_DOMAIN_PERMISSION_POLICIES_SETTING_KEY,
+    normalized,
+    owner_user_id=owner_user_id,
+  )
   return normalized
 
 
-def write_domain_default_policy(storage: Any, policy: Any) -> str:
+def write_domain_default_policy(storage: Any, policy: Any, *, owner_user_id: str = "") -> str:
   normalized = normalize_domain_default_policy(policy, DEFAULT_DOMAIN_PERMISSION_POLICY)
-  if storage is not None and hasattr(storage, "set_setting"):
-    storage.set_setting(PLUGIN_DOMAIN_DEFAULT_POLICY_SETTING_KEY, normalized)
+  _write_setting_scoped(
+    storage,
+    PLUGIN_DOMAIN_DEFAULT_POLICY_SETTING_KEY,
+    normalized,
+    owner_user_id=owner_user_id,
+  )
   return normalized
 
 

@@ -2,14 +2,21 @@ from __future__ import annotations
 
 from typing import Any
 
+try:
+  from backend.deployment import DEPLOYMENT_MODE_LOCAL, normalize_deployment_mode
+except ModuleNotFoundError:
+  from deployment import DEPLOYMENT_MODE_LOCAL, normalize_deployment_mode  # type: ignore
+
 RUNTIME_CONFIG_SETTING_KEY = "runtime_config"
 ONBOARDING_STATE_SETTING_KEY = "onboarding_state"
 AUTONOMOUS_MODE_SETTING_KEY = "autonomous_mode"
 
 DEFAULT_RUNTIME_CONFIG: dict[str, Any] = {
   "mode": "backend",
+  "deploymentMode": DEPLOYMENT_MODE_LOCAL,
   "backendUrl": "http://127.0.0.1:5055",
   "apiKey": "",
+  "serverAllowRegistration": False,
   "timeoutMs": 12000,
   "modelId": "qwen2.5-0.5b-instruct-mlx-4bit",
   "devicePreset": "auto",
@@ -59,7 +66,13 @@ class SettingsService:
       for key in DEFAULT_RUNTIME_CONFIG.keys():
         if key in payload:
           result[key] = payload[key]
+    result["mode"] = "backend" if str(result.get("mode") or "").strip().lower() == "backend" else "mock"
+    result["deploymentMode"] = normalize_deployment_mode(
+      result.get("deploymentMode"),
+      DEPLOYMENT_MODE_LOCAL,
+    )
     result["autonomousMode"] = bool(result.get("autonomousMode", False))
+    result["serverAllowRegistration"] = bool(result.get("serverAllowRegistration", False))
     result["contextGuardPluginEnabled"] = bool(result.get("contextGuardPluginEnabled", True))
     result["contextGuardAutoCompress"] = bool(result.get("contextGuardAutoCompress", True))
     result["contextGuardShowChatEvents"] = bool(result.get("contextGuardShowChatEvents", True))

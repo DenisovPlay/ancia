@@ -99,6 +99,7 @@ export class BackendClient {
     this.config = {
       baseUrl: "",
       apiKey: "",
+      authToken: "",
       timeoutMs: DEFAULT_TIMEOUT_MS,
       ...initialConfig,
     };
@@ -123,8 +124,12 @@ export class BackendClient {
       headers["Content-Type"] = "application/json";
     }
 
-    if (this.config.apiKey) {
-      headers.Authorization = `Bearer ${this.config.apiKey}`;
+    const authToken = String(this.config.authToken || "").trim();
+    const apiKey = String(this.config.apiKey || "").trim();
+    if (authToken) {
+      headers.Authorization = `Bearer ${authToken}`;
+    } else if (apiKey) {
+      headers.Authorization = `Bearer ${apiKey}`;
     }
 
     return headers;
@@ -355,6 +360,91 @@ export class BackendClient {
 
   async getAppState() {
     return this.request("/app/state", { method: "GET" });
+  }
+
+  async getAuthConfig() {
+    return this.request("/auth/config", { method: "GET" });
+  }
+
+  async bootstrapAdmin(payload = {}) {
+    return this.request("/auth/bootstrap", {
+      method: "POST",
+      body: payload || {},
+    });
+  }
+
+  async registerUser(payload = {}) {
+    return this.request("/auth/register", {
+      method: "POST",
+      body: payload || {},
+    });
+  }
+
+  async login(payload = {}) {
+    return this.request("/auth/login", {
+      method: "POST",
+      body: payload || {},
+    });
+  }
+
+  async logout() {
+    return this.request("/auth/logout", {
+      method: "POST",
+      body: {},
+    });
+  }
+
+  async getMe() {
+    return this.request("/auth/me", { method: "GET" });
+  }
+
+  async listAdminUsers() {
+    return this.request("/admin/users", { method: "GET" });
+  }
+
+  async createAdminUser(payload = {}) {
+    return this.request("/admin/users", {
+      method: "POST",
+      body: payload || {},
+    });
+  }
+
+  async updateAdminUser(userId, payload = {}) {
+    const safeUserId = encodePathSegment(userId);
+    return this.request(`/admin/users/${safeUserId}`, {
+      method: "PATCH",
+      body: payload || {},
+    });
+  }
+
+  async getAdminAudit({
+    limit = 200,
+    actorUserId = "",
+    actionPrefix = "",
+    status = "",
+  } = {}) {
+    const params = new URLSearchParams();
+    const safeLimit = Math.max(1, Math.min(1000, Math.round(Number(limit || 200))));
+    params.set("limit", String(safeLimit));
+
+    const safeActorUserId = String(actorUserId || "").trim();
+    if (safeActorUserId) {
+      params.set("actor_user_id", safeActorUserId);
+    }
+
+    const safeActionPrefix = String(actionPrefix || "").trim().toLowerCase();
+    if (safeActionPrefix) {
+      params.set("action_prefix", safeActionPrefix);
+    }
+
+    const safeStatus = String(status || "").trim().toLowerCase();
+    if (safeStatus && safeStatus !== "all") {
+      params.set("status", safeStatus);
+    }
+
+    return this.request(`/admin/audit?${params.toString()}`, {
+      method: "GET",
+    });
   }
 
   async inspectLink(url) {

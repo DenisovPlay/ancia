@@ -2,11 +2,15 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 
 try:
+  from backend.access_control import user_can_download_models
+  from backend.deployment import DEPLOYMENT_MODE_REMOTE_SERVER
   from backend.schemas import ContextUsageRequest, ModelParamsUpdateRequest, ModelSelectRequest
 except ModuleNotFoundError:
+  from access_control import user_can_download_models  # type: ignore
+  from deployment import DEPLOYMENT_MODE_REMOTE_SERVER  # type: ignore
   from schemas import ContextUsageRequest, ModelParamsUpdateRequest, ModelSelectRequest  # type: ignore
 
 
@@ -18,6 +22,74 @@ def register_model_routes(
   plugin_manager: Any | None = None,
   get_autonomous_mode: Callable[[], bool] | None = None,
 ) -> None:
+  def _deployment_mode_from_request(request: Request | None = None) -> str:
+    if request is None:
+      return ""
+    return str(getattr(request.state, "deployment_mode", "") or "").strip().lower()
+
+  def _is_remote_server_request(request: Request | None = None) -> bool:
+    return _deployment_mode_from_request(request) == DEPLOYMENT_MODE_REMOTE_SERVER
+
+  def _auth_payload(request: Request | None = None) -> dict[str, Any]:
+    if request is None:
+      return {}
+    payload = getattr(request.state, "auth", None)
+    return payload if isinstance(payload, dict) else {}
+
+  def _auth_user(request: Request | None = None) -> dict[str, Any]:
+    payload = _auth_payload(request)
+    user = payload.get("user")
+    return user if isinstance(user, dict) else {}
+
+  def _resolve_target_model_id(model_id: Any = "") -> str:
+    requested = str(model_id or "").strip().lower()
+    if requested:
+      return requested
+    return str(model_engine.get_selected_model_id() or "").strip().lower()
+
+  def _is_model_cached_or_loading(model_id: str) -> bool:
+    safe_model_id = str(model_id or "").strip().lower()
+    if not safe_model_id:
+      return False
+
+    runtime_snapshot = (
+      model_engine.get_runtime_snapshot()
+      if hasattr(model_engine, "get_runtime_snapshot")
+      else {}
+    )
+    loaded_model_id = str(runtime_snapshot.get("loaded_model_id") or "").strip().lower()
+    if loaded_model_id == safe_model_id:
+      return True
+
+    startup = runtime_snapshot.get("startup") if isinstance(runtime_snapshot, dict) else {}
+    startup_details = startup.get("details") if isinstance(startup, dict) and isinstance(startup.get("details"), dict) else {}
+    startup_model_id = str(startup_details.get("model_id") or "").strip().lower()
+    startup_status = str(startup.get("status") or "").strip().lower()
+    if startup_model_id == safe_model_id and startup_status in {"loading", "booting"}:
+      return True
+
+    if not hasattr(model_engine, "get_local_cache_map"):
+      return False
+    cache_map = model_engine.get_local_cache_map()
+    if not isinstance(cache_map, dict):
+      return False
+    cache_entry = cache_map.get(safe_model_id)
+    if isinstance(cache_entry, dict):
+      return bool(cache_entry.get("cached"))
+    return bool(cache_entry)
+
+  def _require_model_download_permission(request: Request, *, model_id: str) -> None:
+    if not _is_remote_server_request(request):
+      return
+    if user_can_download_models(_auth_user(request)):
+      return
+    if _is_model_cached_or_loading(model_id):
+      return
+    raise HTTPException(
+      status_code=403,
+      detail="Недостаточно прав: загрузка новых моделей запрещена для этого аккаунта.",
+    )
+
   def resolve_context_guard_active_tools() -> set[str]:
     autonomous_mode = bool(get_autonomous_mode()) if callable(get_autonomous_mode) else False
     if plugin_manager is not None and hasattr(plugin_manager, "resolve_active_tools"):
@@ -86,11 +158,15 @@ def register_model_routes(
     return build_models_payload()
 
   @app.post("/models/select")
-  def select_model(payload: ModelSelectRequest) -> dict[str, Any]:
+  def select_model(payload: ModelSelectRequest, request: Request) -> dict[str, Any]:
     try:
       if str(payload.model_id or "").strip():
         model_engine.set_selected_model(payload.model_id)
       if bool(getattr(payload, "load", False)):
+        _require_model_download_permission(
+          request,
+          model_id=_resolve_target_model_id(),
+        )
         model_engine.start_background_load()
     except ValueError as exc:
       raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -98,18 +174,27 @@ def register_model_routes(
     return build_models_payload()
 
   @app.post("/models/load")
-  def load_model(payload: ModelSelectRequest | None = None) -> dict[str, Any]:
+  def load_model(request: Request, payload: ModelSelectRequest | None = None) -> dict[str, Any]:
     data = payload or ModelSelectRequest()
     try:
       if str(data.model_id or "").strip():
         model_engine.set_selected_model(data.model_id)
+      _require_model_download_permission(
+        request,
+        model_id=_resolve_target_model_id(),
+      )
       model_engine.start_background_load()
     except ValueError as exc:
       raise HTTPException(status_code=400, detail=str(exc)) from exc
     return build_models_payload()
 
   @app.post("/models/catalog/refresh")
-  def refresh_model_catalog() -> dict[str, Any]:
+  def refresh_model_catalog(request: Request) -> dict[str, Any]:
+    if _is_remote_server_request(request) and not user_can_download_models(_auth_user(request)):
+      raise HTTPException(
+        status_code=403,
+        detail="Недостаточно прав: обновление каталога моделей запрещено для этого аккаунта.",
+      )
     from backend.model_catalog import fetch_catalog_from_hf, merge_and_save_catalog
     new_entries = fetch_catalog_from_hf()
     added = merge_and_save_catalog(new_entries)

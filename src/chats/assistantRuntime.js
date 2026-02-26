@@ -735,7 +735,42 @@ export function createChatAssistantRuntime({
           metaSuffix: resolveModelMetaSuffix(parsed.model, runtimeConfig.modelId),
         };
       } catch (error) {
+        if (error?.code === "ABORTED" || /REQUEST_ABORTED/.test(String(error?.message || ""))) {
+          throw error;
+        }
         const streamErrorMessage = String(error?.message || "");
+        const hasPartialStreamReply = Boolean(donePayload) || Boolean(String(streamedText || "").trim());
+        if (hasPartialStreamReply) {
+          const partialPayload = donePayload || {
+            reply: streamedText,
+            mood: inferMoodFromText(streamedText),
+            model: "backend-stream",
+            stream: {
+              mode: "partial_stream",
+              reason: streamErrorMessage || "stream_interrupted",
+            },
+          };
+          const parsed = parseBackendResponse(
+            partialPayload,
+            streamedText || "Поток ответа прервался.",
+          );
+          if (streamedText && !parsed.text) {
+            parsed.text = streamedText;
+          }
+          if (!String(parsed.text || "").trim()) {
+            parsed.text = "Поток ответа прервался.";
+          }
+          updateConnectionState(
+            BACKEND_STATUS.connected,
+            donePayload
+              ? "Поток ответа завершён"
+              : "Поток прерван, показан частичный результат",
+          );
+          return {
+            ...parsed,
+            metaSuffix: resolveModelMetaSuffix(parsed.model, runtimeConfig.modelId),
+          };
+        }
         const isStreamTransportIssue = /HTTP \d+/.test(streamErrorMessage)
           || /Поток ответа недоступен/i.test(streamErrorMessage)
           || /\/chat\/stream/i.test(streamErrorMessage)

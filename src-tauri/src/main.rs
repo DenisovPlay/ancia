@@ -2,17 +2,17 @@
 
 use std::fs;
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
-use tauri::Manager;
 use tauri::window::Color;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use tauri::window::{Effect, EffectState, EffectsBuilder};
+use tauri::Manager;
 
 const BACKEND_HOST: &str = "127.0.0.1";
 const BACKEND_PORT_DEFAULT: u16 = 5055;
@@ -278,6 +278,10 @@ fn backend_addr(host: &str, port: u16) -> SocketAddr {
     }
 }
 
+fn can_bind_backend_port(host: &str, port: u16) -> bool {
+    TcpListener::bind(backend_addr(host, port)).is_ok()
+}
+
 fn probe_backend_state(host: &str, port: u16, timeout: Duration) -> BackendProbeState {
     let mut stream = match TcpStream::connect_timeout(&backend_addr(host, port), timeout) {
         Ok(stream) => stream,
@@ -296,12 +300,32 @@ fn probe_backend_state(host: &str, port: u16, timeout: Duration) -> BackendProbe
         return BackendProbeState::Unreachable;
     }
 
-    let mut response_bytes = [0_u8; 4096];
-    let response_size = match stream.read(&mut response_bytes) {
-        Ok(size) if size > 0 => size,
-        _ => return BackendProbeState::Unreachable,
-    };
-    let response = String::from_utf8_lossy(&response_bytes[..response_size]);
+    let mut response_bytes: Vec<u8> = Vec::with_capacity(4096);
+    let mut chunk = [0_u8; 2048];
+    loop {
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(size) => {
+                response_bytes.extend_from_slice(&chunk[..size]);
+                if response_bytes.len() >= 64 * 1024 {
+                    break;
+                }
+            }
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock
+                    || error.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                break;
+            }
+            Err(_) => return BackendProbeState::Unreachable,
+        }
+    }
+
+    if response_bytes.is_empty() {
+        return BackendProbeState::Unreachable;
+    }
+
+    let response = String::from_utf8_lossy(&response_bytes);
     let http_ok = response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200");
     let service_ok = response.contains("\"service\":\"ancia-local-backend\"")
         || response.contains("\"service\": \"ancia-local-backend\"");
@@ -367,7 +391,10 @@ enum BackendStartupDecision {
     Spawn(u16),
 }
 
-fn pick_backend_port(host: &str) -> Result<BackendStartupDecision, String> {
+fn pick_backend_port(
+    host: &str,
+    excluded_spawn_ports: &[u16],
+) -> Result<BackendStartupDecision, String> {
     match probe_backend_state(host, BACKEND_PORT_DEFAULT, BACKEND_CONNECT_TIMEOUT) {
         BackendProbeState::Healthy => {
             return Ok(BackendStartupDecision::UseExisting(BACKEND_PORT_DEFAULT))
@@ -379,7 +406,11 @@ fn pick_backend_port(host: &str) -> Result<BackendStartupDecision, String> {
             {
                 return Ok(BackendStartupDecision::UseExisting(BACKEND_PORT_DEFAULT));
             }
-            return Ok(BackendStartupDecision::Spawn(BACKEND_PORT_DEFAULT));
+            if !excluded_spawn_ports.contains(&BACKEND_PORT_DEFAULT)
+                && can_bind_backend_port(host, BACKEND_PORT_DEFAULT)
+            {
+                return Ok(BackendStartupDecision::Spawn(BACKEND_PORT_DEFAULT));
+            }
         }
         BackendProbeState::OccupiedByOtherService => {}
     }
@@ -391,7 +422,11 @@ fn pick_backend_port(host: &str) -> Result<BackendStartupDecision, String> {
                 return Ok(BackendStartupDecision::UseExisting(candidate_port))
             }
             BackendProbeState::Unreachable => {
-                free_fallback_port.get_or_insert(candidate_port);
+                if !excluded_spawn_ports.contains(&candidate_port)
+                    && can_bind_backend_port(host, candidate_port)
+                {
+                    free_fallback_port.get_or_insert(candidate_port);
+                }
             }
             BackendProbeState::OccupiedByOtherService => {}
         }
@@ -545,6 +580,20 @@ fn wait_for_backend_ready(
     ))
 }
 
+fn user_friendly_backend_startup_error(raw_error: &str) -> String {
+    let safe = raw_error.trim();
+    if safe.is_empty() {
+        return "Не удалось запустить локальный backend.".to_string();
+    }
+    if safe.contains("подсказка: активируй venv")
+        || safe.contains("No module named")
+        || safe.contains("uvicorn")
+    {
+        return "Не удалось запустить локальный backend. Проверьте Python-зависимости.".to_string();
+    }
+    "Не удалось запустить локальный backend. Повторите попытку.".to_string()
+}
+
 fn start_backend_if_needed(
     app: &tauri::AppHandle,
     state: &BackendProcessState,
@@ -567,10 +616,7 @@ fn start_backend_if_needed(
             );
             state.set_startup_status_with_endpoint(
                 "ready",
-                format!(
-                    "Локальный backend уже активен на {}.",
-                    backend_url(&host, startup_port)
-                ),
+                "Локальный backend уже активен.",
                 &host,
                 startup_port,
             );
@@ -580,121 +626,149 @@ fn start_backend_if_needed(
             "backend process is alive but does not pass health check on {}",
             backend_url(&host, startup_port)
         );
-        state.set_startup_status_with_endpoint("error", error_text.clone(), &host, startup_port);
-        return Err(error_text);
-    }
-
-    let (selected_port, should_spawn) = match pick_backend_port(&host) {
-        Ok(BackendStartupDecision::UseExisting(port)) => (port, false),
-        Ok(BackendStartupDecision::Spawn(port)) => (port, true),
-        Err(error) => {
-            state.set_startup_status_with_endpoint("error", error.clone(), &host, startup_port);
-            return Err(error);
-        }
-    };
-
-    if !should_spawn {
-        eprintln!(
-            "[ancia] backend already running on {}:{}",
-            host, selected_port
-        );
         state.set_startup_status_with_endpoint(
-            "ready",
-            format!(
-                "Локальный backend уже активен на {}.",
-                backend_url(&host, selected_port)
-            ),
+            "error",
+            user_friendly_backend_startup_error(&error_text),
             &host,
-            selected_port,
+            startup_port,
         );
-        return Ok(());
-    }
-
-    let launch_message = if selected_port == BACKEND_PORT_DEFAULT {
-        "Запускаем локальный backend...".to_string()
-    } else {
-        format!(
-            "Порт {} занят сторонним сервисом. Переключаем backend на порт {}.",
-            BACKEND_PORT_DEFAULT, selected_port
-        )
-    };
-    state.set_startup_status_with_endpoint("starting", launch_message, &host, selected_port);
-    if state.running() {
-        let error_text = "Невозможно запустить backend: процесс уже выполняется.".to_string();
-        state.set_startup_status_with_endpoint("error", error_text.clone(), &host, selected_port);
         return Err(error_text);
     }
 
     let app_data_dir = resolve_app_data_dir(app);
+    let mut attempted_spawn_ports: Vec<u16> = vec![];
 
-    let child = if cfg!(debug_assertions) {
-        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let project_root = manifest_dir
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or(manifest_dir);
-
-        match try_spawn_dev_backend(&project_root, app_data_dir.as_deref(), &host, selected_port) {
-            Ok(child) => child,
+    loop {
+        let (selected_port, should_spawn) = match pick_backend_port(&host, &attempted_spawn_ports) {
+            Ok(BackendStartupDecision::UseExisting(port)) => (port, false),
+            Ok(BackendStartupDecision::Spawn(port)) => (port, true),
             Err(error) => {
                 state.set_startup_status_with_endpoint(
                     "error",
-                    format!("Не удалось запустить backend в dev-режиме: {error}"),
+                    user_friendly_backend_startup_error(&error),
                     &host,
-                    selected_port,
+                    startup_port,
                 );
                 return Err(error);
             }
+        };
+
+        if !should_spawn {
+            eprintln!(
+                "[ancia] backend already running on {}:{}",
+                host, selected_port
+            );
+            state.set_startup_status_with_endpoint(
+                "ready",
+                "Локальный backend уже активен.",
+                &host,
+                selected_port,
+            );
+            return Ok(());
         }
-    } else {
-        match try_spawn_release_backend(app, app_data_dir.as_deref(), &host, selected_port) {
-            Ok(child) => child,
-            Err(error) => {
+
+        state.set_startup_status_with_endpoint(
+            "starting",
+            "Запускаем локальный backend...",
+            &host,
+            selected_port,
+        );
+        if state.running() {
+            let error_text = "Невозможно запустить backend: процесс уже выполняется.".to_string();
+            state.set_startup_status_with_endpoint(
+                "error",
+                user_friendly_backend_startup_error(&error_text),
+                &host,
+                selected_port,
+            );
+            return Err(error_text);
+        }
+
+        let child = if cfg!(debug_assertions) {
+            let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            let project_root = manifest_dir
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or(manifest_dir);
+
+            match try_spawn_dev_backend(
+                &project_root,
+                app_data_dir.as_deref(),
+                &host,
+                selected_port,
+            ) {
+                Ok(child) => child,
+                Err(error) => {
+                    state.set_startup_status_with_endpoint(
+                        "error",
+                        user_friendly_backend_startup_error(&error),
+                        &host,
+                        selected_port,
+                    );
+                    return Err(error);
+                }
+            }
+        } else {
+            match try_spawn_release_backend(app, app_data_dir.as_deref(), &host, selected_port) {
+                Ok(child) => child,
+                Err(error) => {
+                    state.set_startup_status_with_endpoint(
+                        "error",
+                        user_friendly_backend_startup_error(&error),
+                        &host,
+                        selected_port,
+                    );
+                    return Err(error);
+                }
+            }
+        };
+
+        // Store the child immediately so shutdown handlers can always terminate it,
+        // even if the user closes the app while backend is still booting.
+        state.store_child(child);
+
+        state.set_startup_status_with_endpoint(
+            "starting",
+            "Ожидаем готовность backend...",
+            &host,
+            selected_port,
+        );
+        if let Err(error) =
+            wait_for_backend_ready(state, &host, selected_port, BACKEND_STARTUP_WAIT_TIMEOUT)
+        {
+            state.stop();
+            let should_retry = !attempted_spawn_ports.contains(&selected_port)
+                && !can_bind_backend_port(&host, selected_port);
+            if should_retry {
+                attempted_spawn_ports.push(selected_port);
                 state.set_startup_status_with_endpoint(
-                    "error",
-                    format!("Не удалось запустить backend sidecar: {error}"),
+                    "starting",
+                    "Повторяем запуск локального backend...",
                     &host,
                     selected_port,
                 );
-                return Err(error);
+                continue;
             }
+            state.set_startup_status_with_endpoint(
+                "error",
+                user_friendly_backend_startup_error(&error),
+                &host,
+                selected_port,
+            );
+            return Err(error);
         }
-    };
-
-    // Store the child immediately so shutdown handlers can always terminate it,
-    // even if the user closes the app while backend is still booting.
-    state.store_child(child);
-
-    state.set_startup_status_with_endpoint(
-        "starting",
-        "Ожидаем готовность backend...",
-        &host,
-        selected_port,
-    );
-    if let Err(error) = wait_for_backend_ready(
-        state,
-        &host,
-        selected_port,
-        BACKEND_STARTUP_WAIT_TIMEOUT,
-    ) {
-        state.stop();
-        state.set_startup_status_with_endpoint("error", error.clone(), &host, selected_port);
-        return Err(error);
-    }
-    state.set_startup_status_with_endpoint(
-        "ready",
-        format!(
-            "Локальный backend готов на {}.",
+        state.set_startup_status_with_endpoint(
+            "ready",
+            "Локальный backend готов.",
+            &host,
+            selected_port,
+        );
+        eprintln!(
+            "[ancia] backend process started and is listening on {}",
             backend_url(&host, selected_port)
-        ),
-        &host,
-        selected_port,
-    );
-    eprintln!(
-        "[ancia] backend process started and is listening on {}",
-        backend_url(&host, selected_port)
-    );
-    Ok(())
+        );
+        return Ok(());
+    }
 }
 
 fn configure_startup_windows(app: &tauri::AppHandle) {
@@ -711,7 +785,7 @@ fn configure_startup_windows(app: &tauri::AppHandle) {
                 EffectsBuilder::new()
                     .effect(Effect::Popover)
                     .state(EffectState::Active)
-                    .radius(22.0)
+                    .radius(10.0)
                     .build(),
             );
             let _ = splash_window.set_shadow(true);
@@ -727,6 +801,69 @@ fn configure_startup_windows(app: &tauri::AppHandle) {
             );
             let _ = splash_window.set_shadow(true);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+
+    #[test]
+    fn pick_backend_port_skips_default_spawn_when_default_is_occupied() {
+        let host = BACKEND_HOST;
+
+        let fallback_exists = ((BACKEND_PORT_DEFAULT + 1)..=BACKEND_PORT_FALLBACK_MAX)
+            .any(|port| TcpListener::bind(backend_addr(host, port)).is_ok());
+        if !fallback_exists {
+            return;
+        }
+
+        let default_guard = TcpListener::bind(backend_addr(host, BACKEND_PORT_DEFAULT));
+        if default_guard.is_err()
+            && probe_backend_state(host, BACKEND_PORT_DEFAULT, Duration::from_millis(120))
+                == BackendProbeState::Healthy
+        {
+            // External healthy Ancia backend on default port: skip environment-specific case.
+            return;
+        }
+        let _default_guard = default_guard.ok();
+
+        let decision = pick_backend_port(host, &[]).expect("should resolve backend port");
+        match decision {
+            BackendStartupDecision::UseExisting(port) | BackendStartupDecision::Spawn(port) => {
+                assert_ne!(
+                    port, BACKEND_PORT_DEFAULT,
+                    "default port is occupied and must not be chosen for startup"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn probe_backend_state_handles_chunked_health_response() {
+        let listener =
+            TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0))).expect("bind test listener");
+        let port = listener.local_addr().expect("listener addr").port();
+
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("accept client");
+            let mut request_buf = [0_u8; 1024];
+            let _ = socket.read(&mut request_buf);
+            let header =
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n";
+            let body = "{\"service\":\"ancia-local-backend\"}";
+            socket.write_all(header.as_bytes()).expect("write header");
+            thread::sleep(Duration::from_millis(30));
+            socket.write_all(body.as_bytes()).expect("write body");
+            let _ = socket.flush();
+        });
+
+        let state = probe_backend_state("127.0.0.1", port, Duration::from_millis(300));
+        server.join().expect("server join");
+        assert_eq!(state, BackendProbeState::Healthy);
     }
 }
 

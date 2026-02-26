@@ -8,12 +8,13 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable
 from urllib import error as url_error
-from urllib import parse as url_parse
 from urllib import request as url_request
 
 try:
+  from backend.netguard import ensure_safe_outbound_url
   from backend.plugin_permissions import normalize_plugin_permission_policy
 except ModuleNotFoundError:
+  from netguard import ensure_safe_outbound_url  # type: ignore
   from plugin_permissions import normalize_plugin_permission_policy  # type: ignore
 
 
@@ -21,18 +22,12 @@ ToolHandler = Callable[[dict[str, Any], Any], dict[str, Any]]
 
 
 def _normalize_http_url(url_like: str) -> str:
-  raw = str(url_like or "").strip()
-  if not raw:
-    raise ValueError("URL is required")
-  parsed = url_parse.urlparse(raw)
-  if not parsed.scheme:
-    raw = f"https://{raw}"
-    parsed = url_parse.urlparse(raw)
-  if parsed.scheme not in {"http", "https"}:
-    raise ValueError("Only http/https URLs are allowed")
-  if not parsed.netloc:
-    raise ValueError("URL host is required")
-  return parsed.geturl()
+  return ensure_safe_outbound_url(
+    url_like,
+    allow_http=True,
+    allow_loopback=False,
+    allow_private=False,
+  )
 
 
 class PluginPythonCallableCache:
