@@ -2960,8 +2960,6 @@ class PythonModelEngine(EngineModelsMixin):
         should_stream_this_round = bool(stream_final_reply)
         round_plan = plan
         if tools_are_allowed:
-          base_max_tokens = int(plan.max_tokens_override or 256)
-          constrained_max_tokens = max(48, min(160, base_max_tokens))
           base_temperature = float(plan.temperature_override if plan.temperature_override is not None else plan.tier.temperature)
           constrained_temperature = max(0.0, min(0.35, base_temperature))
           round_plan = GenerationPlan(
@@ -2970,7 +2968,7 @@ class PythonModelEngine(EngineModelsMixin):
             context_mood=plan.context_mood,
             active_tools=plan.active_tools,
             context_window_override=plan.context_window_override,
-            max_tokens_override=constrained_max_tokens,
+            max_tokens_override=plan.max_tokens_override,
             temperature_override=constrained_temperature,
             top_p_override=plan.top_p_override,
             top_k_override=plan.top_k_override,
