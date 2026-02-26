@@ -78,7 +78,7 @@ def resolve_system_prompt_path() -> Path:
   backend_dir = Path(__file__).resolve().parent
   project_root = backend_dir.parent
   candidate_paths = [
-    (project_root / "system_promt.txt").resolve(),
+    (project_root / "system_prompt.txt").resolve(),
     (backend_dir / "data" / "system_prompt.txt").resolve(),
   ]
   for candidate in candidate_paths:

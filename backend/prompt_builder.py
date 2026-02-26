@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 try:
   from backend.engine_support import build_chat_mood_prompt
   from backend.schemas import ChatRequest
