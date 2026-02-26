@@ -21,6 +21,8 @@ const BACKEND_CONNECT_TIMEOUT: Duration = Duration::from_millis(900);
 const BACKEND_CONNECT_RECHECK_TIMEOUT: Duration = Duration::from_millis(1500);
 const BACKEND_STARTUP_WAIT_TIMEOUT: Duration = Duration::from_secs(18);
 const BACKEND_STARTUP_POLL_INTERVAL: Duration = Duration::from_millis(180);
+const BACKEND_STARTUP_MAX_RETRIES: usize = 8;
+const BACKEND_STARTUP_MAX_TOTAL_WAIT: Duration = Duration::from_secs(120);
 const BACKEND_HEALTH_PATH: &str = "/health";
 const SPLASH_FAILSAFE_TIMEOUT: Duration = Duration::from_secs(45);
 
@@ -637,8 +639,26 @@ fn start_backend_if_needed(
 
     let app_data_dir = resolve_app_data_dir(app);
     let mut attempted_spawn_ports: Vec<u16> = vec![];
+    let startup_started_at = Instant::now();
 
     loop {
+        if attempted_spawn_ports.len() >= BACKEND_STARTUP_MAX_RETRIES
+            || startup_started_at.elapsed() > BACKEND_STARTUP_MAX_TOTAL_WAIT
+        {
+            let error = format!(
+                "Превышено число попыток запуска backend (retries={}, elapsed={}s).",
+                attempted_spawn_ports.len(),
+                startup_started_at.elapsed().as_secs()
+            );
+            state.set_startup_status_with_endpoint(
+                "error",
+                user_friendly_backend_startup_error(&error),
+                &host,
+                startup_port,
+            );
+            return Err(error);
+        }
+
         let (selected_port, should_spawn) = match pick_backend_port(&host, &attempted_spawn_ports) {
             Ok(BackendStartupDecision::UseExisting(port)) => (port, false),
             Ok(BackendStartupDecision::Spawn(port)) => (port, true),

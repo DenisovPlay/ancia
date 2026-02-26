@@ -111,6 +111,7 @@ def resolve_total_memory_bytes() -> tuple[int | None, str]:
         ["sysctl", "-n", "hw.memsize"],
         text=True,
         stderr=subprocess.DEVNULL,
+        timeout=2.5,
       ).strip()
       value = int(output)
       if value > 0:

@@ -1916,6 +1916,9 @@ def register_api_routes(
             "generation_actions": generation_actions_meta,
           },
         )
+      except (GeneratorExit, asyncio.CancelledError):
+        # Client disconnected or stream was cancelled: stop generation quietly.
+        return
       except RuntimeError as exc:
         if is_user_cancelled_error(exc):
           cancelled_reply = str(assistant_stream_text or "").strip()

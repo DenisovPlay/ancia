@@ -25,7 +25,7 @@ class AppStorage:
       os.chmod(db_path.parent, 0o700)
     except OSError:
       pass
-    self._lock = threading.Lock()
+    self._lock = threading.RLock()
     self._conn = sqlite3.connect(db_path, check_same_thread=False)
     self._conn.row_factory = sqlite3.Row
     with self._conn:

@@ -34,7 +34,8 @@ jobs:
       - name: Install minimal backend deps for smoke tests
         run: |
           python -m pip install --upgrade pip
-          python -m pip install fastapi uvicorn pydantic psutil
+          # Keep CI lean on ubuntu (no MLX stack), but include all libs used by smoke scripts.
+          python -m pip install fastapi uvicorn pydantic psutil httpx
 
       - name: Lint
         run: npm run lint
