@@ -6,17 +6,22 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import textwrap
 import time
 from typing import Any
 
 DEFAULT_TIMEOUT_SEC = 8
 DEFAULT_MAX_OUTPUT_CHARS = 6000
+DEFAULT_MAX_MEMORY_MB = 256
 MAX_TIMEOUT_SEC = 30
 MAX_OUTPUT_CHARS = 24_000
+MIN_MAX_MEMORY_MB = 64
+MAX_MAX_MEMORY_MB = 2048
 MAX_CODE_CHARS = 32_000
 MAX_CODE_RETURN_CHARS = 16_000
 MAX_CODE_PREVIEW_LINES = 18
+DEPLOYMENT_MODE_REMOTE_SERVER = "remote_server"
 
 CODE_BLOCK_PATTERN = re.compile(
   r"```(?:\s*(?P<lang>[a-zA-Z0-9_+\-]+))?\s*\n?(?P<code>[\s\S]*?)```",
@@ -70,8 +75,6 @@ SAFE_BUILTINS = [
   "float",
   "format",
   "frozenset",
-  "getattr",
-  "hasattr",
   "hash",
   "hex",
   "IndexError",
@@ -157,6 +160,26 @@ DISALLOWED_MODULE_ROOTS = {
   "threading",
   "signal",
   "resource",
+}
+
+DISALLOWED_ATTR_NAMES = {
+  "__bases__",
+  "__base__",
+  "__builtins__",
+  "__class__",
+  "__closure__",
+  "__code__",
+  "__dict__",
+  "__getattribute__",
+  "__globals__",
+  "__import__",
+  "__mro__",
+  "__subclasses__",
+  "cr_frame",
+  "f_globals",
+  "f_locals",
+  "gi_frame",
+  "tb_frame",
 }
 
 PYTHON_RUN_WRAPPER_TEMPLATE = """
@@ -274,6 +297,31 @@ def _normalize_int(value: Any, *, fallback: int, min_value: int, max_value: int)
   return max(min_value, min(max_value, parsed))
 
 
+def _is_true(value: Any) -> bool:
+  return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _resolve_deployment_mode(runtime: Any, host: Any) -> str:
+  env_mode = str(os.getenv("ANCIA_DEPLOYMENT_MODE", "") or "").strip().lower()
+  if env_mode:
+    return env_mode
+
+  runtime_mode = str(getattr(runtime, "deployment_mode", "") or "").strip().lower()
+  if runtime_mode:
+    return runtime_mode
+
+  storage = getattr(host, "storage", None)
+  if storage is None or not hasattr(storage, "get_setting_json"):
+    return ""
+  try:
+    payload = storage.get_setting_json("runtime_config", {}) or {}
+  except Exception:
+    payload = {}
+  if isinstance(payload, dict):
+    return str(payload.get("deploymentMode") or "").strip().lower()
+  return ""
+
+
 def _normalize_text(value: Any, *, max_len: int = 0) -> str:
   text = str(value or "")
   if max_len > 0 and len(text) > max_len:
@@ -367,6 +415,22 @@ def _validate_code(code: str) -> ast.Module:
     raise ValueError(_syntax_error_message(exc)) from exc
 
   for node in ast.walk(tree):
+    if isinstance(node, ast.Name):
+      identifier = str(node.id or "").strip()
+      if identifier.startswith("__"):
+        raise ValueError("Служебные dunder-идентификаторы запрещены в python.run.")
+      continue
+
+    if isinstance(node, ast.Attribute):
+      attr_name = str(getattr(node, "attr", "") or "").strip().lower()
+      if (
+        attr_name.startswith("__")
+        or attr_name in DISALLOWED_ATTR_NAMES
+      ):
+        raise ValueError(
+          f"Доступ к атрибуту '{attr_name}' запрещён в python.run."
+        )
+
     if isinstance(node, ast.Import):
       for alias in node.names:
         root = str(alias.name or "").split(".", 1)[0].strip().lower()
@@ -419,11 +483,60 @@ def _build_wrapper_script() -> str:
 
 
 def _build_subprocess_env() -> dict[str, str]:
-  env = dict(os.environ)
-  for key in list(env.keys()):
-    if key.startswith("MallocStackLogging"):
-      env.pop(key, None)
+  env = {
+    "PYTHONIOENCODING": "utf-8",
+    "PYTHONUTF8": "1",
+    "PYTHONDONTWRITEBYTECODE": "1",
+  }
+  tz = str(os.environ.get("TZ") or "").strip()
+  if tz:
+    env["TZ"] = tz
   return env
+
+
+def _resolve_max_memory_mb() -> int:
+  raw_value = os.getenv("ANCIA_PYTHON_RUN_MAX_MEMORY_MB", str(DEFAULT_MAX_MEMORY_MB))
+  return _normalize_int(
+    raw_value,
+    fallback=DEFAULT_MAX_MEMORY_MB,
+    min_value=MIN_MAX_MEMORY_MB,
+    max_value=MAX_MAX_MEMORY_MB,
+  )
+
+
+def _build_subprocess_preexec_fn(timeout_sec: int, max_memory_mb: int):
+  if os.name != "posix":
+    return None
+  try:
+    import resource  # type: ignore
+  except Exception:
+    return None
+
+  cpu_soft = max(1, int(timeout_sec) + 1)
+  cpu_hard = max(cpu_soft, int(timeout_sec) + 2)
+  memory_limit_bytes = max(64 * 1024 * 1024, int(max_memory_mb) * 1024 * 1024)
+
+  def _apply_limits() -> None:
+    try:
+      resource.setrlimit(resource.RLIMIT_CPU, (cpu_soft, cpu_hard))
+    except Exception:
+      pass
+    for limit_name in ("RLIMIT_AS", "RLIMIT_DATA"):
+      limit_key = getattr(resource, limit_name, None)
+      if limit_key is None:
+        continue
+      try:
+        resource.setrlimit(limit_key, (memory_limit_bytes, memory_limit_bytes))
+      except Exception:
+        pass
+    limit_key = getattr(resource, "RLIMIT_FSIZE", None)
+    if limit_key is not None:
+      try:
+        resource.setrlimit(limit_key, (1_048_576, 1_048_576))
+      except Exception:
+        pass
+
+  return _apply_limits
 
 
 def _truncate(value: Any, *, max_len: int) -> tuple[str, bool]:
@@ -481,6 +594,15 @@ def _error_payload(
 
 def handle(args: dict[str, Any], runtime: Any, host: Any) -> dict[str, Any]:
   payload = args if isinstance(args, dict) else {}
+  deployment_mode = _resolve_deployment_mode(runtime, host)
+  if (
+    deployment_mode == DEPLOYMENT_MODE_REMOTE_SERVER
+    and not _is_true(os.getenv("ANCIA_ALLOW_PYTHON_RUN_REMOTE_SERVER", ""))
+  ):
+    raise RuntimeError(
+      "python.run отключён в remote_server режиме по соображениям безопасности. "
+      "Для явного включения установите ANCIA_ALLOW_PYTHON_RUN_REMOTE_SERVER=1."
+    )
 
   stdin_value = payload.get("stdin")
   if stdin_value is not None and str(stdin_value or "").strip():
@@ -509,6 +631,8 @@ def handle(args: dict[str, Any], runtime: Any, host: Any) -> dict[str, Any]:
     min_value=500,
     max_value=MAX_OUTPUT_CHARS,
   )
+  max_memory_mb = _resolve_max_memory_mb()
+  preexec_fn = _build_subprocess_preexec_fn(timeout_sec, max_memory_mb)
 
   wrapper_script = _build_wrapper_script()
   input_payload = json.dumps(
@@ -521,15 +645,22 @@ def handle(args: dict[str, Any], runtime: Any, host: Any) -> dict[str, Any]:
 
   started_at = time.perf_counter()
   try:
-    completed = subprocess.run(
-      [sys.executable, "-I", "-c", wrapper_script],
-      input=input_payload,
-      text=True,
-      capture_output=True,
-      timeout=float(timeout_sec) + 0.25,
-      check=False,
-      env=_build_subprocess_env(),
-    )
+    run_kwargs: dict[str, Any] = {
+      "input": input_payload,
+      "text": True,
+      "capture_output": True,
+      "timeout": float(timeout_sec) + 0.25,
+      "check": False,
+      "env": _build_subprocess_env(),
+    }
+    if preexec_fn is not None:
+      run_kwargs["preexec_fn"] = preexec_fn
+    with tempfile.TemporaryDirectory(prefix="ancia-python-run-") as sandbox_cwd:
+      run_kwargs["cwd"] = sandbox_cwd
+      completed = subprocess.run(
+        [sys.executable, "-I", "-c", wrapper_script],
+        **run_kwargs,
+      )
   except subprocess.TimeoutExpired:
     duration_ms = int((time.perf_counter() - started_at) * 1000)
     return _error_payload(

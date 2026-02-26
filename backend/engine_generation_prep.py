@@ -2,9 +2,18 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any, Callable
 
 MAX_IMAGE_DATA_URL_CHARS = 2_000_000
+SAFE_IMAGE_DATA_URL_RE = re.compile(
+  r"^data:image/(?:png|jpe?g|webp|gif|bmp|x-icon|vnd\.microsoft\.icon|avif);base64,[a-z0-9+/=]+$",
+  flags=re.IGNORECASE,
+)
+
+
+def _is_safe_image_data_url(value: Any) -> bool:
+  return bool(SAFE_IMAGE_DATA_URL_RE.match(str(value or "").strip()))
 
 
 def build_tool_schemas(active_tools: set[str], tool_schemas: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
@@ -107,8 +116,15 @@ def build_attachment_context(
 
     if kind == "image":
       data_url = str(item.get("dataUrl") or "").strip()
-      is_embedded_image = data_url.startswith("data:image/")
-      if is_embedded_image and len(data_url) > MAX_IMAGE_DATA_URL_CHARS:
+      is_image_data_url = data_url.lower().startswith("data:image/")
+      is_safe_embedded_image = _is_safe_image_data_url(data_url)
+      if is_image_data_url and not is_safe_embedded_image:
+        lines.append(
+          "Изображение приложено в неподдерживаемом формате. "
+          "Разрешены только base64 DataURL форматов png/jpeg/webp/gif/bmp/ico/avif."
+        )
+        continue
+      if is_safe_embedded_image and len(data_url) > MAX_IMAGE_DATA_URL_CHARS:
         lines.append(
           "Изображение приложено, но размер слишком большой для прямой передачи в vision-модель. "
           "Отправь более лёгкую версию файла."
@@ -145,7 +161,7 @@ def _resolve_image_blocks(
     if kind != "image":
       continue
     data_url = str(item.get("dataUrl") or "").strip()
-    if not data_url.startswith("data:image/"):
+    if not _is_safe_image_data_url(data_url):
       continue
     if len(data_url) > MAX_IMAGE_DATA_URL_CHARS:
       continue

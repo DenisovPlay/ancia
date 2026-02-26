@@ -7,11 +7,11 @@ from fastapi import FastAPI, HTTPException, Request
 try:
   from backend.access_control import user_can_download_models
   from backend.deployment import DEPLOYMENT_MODE_REMOTE_SERVER
-  from backend.schemas import ContextUsageRequest, ModelParamsUpdateRequest, ModelSelectRequest
+  from backend.schemas import ContextUsageRequest, HistorySummarizeRequest, ModelParamsUpdateRequest, ModelSelectRequest
 except ModuleNotFoundError:
   from access_control import user_can_download_models  # type: ignore
   from deployment import DEPLOYMENT_MODE_REMOTE_SERVER  # type: ignore
-  from schemas import ContextUsageRequest, ModelParamsUpdateRequest, ModelSelectRequest  # type: ignore
+  from schemas import ContextUsageRequest, HistorySummarizeRequest, ModelParamsUpdateRequest, ModelSelectRequest  # type: ignore
 
 
 def register_model_routes(
@@ -153,9 +153,52 @@ def register_model_routes(
       "installed_models": cache_map,
     }
 
+  def build_runtime_diagnostics_payload() -> dict[str, Any]:
+    runtime = (
+      model_engine.get_runtime_snapshot()
+      if hasattr(model_engine, "get_runtime_snapshot")
+      else {}
+    )
+    runtime_profile = runtime.get("runtime_profile") if isinstance(runtime, dict) and isinstance(runtime.get("runtime_profile"), dict) else {}
+    runtime_tuning = runtime.get("runtime_tuning") if isinstance(runtime, dict) and isinstance(runtime.get("runtime_tuning"), dict) else {}
+    startup = runtime.get("startup") if isinstance(runtime, dict) and isinstance(runtime.get("startup"), dict) else {}
+    startup_details = startup.get("details") if isinstance(startup.get("details"), dict) else {}
+    selected_model_id = str(model_engine.get_selected_model_id() or "").strip().lower()
+    selected_model = next(
+      (
+        item
+        for item in list(model_engine.list_models_catalog() or [])
+        if isinstance(item, dict) and str(item.get("id") or "").strip().lower() == selected_model_id
+      ),
+      {},
+    )
+    compatibility = selected_model.get("compatibility") if isinstance(selected_model.get("compatibility"), dict) else {}
+    memory = runtime.get("memory") if isinstance(runtime, dict) and isinstance(runtime.get("memory"), dict) else {}
+    recommended_model_id = str(
+      memory.get("recommended_model_id_for_memory")
+      or startup_details.get("recommended_model_id_for_memory")
+      or ""
+    ).strip().lower()
+    return {
+      "runtime_profile": runtime_profile,
+      "runtime_tuning": runtime_tuning,
+      "runtime_backend_kind": str(runtime.get("runtime_backend_kind") or ""),
+      "streaming_runtime_available": bool(runtime.get("streaming_runtime_available")),
+      "vision_runtime_available": bool(runtime.get("vision_runtime_available")),
+      "selected_model_id": selected_model_id,
+      "selected_model": selected_model if isinstance(selected_model, dict) else {},
+      "selected_model_compatibility": compatibility,
+      "memory": memory,
+      "recommended_model_id_for_memory": recommended_model_id,
+    }
+
   @app.get("/models")
   def list_models() -> dict[str, Any]:
     return build_models_payload()
+
+  @app.get("/models/runtime-diagnostics")
+  def get_runtime_diagnostics() -> dict[str, Any]:
+    return build_runtime_diagnostics_payload()
 
   @app.post("/models/select")
   def select_model(payload: ModelSelectRequest, request: Request) -> dict[str, Any]:
@@ -343,6 +386,21 @@ def register_model_routes(
       "ok": True,
       **usage_payload,
     }
+
+  @app.post("/context/summarize")
+  def context_summarize(payload: HistorySummarizeRequest) -> dict[str, Any]:
+    if not hasattr(model_engine, "summarize_history_segment"):
+      raise HTTPException(status_code=501, detail="Summarization API is not available")
+    messages = [
+      {"role": str(m.role or "").strip().lower(), "text": str(m.text or "").strip()}
+      for m in payload.messages
+    ]
+    max_chars = max(100, min(int(payload.max_chars or 800), 2000))
+    try:
+      summary = model_engine.summarize_history_segment(messages, max_chars=max_chars)
+    except Exception as exc:
+      raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {"ok": True, "summary": summary}
 
   @app.get("/tools")
   def list_tools() -> dict[str, Any]:

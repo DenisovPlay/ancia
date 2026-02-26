@@ -53,6 +53,41 @@ def register_chat_store_routes(
       return ""
     return str(user_payload.get("id") or "").strip()
 
+  def _auth_user(request: Request) -> dict[str, Any]:
+    auth_payload = getattr(request.state, "auth", None)
+    if not isinstance(auth_payload, dict):
+      return {}
+    user_payload = auth_payload.get("user")
+    return user_payload if isinstance(user_payload, dict) else {}
+
+  def _append_audit_event(
+    request: Request,
+    *,
+    action: str,
+    target_type: str = "",
+    target_id: str = "",
+    status: str = "ok",
+    details: dict[str, Any] | None = None,
+  ) -> None:
+    if not hasattr(storage, "append_audit_event"):
+      return
+    user_payload = _auth_user(request)
+    client_host = str(getattr(getattr(request, "client", None), "host", "") or "").strip()
+    try:
+      storage.append_audit_event(
+        actor_user_id=str(user_payload.get("id") or "").strip(),
+        actor_username=str(user_payload.get("username") or "").strip().lower(),
+        actor_role=str(user_payload.get("role") or "").strip().lower(),
+        action=action,
+        target_type=target_type,
+        target_id=target_id,
+        status=status,
+        details=details if isinstance(details, dict) else {},
+        ip_address=client_host,
+      )
+    except Exception:
+      return
+
   @app.get("/chats")
   def list_chats(request: Request) -> dict[str, Any]:
     owner_user_id = resolve_owner_user_id(request)
@@ -172,6 +207,14 @@ def register_chat_store_routes(
     )
     if session is None:
       raise HTTPException(status_code=409, detail=f"Chat '{requested_chat_id}' already exists")
+    _append_audit_event(
+      request,
+      action="chat.create",
+      target_type="chat",
+      target_id=str(session.get("id") or requested_chat_id),
+      status="ok",
+      details={"title": str(session.get("title") or requested_title)},
+    )
 
     return {
       "chat": session,
@@ -194,6 +237,17 @@ def register_chat_store_routes(
     )
     if session is None:
       raise HTTPException(status_code=404, detail=f"Chat '{safe_chat_id}' not found")
+    _append_audit_event(
+      request,
+      action="chat.update",
+      target_type="chat",
+      target_id=safe_chat_id,
+      status="ok",
+      details={
+        "title_updated": payload.title is not None,
+        "mood_updated": payload.mood is not None,
+      },
+    )
 
     return {
       "chat": session,
@@ -212,8 +266,18 @@ def register_chat_store_routes(
       raise HTTPException(status_code=404, detail=f"Chat '{safe_chat_id}' not found")
 
     storage.delete_chat(safe_chat_id, owner_user_id=owner_user_id)
+    created_replacement = False
     if len(chats) <= 1:
       storage.create_chat(title="Новая сессия", owner_user_id=owner_user_id)
+      created_replacement = True
+    _append_audit_event(
+      request,
+      action="chat.delete",
+      target_type="chat",
+      target_id=safe_chat_id,
+      status="ok",
+      details={"created_replacement_chat": created_replacement},
+    )
     return {
       "ok": True,
       "store": storage.list_chat_store(owner_user_id=owner_user_id),
@@ -241,6 +305,15 @@ def register_chat_store_routes(
     )
     if duplicated is None:
       raise HTTPException(status_code=500, detail="Failed to duplicate chat")
+    duplicated_chat_id = str(duplicated.get("id") or requested_target_id or "")
+    _append_audit_event(
+      request,
+      action="chat.duplicate",
+      target_type="chat",
+      target_id=duplicated_chat_id,
+      status="ok",
+      details={"source_chat_id": safe_chat_id},
+    )
 
     return {
       "chat": duplicated,
@@ -257,6 +330,14 @@ def register_chat_store_routes(
       raise HTTPException(status_code=404, detail=f"Chat '{safe_chat_id}' not found")
 
     deleted = storage.clear_chat_messages(safe_chat_id, owner_user_id=owner_user_id)
+    _append_audit_event(
+      request,
+      action="chat.messages.clear",
+      target_type="chat",
+      target_id=safe_chat_id,
+      status="ok",
+      details={"deleted_count": int(deleted)},
+    )
     return {
       "deleted": deleted,
       "store": storage.list_chat_store(owner_user_id=owner_user_id),
@@ -283,6 +364,14 @@ def register_chat_store_routes(
     )
     if not updated:
       raise HTTPException(status_code=404, detail=f"Message '{message_id}' not found")
+    _append_audit_event(
+      request,
+      action="chat.message.update",
+      target_type="message",
+      target_id=str(message_id or "").strip(),
+      status="ok",
+      details={"chat_id": safe_chat_id},
+    )
 
     return {
       "ok": True,
@@ -305,6 +394,14 @@ def register_chat_store_routes(
     )
     if not deleted:
       raise HTTPException(status_code=404, detail=f"Message '{message_id}' not found")
+    _append_audit_event(
+      request,
+      action="chat.message.delete",
+      target_type="message",
+      target_id=str(message_id or "").strip(),
+      status="ok",
+      details={"chat_id": safe_chat_id},
+    )
 
     return {
       "ok": True,

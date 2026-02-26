@@ -83,6 +83,20 @@ except ModuleNotFoundError:
     ToolEvent,
   )
 
+try:
+  from backend.netguard import open_safe_http_request
+except ModuleNotFoundError:
+  from netguard import open_safe_http_request  # type: ignore
+
+SAFE_IMAGE_DATA_URL_RE = re.compile(
+  r"^data:image/(?:png|jpe?g|webp|gif|bmp|x-icon|vnd\.microsoft\.icon|avif);base64,[a-z0-9+/=]+$",
+  flags=re.IGNORECASE,
+)
+
+
+def _is_safe_image_data_url(value: Any) -> bool:
+  return bool(SAFE_IMAGE_DATA_URL_RE.match(str(value or "").strip()))
+
 
 def register_api_routes(
   app: FastAPI,
@@ -259,7 +273,13 @@ def register_api_routes(
     }
     req_head = url_request.Request(safe_url, method="HEAD", headers=headers)
     try:
-      with url_request.urlopen(req_head, timeout=7.0) as response:
+      with open_safe_http_request(
+        req_head,
+        timeout=7.0,
+        allow_http=True,
+        allow_loopback=False,
+        allow_private=False,
+      ) as response:
         final_url = str(response.geturl() or safe_url)
         normalized_headers = {
           str(key or "").lower(): str(value or "")
@@ -281,7 +301,13 @@ def register_api_routes(
       },
     )
     try:
-      with url_request.urlopen(req_get, timeout=7.0) as response:
+      with open_safe_http_request(
+        req_get,
+        timeout=7.0,
+        allow_http=True,
+        allow_loopback=False,
+        allow_private=False,
+      ) as response:
         final_url = str(response.geturl() or safe_url)
         normalized_headers = {
           str(key or "").lower(): str(value or "")
@@ -483,14 +509,8 @@ def register_api_routes(
     attachments = list(payload.attachments or [])
     for attachment in attachments:
       item = attachment.model_dump() if hasattr(attachment, "model_dump") else dict(attachment)
-      kind = str(item.get("kind") or "file").strip().lower()
-      if kind == "image":
-        return True
-      mime_type = str(item.get("mimeType") or "").strip().lower()
-      if mime_type.startswith("image/"):
-        return True
-      data_url = str(item.get("dataUrl") or "").strip().lower()
-      if data_url.startswith("data:image/"):
+      data_url = str(item.get("dataUrl") or "").strip()
+      if _is_safe_image_data_url(data_url):
         return True
     return False
 
@@ -585,6 +605,11 @@ def register_api_routes(
       return ""
     return str(user_payload.get("id") or "").strip()
 
+  def _resolve_deployment_mode_from_request(request: Request | None = None) -> str:
+    if request is None:
+      return ""
+    return str(getattr(request.state, "deployment_mode", "") or "").strip().lower()
+
   def _auth_user_from_request(request: Request | None = None) -> dict[str, Any]:
     if request is None:
       return {}
@@ -647,6 +672,7 @@ def register_api_routes(
     payload: ChatRequest,
     *,
     owner_user_id: str = "",
+    deployment_mode: str = "",
   ) -> tuple[str, str, str, str, RuntimeChatContext, set[str], str]:
     MAX_ATTACHMENTS_TOTAL_SIZE = 52_428_800
     MAX_ATTACHMENTS_TOTAL_TEXT = 500_000
@@ -689,6 +715,40 @@ def register_api_routes(
       if existing_chat is not None
       else []
     )
+    continue_mode_requested = bool(
+      getattr(payload, "continue_mode", False)
+      or getattr(payload, "skip_user_persist", False)
+    )
+    continue_from_message_id = str(getattr(payload, "continue_from_message_id", None) or "").strip()
+    if continue_from_message_id and not continue_mode_requested:
+      raise HTTPException(
+        status_code=400,
+        detail="continue_from_message_id requires continue_mode/skip_user_persist.",
+      )
+    if continue_mode_requested:
+      if not continue_from_message_id:
+        raise HTTPException(
+          status_code=400,
+          detail="continue_from_message_id is required in continue mode.",
+        )
+      if not existing_messages:
+        raise HTTPException(
+          status_code=409,
+          detail="Продолжение недоступно: в чате нет assistant-сообщения для продолжения.",
+        )
+      last_entry = existing_messages[-1]
+      last_message_id = str(last_entry.get("id") or "").strip()
+      last_role = str(last_entry.get("role") or "").strip().lower()
+      if last_message_id != continue_from_message_id or last_role != "assistant":
+        raise HTTPException(
+          status_code=409,
+          detail="Продолжение доступно только для последнего assistant-сообщения.",
+        )
+      try:
+        payload.skip_user_persist = True
+      except Exception:
+        pass
+
     is_first_turn = existing_chat is None or len(existing_messages) == 0
     requested_chat_title = str(payload.context.chat_title or "").strip()
     existing_chat_title = str(existing_chat["title"]) if existing_chat is not None else ""
@@ -801,6 +861,21 @@ def register_api_routes(
           status_code=413,
           detail="Суммарный объём текстовых данных вложений слишком большой.",
         )
+      safe_kind_for_check = str(payload_item.get("kind") or "file").strip().lower()
+      safe_mime_for_check = str(payload_item.get("mimeType") or "").strip().lower()
+      has_image_markers = (
+        safe_kind_for_check == "image"
+        or safe_mime_for_check.startswith("image/")
+        or str(data_url or "").strip().lower().startswith("data:image/")
+      )
+      if has_image_markers and not _is_safe_image_data_url(data_url):
+        raise HTTPException(
+          status_code=400,
+          detail=(
+            "Некорректное изображение во вложении: поддерживаются только base64 DataURL "
+            "форматов png/jpeg/webp/gif/bmp/ico/avif; SVG и другие форматы запрещены."
+          ),
+        )
 
       attachment_payloads.append(_sanitize_attachment_for_storage(payload_item))
       safe_name = str(payload_item.get("name") or f"file-{index}").strip()
@@ -843,7 +918,7 @@ def register_api_routes(
       ):
         user_message_id = str(last_entry.get("id") or "").strip()
 
-    if not user_message_id:
+    if not user_message_id and not getattr(payload, "skip_user_persist", False):
       user_message_id = storage.append_message(
         chat_id=chat_id,
         role="user",
@@ -858,6 +933,14 @@ def register_api_routes(
         },
         owner_user_id=owner_user_id,
       )
+
+    # Для continue-режима: подменяем текст сообщения на чёткую инструкцию для модели
+    if getattr(payload, "skip_user_persist", False):
+      payload.message = (
+        "Твой предыдущий ответ оборвался на полуслове. Продолжи его точно с того места, где он закончился. "
+        "Не повторяй ничего из уже написанного — начни сразу с продолжения."
+      )
+      user_text = payload.message
 
     context_guard_event_raw = getattr(payload.context, "context_guard_event", None)
     if isinstance(context_guard_event_raw, dict):
@@ -966,6 +1049,7 @@ def register_api_routes(
       mood=incoming_mood,
       user_name=payload.context.user.name.strip(),
       timezone=payload.context.user.timezone.strip() or "UTC",
+      deployment_mode=str(deployment_mode or "").strip().lower(),
       plugin_permission_grants=granted_plugin_ids,
       tool_permission_grants=granted_tool_keys,
       domain_permission_grants=granted_domain_keys,
@@ -993,12 +1077,34 @@ def register_api_routes(
       else {}
     )
 
+    # Применяем те же ограничения что и фронтенд (historyAndPersistence.js),
+    # чтобы подсчёт токенов на стороне бэкенда совпадал с фронтендом
+    # и авто-сжатие contextGuard срабатывало своевременно.
+    _MAX_CHARS_PER_MSG = 1400
+    _MAX_TOTAL_CHARS = 18000
+    _raw_history = list(getattr(payload.context, "history", None) or [])
+    _check_history: list[Any] = []
+    _total_chars = 0
+    for _entry in reversed(_raw_history):
+      _role = str(getattr(_entry, "role", "") or "").strip().lower()
+      if _role not in {"user", "assistant", "system"}:
+        continue
+      _text = str(getattr(_entry, "text", "") or "")
+      if len(_text) > _MAX_CHARS_PER_MSG:
+        _text = _text[:_MAX_CHARS_PER_MSG - 1] + "…"
+      _proj = _total_chars + len(_text)
+      if _proj > _MAX_TOTAL_CHARS and _check_history:
+        break
+      _total_chars = _proj
+      _check_history.append({"role": _role, "text": _text})
+    _check_history.reverse()
+
     try:
       usage_payload = model_engine.get_context_usage(
         model_id=str(model_engine.get_selected_model_id() or "").strip().lower(),
         draft_text=str(payload.message or ""),
         pending_assistant_text="",
-        history=list(getattr(payload.context, "history", None) or []),
+        history=_check_history,
         attachments=list(payload.attachments or []),
         history_variants=[],
         active_tools=active_tools,
@@ -1117,6 +1223,67 @@ def register_api_routes(
         return 0
     return 0
 
+  def _is_reply_truncated(reply: str) -> bool:
+    """Проверяет, обрывается ли ответ на середине (незавершённые теги, слова, списки)."""
+    safe_reply = str(reply or "").strip()
+    if not safe_reply:
+      return False
+
+    last_line = safe_reply.split("\n")[-1].strip()
+
+    # Обрыв на середине Markdown-элемента (проверяем только последнюю строку)
+    # ** в начале или конце строки без закрытия
+    if re.search(r"^\*\*[^*]+$", last_line):  # **текст без закрытия
+      return True
+    if re.search(r"[^*]\*\*$", last_line):  # текст** без закрытия
+      return True
+    # ``` в конце без закрытия
+    if re.search(r"```$", last_line) and not re.search(r"```.*```", safe_reply):
+      return True
+    # [ без закрытия ]
+    if re.search(r"\[[^\]]*$", last_line):
+      return True
+    # Пустые элементы списка
+    if re.match(r"^\s*[-*+]\s*$", last_line):
+      return True
+    if re.match(r"^\s*\d+\.\s*$", last_line):
+      return True
+
+
+    # Проверяем последнюю строку на незавершённость
+    if last_line and len(last_line) > 3:
+      # Если последняя строка не заканчивается на знак препинания или закрывающий элемент
+      if not re.search(r"[.!?;:)}\]>]\s*$", last_line):
+        # И не является полным элементом списка
+        if not re.match(r"^[-*+]\s+.+[.!?]\s*$", last_line):
+          if not re.match(r"^\d+\.\s+.+[.!?]\s*$", last_line):
+            # Проверяем, не обрывается ли на середине слова
+            last_word_match = re.search(r"(\w+)[^\w]*$", last_line)
+            if last_word_match:
+              last_word = last_word_match.group(1)
+              # Если последнее "слово" >4 символов и не похоже на завершённое
+              if len(last_word) > 4 and last_word.lower() not in {"the", "and", "для", "что", "как", "это", "так", "текст", "text"}:
+                return True
+
+    # Незавершённые HTML-теги — проверяем весь ответ
+    # Ищем открытые теги, которые не закрыты
+    open_tags = re.findall(r"<([a-zA-Z][a-zA-Z0-9]*)(?:\s[^>]*)?>(?!</\1>)", safe_reply)
+    closed_tags = re.findall(r"</([a-zA-Z][a-zA-Z0-9]*)>", safe_reply)
+    # Self-closing теги не учитываем
+    self_closing = {"br", "hr", "img", "input", "meta", "link"}
+    open_tags = [t for t in open_tags if t.lower() not in self_closing]
+    # Проверяем баланс
+    for tag in set(open_tags):
+      if open_tags.count(tag) > closed_tags.count(tag):
+        # Есть незакрытый тег — проверяем, не в конце ли он
+        last_open = safe_reply.rfind(f"<{tag}")
+        last_close = safe_reply.rfind(f"</{tag}>")
+        if last_open > last_close:
+          # Тег открыт, но не закрыт в конце
+          return True
+
+    return False
+
   def build_generation_actions_meta(
     *,
     source_user_text: str,
@@ -1125,10 +1292,18 @@ def register_api_routes(
   ) -> dict[str, Any]:
     completion_tokens = estimate_completion_tokens(final_reply)
     completion_limit = resolve_selected_model_max_tokens()
+
+    # allow_continue = True если:
+    # 1. Достигнут лимит токенов (completion_tokens >= limit - 2)
+    # 2. ИЛИ ответ обрывается на середине (незавершённые теги, слова, списки)
     allow_continue = (
       completion_limit > 0
       and completion_tokens >= max(1, completion_limit - 2)
     )
+    # Дополнительная проверка на обрыв ответа
+    if not allow_continue and _is_reply_truncated(final_reply):
+      allow_continue = True
+
     return {
       "source_user_text": str(source_user_text or ""),
       "source_user_message_id": str(source_user_message_id or "").strip(),
@@ -1232,6 +1407,7 @@ def register_api_routes(
     user_text, chat_id, _chat_title, incoming_mood, runtime, active_tools, user_message_id = prepare_chat_turn(
       payload,
       owner_user_id=owner_user_id,
+      deployment_mode=_resolve_deployment_mode_from_request(request),
     )
     require_vision_runtime = _payload_has_image_attachments(payload)
     _require_model_download_access_for_request(
@@ -1287,6 +1463,7 @@ def register_api_routes(
     user_text, chat_id, chat_title, incoming_mood, runtime, active_tools, user_message_id = prepare_chat_turn(
       payload,
       owner_user_id=owner_user_id,
+      deployment_mode=_resolve_deployment_mode_from_request(request),
     )
     _require_model_download_access_for_request(
       request,
@@ -1315,8 +1492,13 @@ def register_api_routes(
       )
 
       assistant_message_id: str | None = None
+      # Continue mode: update existing assistant message instead of creating a new one
+      _continue_from_id = str(getattr(payload, "continue_from_message_id", None) or "").strip()
+      if _continue_from_id and getattr(payload, "skip_user_persist", False):
+        assistant_message_id = _continue_from_id
       assistant_stream_text = ""
       tool_message_by_invocation: dict[str, str] = {}
+
       generation_actions_meta = build_generation_actions_meta(
         source_user_text=user_text,
         source_user_message_id=user_message_id,
@@ -1368,7 +1550,7 @@ def register_api_routes(
         streaming: bool,
         extra_meta: dict[str, Any] | None = None,
       ) -> str:
-        nonlocal assistant_message_id
+        nonlocal assistant_message_id, assistant_stream_text
         meta_payload: dict[str, Any] = {
           "model": model_label,
           "mood": mood,
@@ -1386,6 +1568,8 @@ def register_api_routes(
             owner_user_id=owner_user_id,
           )
         else:
+          # В режиме продолжения text — это полный текст (existing + delta)
+          # В обычном режиме text — это накопленный текст
           storage.update_message(
             chat_id,
             assistant_message_id,
@@ -1798,22 +1982,30 @@ def register_api_routes(
           "stream": stream_diagnostics,
           "generation_actions": generation_actions_meta,
         }
-        if assistant_message_id is None:
-          assistant_message_id = storage.append_message(
-            chat_id=chat_id,
-            role="assistant",
-            text=error_text,
-            meta=error_meta,
-            owner_user_id=owner_user_id,
-          )
-        else:
-          storage.update_message(
-            chat_id,
-            assistant_message_id,
-            text=error_text,
-            meta=error_meta,
-            owner_user_id=owner_user_id,
-          )
+        # Не сохраняем ошибку переполнения контекста, если ничего не было сгенерировано.
+        # Фронтенд получит чистый текст ошибки через SSE error и сохранит локально.
+        _is_empty_overflow = (
+          assistant_message_id is None
+          and not (assistant_stream_text or "").strip()
+          and ("контекст переполнен" in str(exc).lower() or "context_overflow" in str(exc).lower())
+        )
+        if not _is_empty_overflow:
+          if assistant_message_id is None:
+            assistant_message_id = storage.append_message(
+              chat_id=chat_id,
+              role="assistant",
+              text=error_text,
+              meta=error_meta,
+              owner_user_id=owner_user_id,
+            )
+          else:
+            storage.update_message(
+              chat_id,
+              assistant_message_id,
+              text=error_text,
+              meta=error_meta,
+              owner_user_id=owner_user_id,
+            )
         yield _format_sse(
           "error",
           {

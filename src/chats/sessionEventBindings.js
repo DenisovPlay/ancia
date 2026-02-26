@@ -58,8 +58,10 @@ export function bindChatSessionEvents({
       hideSearchResults();
       return;
     }
+
     const limitedRows = rows.slice(0, 24);
-    elements.chatSessionSearchResults.innerHTML = limitedRows.map((item) => {
+    const fragment = document.createDocumentFragment();
+    limitedRows.forEach((item) => {
       const chatId = String(item?.chat_id || "").trim();
       const messageId = String(item?.message_id || "").trim();
       const chatTitle = String(item?.chat_title || "Чат").trim() || "Чат";
@@ -67,14 +69,33 @@ export function bindChatSessionEvents({
       const snippet = String(item?.snippet || item?.text || "").replace(/\s+/g, " ").trim();
       const timestamp = String(item?.timestamp || "").trim();
       const safeSnippet = snippet || "Совпадение без текста";
-      return (
-        `<button type="button" class="chat-search-result-item" data-search-chat-id="${chatId}" data-search-message-id="${messageId}">`
-        + `<span class="chat-search-result-item__title">${chatTitle}</span>`
-        + `<span class="chat-search-result-item__snippet">${safeSnippet}</span>`
-        + `<span class="chat-search-result-item__meta">${role}${timestamp ? ` • ${timestamp}` : ""}</span>`
-        + "</button>"
-      );
-    }).join("");
+
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "chat-search-result-item";
+      button.dataset.searchChatId = chatId;
+      button.dataset.searchMessageId = messageId;
+
+      const titleNode = document.createElement("span");
+      titleNode.className = "chat-search-result-item__title";
+      titleNode.textContent = chatTitle;
+      button.append(titleNode);
+
+      const snippetNode = document.createElement("span");
+      snippetNode.className = "chat-search-result-item__snippet";
+      snippetNode.textContent = safeSnippet;
+      button.append(snippetNode);
+
+      const metaNode = document.createElement("span");
+      metaNode.className = "chat-search-result-item__meta";
+      metaNode.textContent = `${role}${timestamp ? ` • ${timestamp}` : ""}`;
+      button.append(metaNode);
+
+      fragment.append(button);
+    });
+
+    elements.chatSessionSearchResults.innerHTML = "";
+    elements.chatSessionSearchResults.append(fragment);
     elements.chatSessionSearchResults.classList.remove("hidden");
     elements.chatSessionSearchResults.dataset.open = "true";
   };

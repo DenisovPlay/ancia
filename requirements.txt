@@ -5,3 +5,4 @@ psutil>=6.0,<7
 mlx>=0.17,<1
 mlx-lm>=0.20,<1
 mlx-vlm
+httpx

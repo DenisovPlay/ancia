@@ -5,6 +5,8 @@ import {
   normalizeAttachment,
 } from "./attachmentUtils.js";
 
+const SAFE_IMAGE_DATA_URL_RE = /^data:image\/(?:png|jpe?g|webp|gif|bmp|x-icon|vnd\.microsoft\.icon|avif);base64,[a-z0-9+/=]+$/i;
+
 function escapeHtml(value) {
   return String(value || "")
     .replaceAll("&", "&amp;")
@@ -17,6 +19,9 @@ function escapeHtml(value) {
 function classifyAttachmentKind(file) {
   const name = String(file?.name || "").toLowerCase();
   const mimeType = String(file?.type || "").toLowerCase();
+  if (mimeType === "image/svg+xml" || /\.svg$/i.test(name)) {
+    return "file";
+  }
   if (mimeType.startsWith("image/")) {
     return "image";
   }
@@ -43,6 +48,11 @@ function readFileAsDataUrl(file) {
     reader.onerror = () => reject(reader.error || new Error("read_error"));
     reader.readAsDataURL(file);
   });
+}
+
+function isSafeImageDataUrl(value) {
+  const safeValue = String(value || "").trim();
+  return SAFE_IMAGE_DATA_URL_RE.test(safeValue);
 }
 
 export function createComposerAttachmentsManager({
@@ -131,7 +141,7 @@ export function createComposerAttachmentsManager({
       try {
         const dataUrl = await readFileAsDataUrl(file);
         const safeDataUrl = String(dataUrl || "");
-        if (!safeDataUrl.startsWith("data:image/")) {
+        if (!isSafeImageDataUrl(safeDataUrl)) {
           attachment.error = "image_invalid";
         } else if (safeDataUrl.length > maxImageDataUrlChars) {
           attachment.error = "image_too_large";
@@ -161,7 +171,8 @@ export function createComposerAttachmentsManager({
       .map((item) => {
         const normalized = normalizeAttachment(item);
         const label = escapeHtml(normalized.name);
-        const hasPreviewImage = isImageAttachment(normalized) && String(normalized.dataUrl || "").startsWith("data:image/");
+        const safeId = escapeHtml(normalized.id);
+        const hasPreviewImage = isImageAttachment(normalized) && isSafeImageDataUrl(normalized.dataUrl);
         return `
           <div class="composer-attachment-card">
             <div class="composer-attachment-card__preview">
@@ -174,7 +185,7 @@ export function createComposerAttachmentsManager({
             </div>
             <button
               type="button"
-              data-attachment-remove="${normalized.id}"
+              data-attachment-remove="${safeId}"
               class="composer-attachment-card__remove icon-button"
               aria-label="Удалить вложение"
               title="Удалить вложение"

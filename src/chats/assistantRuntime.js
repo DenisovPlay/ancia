@@ -593,6 +593,7 @@ export function createChatAssistantRuntime({
       toolPermissionGrants = [],
       domainPermissionGrants = [],
       requestId = "",
+      extraPayloadFields = {},
     } = {},
   ) {
     let latestPartialText = "";
@@ -630,19 +631,22 @@ export function createChatAssistantRuntime({
       return incoming;
     };
 
-    const buildRequestPayload = () => buildBackendChatPayload(
-      userText,
-      chatId,
-      attachments,
-      {
-        historyOverride,
-        contextGuardEvent,
-        pluginPermissionGrants,
-        toolPermissionGrants,
-        domainPermissionGrants,
-        requestId,
-      },
-    );
+    const buildRequestPayload = () => ({
+      ...buildBackendChatPayload(
+        userText,
+        chatId,
+        attachments,
+        {
+          historyOverride,
+          contextGuardEvent,
+          pluginPermissionGrants,
+          toolPermissionGrants,
+          domainPermissionGrants,
+          requestId,
+        },
+      ),
+      ...extraPayloadFields,
+    });
 
     const performBackendAttempt = async (requestPayload, { allowTransportFallback = true } = {}) => {
       let streamedText = "";
@@ -891,12 +895,16 @@ export function createChatAssistantRuntime({
       }
 
       const detail = String(error?.message || "неизвестная ошибка");
+      const isContextOverflow = /контекст переполнен|context.?overflow/i.test(detail);
       updateConnectionState(BACKEND_STATUS.error, `Ошибка бэкенда: ${detail}`);
-      pushToast(`Бэкенд недоступен: ${detail}`, { tone: "error", durationMs: 3600 });
+      if (!isContextOverflow) {
+        pushToast(`Бэкенд недоступен: ${detail}`, { tone: "error", durationMs: 3600 });
+      }
       return {
-        text: `Не удалось получить ответ модели: ${detail}`,
+        text: isContextOverflow ? detail : `Не удалось получить ответ модели: ${detail}`,
         mood: "error",
-        metaSuffix: "ошибка модели",
+        metaSuffix: isContextOverflow ? "контекст переполнен" : "ошибка модели",
+        isContextOverflow,
       };
     }
   }

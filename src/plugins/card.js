@@ -22,6 +22,22 @@ function escapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
+function sanitizeExternalUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return "";
+  }
+  try {
+    const parsed = new URL(raw);
+    if (!/^https?:$/i.test(parsed.protocol)) {
+      return "";
+    }
+    return parsed.toString();
+  } catch {
+    return "";
+  }
+}
+
 export function normalizePluginFilter(filter) {
   const normalized = String(filter || "").trim().toLowerCase();
   return VALID_PLUGIN_FILTERS.has(normalized) ? normalized : "all";
@@ -138,9 +154,9 @@ export function renderPluginCard(plugin) {
         : "выключен";
 
   const versionText = plugin.version.startsWith("v") ? plugin.version : `v${plugin.version}`;
-  const docsUrl = plugin.homepage || plugin.repoUrl;
+  const docsUrl = sanitizeExternalUrl(plugin.homepage || plugin.repoUrl);
   const homepageLink = docsUrl
-    ? `<a href="${escapeHtml(docsUrl)}" target="_blank" rel="noreferrer" class="text-xs text-zinc-500 hover:text-zinc-300">${plugin.homepage ? "Открыть страницу" : "Открыть репозиторий"}</a>`
+    ? `<a href="${escapeHtml(docsUrl)}" target="_blank" rel="noopener noreferrer" class="text-xs text-zinc-500 hover:text-zinc-300">${plugin.homepage ? "Открыть страницу" : "Открыть репозиторий"}</a>`
     : `<span class="text-xs text-zinc-600">Системный плагин</span>`;
 
   const canToggle = isInstalled && !plugin.locked;

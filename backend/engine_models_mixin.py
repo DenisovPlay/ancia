@@ -45,6 +45,14 @@ class EngineModelsMixin:
     runtime_backend_kind = str(getattr(self, "_runtime_backend_kind", "") or "").strip().lower()
     stream_source = ""
     stream_available = False
+
+    def _resolve_stream_capability() -> tuple[bool, str]:
+      if runtime_backend_kind == "mlx_vlm":
+        return bool(getattr(self, "_vlm_stream_generate_fn", None)), "mlx_vlm.stream_generate"
+      if runtime_backend_kind == "mlx_lm":
+        return bool(getattr(self, "_stream_generate_fn", None)), "mlx_lm.stream_generate"
+      return False, ""
+
     generation_lock = getattr(self, "_generation_lock", None)
     if generation_lock is not None:
       acquired = False
@@ -54,29 +62,14 @@ class EngineModelsMixin:
         acquired = bool(generation_lock.acquire(False))
       if acquired:
         try:
-          if runtime_backend_kind == "mlx_vlm":
-            stream_available = bool(getattr(self, "_vlm_stream_generate_fn", None))
-            stream_source = "mlx_vlm.stream_generate"
-          else:
-            stream_available = bool(getattr(self, "_stream_generate_fn", None))
-            stream_source = "mlx_lm.stream_generate"
+          stream_available, stream_source = _resolve_stream_capability()
         finally:
           generation_lock.release()
       else:
         # Не блокируем API-поток, если прямо сейчас идёт генерация.
-        if runtime_backend_kind == "mlx_vlm":
-          stream_available = bool(getattr(self, "_vlm_stream_generate_fn", None))
-          stream_source = "mlx_vlm.stream_generate"
-        else:
-          stream_available = bool(getattr(self, "_stream_generate_fn", None))
-          stream_source = "mlx_lm.stream_generate"
+        stream_available, stream_source = _resolve_stream_capability()
     else:
-      if runtime_backend_kind == "mlx_vlm":
-        stream_available = bool(getattr(self, "_vlm_stream_generate_fn", None))
-        stream_source = "mlx_vlm.stream_generate"
-      else:
-        stream_available = bool(getattr(self, "_stream_generate_fn", None))
-        stream_source = "mlx_lm.stream_generate"
+      stream_available, stream_source = _resolve_stream_capability()
 
     startup = self.get_startup_snapshot()
     startup_details = startup.get("details") if isinstance(startup, dict) and isinstance(startup.get("details"), dict) else {}
@@ -90,6 +83,8 @@ class EngineModelsMixin:
       "pending_model_id": pending_model_id,
       "models_dir": str(getattr(self, "_models_dir", "") or ""),
       "runtime_backend_kind": runtime_backend_kind,
+      "runtime_profile": dict(getattr(self, "_runtime_profile", {}) or {}),
+      "runtime_tuning": dict(getattr(self, "_runtime_tuning", {}) or {}),
       "streaming_runtime_source": stream_source,
       "streaming_runtime_available": stream_available,
       "vision_runtime_available": vision_runtime_available,

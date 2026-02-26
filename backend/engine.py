@@ -57,10 +57,12 @@ try:
     ModelResult,
     ModelStartupState,
     STARTUP_STAGE_PROGRESS,
+    apply_runtime_env_tuning,
     format_bytes,
     normalize_model_repo,
     normalize_model_tier_key,
     resolve_available_memory_bytes,
+    resolve_runtime_profile,
     resolve_total_memory_bytes,
   )
   from backend.model_catalog import (
@@ -114,10 +116,12 @@ except ModuleNotFoundError:
     ModelResult,
     ModelStartupState,
     STARTUP_STAGE_PROGRESS,
+    apply_runtime_env_tuning,
     format_bytes,
     normalize_model_repo,
     normalize_model_tier_key,
     resolve_available_memory_bytes,
+    resolve_runtime_profile,
     resolve_total_memory_bytes,
   )
   from model_catalog import (  # type: ignore
@@ -178,6 +182,10 @@ VISION_UNAVAILABLE_REPLY = (
   "- или описать изображение текстом, и я помогу по этому описанию."
 )
 MAX_IMAGE_DATA_URL_CHARS = 2_000_000
+SAFE_IMAGE_DATA_URL_RE = re.compile(
+  r"^data:image/(?:png|jpe?g|webp|gif|bmp|x-icon|vnd\.microsoft\.icon|avif);base64,[a-z0-9+/=]+$",
+  flags=re.IGNORECASE,
+)
 
 
 class PythonModelEngine(EngineModelsMixin):
@@ -195,9 +203,22 @@ class PythonModelEngine(EngineModelsMixin):
   MAX_CONTEXT_WINDOW_LIMIT = 262_144
   MAX_COMPLETION_TOKENS_LIMIT = 131_072
 
+  def _default_runtime_backend_kind(self) -> str:
+    if os.getenv("ANCIA_DISABLE_MLX_RUNTIME", "").strip() == "1":
+      return "disabled"
+    profile = dict(getattr(self, "_runtime_profile", {}) or {})
+    if not bool(profile.get("supports_mlx")):
+      return "unsupported"
+    probe = profile.get("mlx_runtime_probe") if isinstance(profile.get("mlx_runtime_probe"), dict) else {}
+    if probe and not bool(probe.get("ok")):
+      return "unavailable"
+    return "mlx_lm"
+
   def __init__(self, storage: AppStorage, *, base_system_prompt: str) -> None:
     self._storage = storage
     self._base_system_prompt = base_system_prompt
+    self._runtime_profile = resolve_runtime_profile()
+    self._runtime_tuning = apply_runtime_env_tuning(self._runtime_profile)
     project_models_dir = (Path(__file__).resolve().parent / "data" / "models").resolve()
     _models_dir = (
       Path(os.getenv("ANCIA_MODELS_DIR", "")).expanduser().resolve()
@@ -223,7 +244,7 @@ class PythonModelEngine(EngineModelsMixin):
     self._vlm_stream_generate_fn: Callable[..., Any] | None = None
     self._make_sampler_fn: Callable[..., Any] | None = None
     self._make_logits_processors_fn: Callable[..., Any] | None = None
-    self._runtime_backend_kind = "mlx_lm"
+    self._runtime_backend_kind = self._default_runtime_backend_kind()
     self._vision_runtime_probe_failed = False
     self._vision_runtime_error = ""
     self._memory_details: dict[str, Any] = {}
@@ -258,6 +279,8 @@ class PythonModelEngine(EngineModelsMixin):
         "model_tier": selected_tier,
         "model_id": selected_model,
         "model_repo": self.model_repo,
+        "runtime_profile": dict(self._runtime_profile or {}),
+        "runtime_tuning": dict(self._runtime_tuning or {}),
       },
     )
 
@@ -313,6 +336,8 @@ class PythonModelEngine(EngineModelsMixin):
         "model_label": target_model_entry.label if target_model_entry is not None else target_model_id,
         "model_repo": target_repo,
         "prefer_vision_runtime": resolved_prefer_vision_runtime,
+        "runtime_profile": dict(self._runtime_profile or {}),
+        "runtime_tuning": dict(self._runtime_tuning or {}),
       },
     )
     load_thread.start()
@@ -363,7 +388,7 @@ class PythonModelEngine(EngineModelsMixin):
       self._vlm_stream_generate_fn = None
       self._make_sampler_fn = None
       self._make_logits_processors_fn = None
-      self._runtime_backend_kind = "mlx_lm"
+      self._runtime_backend_kind = self._default_runtime_backend_kind()
     with self._state_lock:
       self._loaded_tier = ""
       self._loaded_model_id = ""
@@ -409,8 +434,31 @@ class PythonModelEngine(EngineModelsMixin):
     return False, self.get_runtime_snapshot()
 
   def _validate_environment(self) -> None:
-    if platform.system() != "Darwin" or platform.machine() not in {"arm64", "aarch64"}:
-      raise RuntimeError("MLX-модель поддерживается только на macOS с Apple Silicon (arm64).")
+    if os.getenv("ANCIA_DISABLE_MLX_RUNTIME", "").strip() == "1":
+      raise RuntimeError("MLX runtime отключён через ANCIA_DISABLE_MLX_RUNTIME=1.")
+
+    profile = dict(self._runtime_profile or {})
+    supports_mlx = bool(profile.get("supports_mlx"))
+    if not supports_mlx:
+      system = str(profile.get("system") or platform.system() or "Unknown").strip()
+      machine = str(profile.get("machine") or platform.machine() or "unknown").strip().lower()
+      raise RuntimeError(
+        "Локальный MLX runtime поддерживается только на macOS с Apple Silicon (arm64). "
+        f"Текущая платформа: {system} {machine}. "
+        "Для этой ОС используйте remote_server/remote_client режим."
+      )
+
+    probe = profile.get("mlx_runtime_probe") if isinstance(profile.get("mlx_runtime_probe"), dict) else {}
+    if probe and not bool(probe.get("ok")):
+      reason = str(probe.get("reason") or "probe_failed").strip() or "probe_failed"
+      stderr_preview = str(probe.get("stderr_preview") or "").strip()
+      message = (
+        "MLX runtime недоступен в текущем окружении (preflight probe failed). "
+        f"Причина: {reason}."
+      )
+      if stderr_preview:
+        message += f" Детали: {stderr_preview}"
+      raise RuntimeError(message)
 
     python_version = sys.version_info[:2]
     allow_unsupported_python = os.getenv("ANCIA_ALLOW_UNSUPPORTED_PYTHON", "").strip() == "1"
@@ -423,20 +471,41 @@ class PythonModelEngine(EngineModelsMixin):
           f"Нужен Python >= {min_label} и < {max_label}."
         )
 
-  def _check_memory(self) -> dict[str, Any]:
+  def _check_memory(
+    self,
+    *,
+    model_required_bytes: int = 0,
+    require_vision: bool = False,
+  ) -> dict[str, Any]:
     required_raw = os.getenv(
       "ANCIA_MODEL_MIN_UNIFIED_MEMORY_BYTES",
       str(self.MIN_REQUIRED_UNIFIED_MEMORY_BYTES),
     ).strip()
     try:
-      required = max(256 * 1024 * 1024, int(required_raw))
+      base_required = max(256 * 1024 * 1024, int(required_raw))
     except ValueError:
-      required = self.MIN_REQUIRED_UNIFIED_MEMORY_BYTES
+      base_required = self.MIN_REQUIRED_UNIFIED_MEMORY_BYTES
+
+    margin_factor_raw = str(os.getenv("ANCIA_MODEL_MEMORY_MARGIN_FACTOR", "1.18") or "").strip()
+    try:
+      margin_factor = max(1.0, min(2.5, float(margin_factor_raw)))
+    except ValueError:
+      margin_factor = 1.18
+
+    safe_model_required = max(0, int(model_required_bytes or 0))
+    required = base_required
+    if safe_model_required > 0:
+      required = max(required, int(safe_model_required * margin_factor))
 
     available, available_source = resolve_available_memory_bytes()
     total, total_source = resolve_total_memory_bytes()
 
     details = {
+      "base_required_unified_memory_bytes": base_required,
+      "base_required_unified_memory_human": format_bytes(base_required),
+      "estimated_model_memory_bytes": safe_model_required if safe_model_required > 0 else None,
+      "estimated_model_memory_human": format_bytes(safe_model_required) if safe_model_required > 0 else "n/a",
+      "model_memory_margin_factor": margin_factor,
       "required_unified_memory_bytes": required,
       "required_unified_memory_human": format_bytes(required),
       "available_unified_memory_bytes": available,
@@ -445,16 +514,24 @@ class PythonModelEngine(EngineModelsMixin):
       "total_unified_memory_bytes": total,
       "total_unified_memory_human": format_bytes(total),
       "total_source": total_source,
+      "runtime_profile": dict(self._runtime_profile or {}),
+      "runtime_tuning": dict(self._runtime_tuning or {}),
     }
 
     strict_available_check = os.getenv("ANCIA_STRICT_AVAILABLE_MEMORY_CHECK", "").strip() == "1"
     details["available_memory_check_mode"] = "strict" if strict_available_check else "soft"
 
     if total is not None and total < required:
-      raise RuntimeError(
+      recommended_model = self._recommend_model_for_memory(total, require_vision=require_vision)
+      if recommended_model:
+        details["recommended_model_id_for_memory"] = recommended_model
+      message = (
         "Недостаточно общей unified-памяти устройства для загрузки модели. "
         f"Нужно минимум {format_bytes(required)}, на устройстве всего {format_bytes(total)}."
       )
+      if recommended_model:
+        message += f" Рекомендуем выбрать более лёгкую модель: {recommended_model}."
+      raise RuntimeError(message)
 
     if available is not None and available < required:
       warning_message = (
@@ -464,10 +541,18 @@ class PythonModelEngine(EngineModelsMixin):
       )
       details["memory_warning"] = warning_message
       details["memory_warning_code"] = "low_available_memory"
+      recommended_model = self._recommend_model_for_memory(available, require_vision=require_vision)
+      if recommended_model:
+        details["recommended_model_id_for_memory"] = recommended_model
       if strict_available_check:
-        raise RuntimeError(
+        strict_message = (
           "Недостаточно доступной unified-памяти для загрузки модели (strict check). "
           f"Нужно минимум {format_bytes(required)}, сейчас доступно {format_bytes(available)}."
+        )
+        if recommended_model:
+          strict_message += f" Рекомендуем выбрать более лёгкую модель: {recommended_model}."
+        raise RuntimeError(
+          strict_message
         )
 
     return details
@@ -482,6 +567,8 @@ class PythonModelEngine(EngineModelsMixin):
     payload.setdefault("python_version", sys.version.split()[0])
     payload.setdefault("platform", f"{platform.system()} {platform.machine()}")
     payload.setdefault("progress_percent", STARTUP_STAGE_PROGRESS["error"])
+    payload.setdefault("runtime_profile", dict(self._runtime_profile or {}))
+    payload.setdefault("runtime_tuning", dict(self._runtime_tuning or {}))
     self._startup.set(
       status="error",
       stage="error",
@@ -791,9 +878,15 @@ class PythonModelEngine(EngineModelsMixin):
           "model_id": target_model_id,
           "model_label": model_label,
           "model_repo": target_repo,
+          "runtime_profile": dict(self._runtime_profile or {}),
+          "runtime_tuning": dict(self._runtime_tuning or {}),
         },
       )
-      self._memory_details = self._check_memory()
+      target_required_memory = int(getattr(target_model_entry, "estimated_unified_memory_bytes", 0) or 0)
+      self._memory_details = self._check_memory(
+        model_required_bytes=target_required_memory,
+        require_vision=target_supports_vision,
+      )
 
       loading_details_base = {
         **self._memory_details,
@@ -802,6 +895,8 @@ class PythonModelEngine(EngineModelsMixin):
         "model_id": target_model_id,
         "model_label": model_label,
         "model_repo": target_repo,
+        "runtime_profile": dict(self._runtime_profile or {}),
+        "runtime_tuning": dict(self._runtime_tuning or {}),
       }
       self._startup.set(
         status="loading",
@@ -950,6 +1045,8 @@ class PythonModelEngine(EngineModelsMixin):
           "vision_runtime_warning": runtime_warning,
           "python_version": sys.version.split()[0],
           "platform": f"{platform.system()} {platform.machine()}",
+          "runtime_profile": dict(self._runtime_profile or {}),
+          "runtime_tuning": dict(self._runtime_tuning or {}),
         },
       )
     except Exception as exc:
@@ -1445,18 +1542,16 @@ class PythonModelEngine(EngineModelsMixin):
   def _normalize_attachment_kind(kind: str) -> str:
     return normalize_attachment_kind_fn(kind)
 
+  @staticmethod
+  def _is_safe_image_data_url(value: Any) -> bool:
+    return bool(SAFE_IMAGE_DATA_URL_RE.match(str(value or "").strip()))
+
   def _has_image_attachments(self, request: ChatRequest) -> bool:
     attachments = list(getattr(request, "attachments", None) or [])
     for attachment in attachments:
       item = attachment.model_dump() if hasattr(attachment, "model_dump") else dict(attachment)
-      kind = self._normalize_attachment_kind(str(item.get("kind") or "file"))
-      if kind == "image":
-        return True
-      mime_type = str(item.get("mimeType") or "").strip().lower()
-      if mime_type.startswith("image/"):
-        return True
-      data_url = str(item.get("dataUrl") or "").strip().lower()
-      if data_url.startswith("data:image/"):
+      data_url = str(item.get("dataUrl") or "").strip()
+      if self._is_safe_image_data_url(data_url):
         return True
     return False
 
@@ -1729,6 +1824,15 @@ class PythonModelEngine(EngineModelsMixin):
     return str(snapshot_path), True
 
   def _runtime_supports_vision_inputs(self) -> bool:
+    if os.getenv("ANCIA_DISABLE_MLX_RUNTIME", "").strip() == "1":
+      return False
+    profile = dict(self._runtime_profile or {})
+    if not bool(profile.get("supports_mlx")):
+      return False
+    probe = profile.get("mlx_runtime_probe") if isinstance(profile.get("mlx_runtime_probe"), dict) else {}
+    if probe and not bool(probe.get("ok")):
+      return False
+
     override = self._resolve_vision_runtime_override()
     if override is not None:
       return override
@@ -2457,6 +2561,40 @@ class PythonModelEngine(EngineModelsMixin):
       title = title[:max_chars].rstrip(" ,.;:-")
     return title or "Новая сессия"
 
+  def _recommend_model_for_memory(self, memory_limit_bytes: int | None, *, require_vision: bool = False) -> str:
+    try:
+      safe_limit = int(memory_limit_bytes or 0)
+    except (TypeError, ValueError):
+      safe_limit = 0
+    if safe_limit <= 0:
+      return ""
+
+    best_model_id = ""
+    best_required = 0
+    for item in list_model_catalog_payload():
+      if not isinstance(item, dict):
+        continue
+      model_id = normalize_model_id(item.get("id"), "")
+      if not model_id:
+        continue
+      if require_vision and not bool(item.get("supports_vision", False)):
+        continue
+      try:
+        required = int(item.get("estimated_unified_memory_bytes") or 0)
+      except (TypeError, ValueError):
+        required = 0
+      if required <= 0:
+        continue
+      if required > safe_limit:
+        continue
+      if required >= best_required:
+        best_required = required
+        best_model_id = model_id
+
+    if best_model_id:
+      return best_model_id
+    return self._resolve_weakest_model_id()
+
   def _resolve_weakest_model_id(self) -> str:
     weakest_id = ""
     weakest_score: tuple[int, int, str] | None = None
@@ -2529,6 +2667,63 @@ class PythonModelEngine(EngineModelsMixin):
     if not cleaned_title:
       return self._fallback_chat_title(source, max_chars=max_chars)
     return cleaned_title
+
+  def summarize_history_segment(self, messages: list[dict], max_chars: int = 800) -> str:
+    """Сжимает сегмент диалога в краткий AI-пересказ используя текущую загруженную модель."""
+    if not self.is_ready():
+      return ""
+
+    lines: list[str] = []
+    for msg in messages[:50]:
+      role = str(msg.get("role") or "").strip().lower()
+      text = str(msg.get("text") or "").strip()
+      if not text or role not in {"user", "assistant"}:
+        continue
+      text = text[:600]
+      label = "Пользователь" if role == "user" else "Ассистент"
+      lines.append(f"{label}: {text}")
+
+    if not lines:
+      return ""
+
+    dialog_text = "\n".join(lines)
+    safe_max = max(100, min(int(max_chars), 2000))
+    max_tokens = max(80, min(safe_max // 3, 400))
+
+    prompt = (
+      "Сожми переписку в краткий пересказ. Сохрани факты, решения и код.\n"
+      "Только пересказ — без вводных слов и форматирования.\n\n"
+      f"Диалог:\n{dialog_text}\n\nПересказ:"
+    )
+
+    selected_model_id = normalize_model_id(self.get_selected_model_id(), "")
+    model_entry = get_model_entry(selected_model_id)
+    tier_key = normalize_model_tier_key(
+      getattr(model_entry, "recommended_tier", "") if model_entry is not None else "",
+      "compact",
+    )
+    plan = GenerationPlan(
+      tier=MODEL_TIERS[tier_key],
+      user_text=dialog_text,
+      context_mood="neutral",
+      active_tools=set(),
+      context_window_override=4096,
+      max_tokens_override=max_tokens,
+      temperature_override=0.2,
+      top_p_override=0.85,
+      top_k_override=30,
+    )
+    try:
+      raw = self._run_generation(prompt, plan)
+    except Exception:
+      return ""
+
+    _, cleaned = self._extract_reply_mood_directive(raw)
+    cleaned = TOOL_CALL_BLOCK_PATTERN.sub("", cleaned).strip()
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if len(cleaned) > safe_max:
+      cleaned = cleaned[:safe_max].rstrip(" ,.:;-") + "…"
+    return cleaned
 
   def _prepare_generation(
     self,

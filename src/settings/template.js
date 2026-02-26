@@ -386,7 +386,7 @@ export const settingsPageTemplate = `
       <article data-settings-section="about" class="settings-section hidden rounded-xl border border-zinc-800/60 divide-y divide-zinc-800/60">
         <div class="${rowCls} px-3.5">
           <span class="${labelCls}">Приложение</span>
-          <span class="text-sm text-zinc-200">Ancia Local</span>
+          <span class="text-sm text-zinc-200">Ancia</span>
         </div>
         <div class="${rowCls} px-3.5">
           <span class="${labelCls}">Версия</span>

@@ -11,14 +11,50 @@ from urllib import error as url_error
 from urllib import request as url_request
 
 try:
-  from backend.netguard import ensure_safe_outbound_url
+  from backend.netguard import ensure_safe_outbound_url, open_safe_http_request
   from backend.plugin_permissions import normalize_plugin_permission_policy
 except ModuleNotFoundError:
-  from netguard import ensure_safe_outbound_url  # type: ignore
+  from netguard import ensure_safe_outbound_url, open_safe_http_request  # type: ignore
   from plugin_permissions import normalize_plugin_permission_policy  # type: ignore
 
 
 ToolHandler = Callable[[dict[str, Any], Any], dict[str, Any]]
+
+DENY_HTTP_HEADERS = {
+  "connection",
+  "content-length",
+  "host",
+  "keep-alive",
+  "proxy-authenticate",
+  "proxy-authorization",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+}
+ALLOWED_HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
+
+
+def _sanitize_static_headers(raw_headers: dict[str, Any]) -> dict[str, str]:
+  if not isinstance(raw_headers, dict):
+    return {}
+  out: dict[str, str] = {}
+  for raw_key, raw_value in raw_headers.items():
+    key = str(raw_key or "").strip()
+    if not key:
+      continue
+    key_lower = key.lower()
+    if key_lower in DENY_HTTP_HEADERS:
+      continue
+    if len(key) > 64 or any(ch in key for ch in ("\r", "\n", ":")):
+      continue
+    value = str(raw_value or "").strip()
+    if not value:
+      continue
+    if any(ch in value for ch in ("\r", "\n")):
+      continue
+    out[key] = value
+  return out
 
 
 def _normalize_http_url(url_like: str) -> str:
@@ -132,9 +168,13 @@ def _make_http_json_handler(
 ) -> ToolHandler:
   endpoint = _normalize_http_url(str(handler_spec.get("url") or handler_spec.get("endpoint") or "").strip())
   method = str(handler_spec.get("method") or "POST").strip().upper()
+  if method not in ALLOWED_HTTP_METHODS:
+    raise ValueError(f"Unsupported HTTP method '{method}' for plugin tool '{tool_name}'.")
   timeout_sec = max(2.0, min(60.0, float(handler_spec.get("timeout_sec") or 18.0)))
   max_bytes = max(8_000, min(8_000_000, int(handler_spec.get("max_bytes") or 1_500_000)))
-  static_headers = handler_spec.get("headers") if isinstance(handler_spec.get("headers"), dict) else {}
+  static_headers = _sanitize_static_headers(
+    handler_spec.get("headers") if isinstance(handler_spec.get("headers"), dict) else {},
+  )
 
   def handler(args: dict[str, Any], runtime: Any) -> dict[str, Any]:
     _enforce_runtime_tool_policy(runtime, plugin_id, tool_name)
@@ -157,19 +197,26 @@ def _make_http_json_handler(
       },
     }
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request_data = None if method == "GET" else body
     request = url_request.Request(
       endpoint,
       method=method,
-      data=body,
+      data=request_data,
       headers={
         "Content-Type": "application/json; charset=utf-8",
         "Accept": "application/json, text/plain;q=0.9, */*;q=0.8",
         "User-Agent": "AnciaPluginRuntime/0.1",
-        **{str(k): str(v) for k, v in static_headers.items()},
+        **static_headers,
       },
     )
     try:
-      with url_request.urlopen(request, timeout=timeout_sec) as response:
+      with open_safe_http_request(
+        request,
+        timeout=timeout_sec,
+        allow_http=True,
+        allow_loopback=False,
+        allow_private=False,
+      ) as response:
         raw = response.read(max_bytes + 1)
         if len(raw) > max_bytes:
           raise RuntimeError("Ответ HTTP-инструмента слишком большой.")

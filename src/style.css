@@ -48,6 +48,32 @@ input, textarea,
 
 /* ── Preloader ───────────────────────────────────────────────── */
 
+/* ── Loading indicator for assistant messages ───────────────── */
+.assistant-loading-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  color: rgb(161 161 170); /* zinc-400 */
+  font-size: 12px;
+}
+
+.assistant-loading-indicator svg {
+  width: 16px;
+  height: 16px;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.animate-spin {
+  animation: spin 1s linear infinite;
+}
+
+
 .app-preloader {
   position: fixed;
   inset: 0;

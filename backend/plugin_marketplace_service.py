@@ -95,11 +95,15 @@ class PluginMarketplaceService:
   @staticmethod
   def _is_path_within(path: Path, parent: Path) -> bool:
     try:
-      safe_path = path.resolve()
-      safe_parent = parent.resolve()
+      safe_path = Path(os.path.realpath(path))
+      safe_parent = Path(os.path.realpath(parent))
     except OSError:
       return False
-    return safe_path == safe_parent or safe_parent in safe_path.parents
+    try:
+      common = Path(os.path.commonpath([str(safe_path), str(safe_parent)]))
+    except ValueError:
+      return False
+    return common == safe_parent
 
   def _resolve_plugin_install_dir(self, plugin_id: str, *, install_scope: str = "user") -> Path:
     safe_plugin_id = self.sanitize_plugin_id(plugin_id)

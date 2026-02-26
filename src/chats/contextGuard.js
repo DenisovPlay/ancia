@@ -547,26 +547,42 @@ export function createContextGuardController({
       return;
     }
     const layers = getCompressionLayers(chatId);
+    elements.composerContextLayersList.innerHTML = "";
     if (!Array.isArray(layers) || layers.length === 0) {
-      elements.composerContextLayersList.innerHTML = "<span class=\"composer-context-popover__layers-empty\">Слои пока не созданы</span>";
+      const emptyNode = document.createElement("span");
+      emptyNode.className = "composer-context-popover__layers-empty";
+      emptyNode.textContent = "Слои пока не созданы";
+      elements.composerContextLayersList.append(emptyNode);
       return;
     }
 
     const safeLayers = [...layers].slice(-6).reverse();
-    elements.composerContextLayersList.innerHTML = safeLayers.map((layer, index) => {
+    const fragment = document.createDocumentFragment();
+    safeLayers.forEach((layer, index) => {
       const strategy = String(layer?.strategy || "summary").trim();
       const sourceMessages = Math.max(0, Number(layer?.sourceMessages || 0));
       const targetMessages = Math.max(0, Number(layer?.targetMessages || 0));
       const savedTokens = Math.max(0, Number(layer?.savedTokens || 0));
       const unresolved = !Boolean(layer?.resolvedOverflow);
       const stateLabel = unresolved ? "overflow" : "ok";
-      return (
-        `<span class="composer-context-popover__layer-row" data-layer-index="${index}">`
-        + `<span class="composer-context-popover__layer-main">${strategy}: ${sourceMessages} -> ${targetMessages}</span>`
-        + `<span class="composer-context-popover__layer-side">${formatExactTokens(savedTokens)} • ${stateLabel}</span>`
-        + "</span>"
-      );
-    }).join("");
+
+      const rowNode = document.createElement("span");
+      rowNode.className = "composer-context-popover__layer-row";
+      rowNode.dataset.layerIndex = String(index);
+
+      const mainNode = document.createElement("span");
+      mainNode.className = "composer-context-popover__layer-main";
+      mainNode.textContent = `${strategy}: ${sourceMessages} -> ${targetMessages}`;
+      rowNode.append(mainNode);
+
+      const sideNode = document.createElement("span");
+      sideNode.className = "composer-context-popover__layer-side";
+      sideNode.textContent = `${formatExactTokens(savedTokens)} • ${stateLabel}`;
+      rowNode.append(sideNode);
+
+      fragment.append(rowNode);
+    });
+    elements.composerContextLayersList.append(fragment);
   }
 
   function recordCompressionLayer({
@@ -1217,29 +1233,61 @@ export function createContextGuardController({
       candidates.push(candidate);
     };
 
+    // ── AI-сжатие: пересказ середины через модель ──────────────────────────
+    // Сохраняем последние N сообщений, середину пересказываем через модель.
+    if (runtimeConfig.mode === "backend" && typeof backendClient.summarizeHistory === "function") {
+      for (const keepTail of [6, 5, 4]) {
+        const tailStartIndex = resolveTailStartIndex(originalHistory, keepTail);
+        if (tailStartIndex <= 0 || tailStartIndex >= originalHistory.length) {
+          continue;
+        }
+        const headEntries = originalHistory
+          .slice(0, tailStartIndex)
+          .filter((entry) => entry.role !== "system");
+        if (headEntries.length < 1) {
+          continue;
+        }
+        try {
+          const resp = await backendClient.summarizeHistory(
+            headEntries.map((entry) => ({ role: entry.role, text: entry.text })),
+            { maxChars: 900, timeoutMs: 25000 },
+          );
+          const aiSummary = String(resp?.summary || "").trim();
+          if (aiSummary.length >= 40) {
+            const summaryBlock = `[Автосжатие: пересказ ${headEntries.length} сообщений]\n${aiSummary}`;
+            const candidateHistory = buildHistoryCandidate({ originalHistory, tailStartIndex, summaryText: summaryBlock });
+            appendCandidate({
+              historyOverride: candidateHistory,
+              sourceMessages: originalHistory.length,
+              targetMessages: candidateHistory.length,
+              strategy: "ai-summary",
+            });
+            break; // одного AI-варианта достаточно, остальное — fallback
+          }
+        } catch {
+          break; // модель недоступна — переходим к extractive
+        }
+      }
+    }
+
+    // ── Extractive fallback (если AI недоступен или модель ещё не загружена) ─
     for (const keepTail of KEEP_TAIL_OPTIONS) {
       const tailStartIndex = resolveTailStartIndex(originalHistory, keepTail);
       if (tailStartIndex <= 0 || tailStartIndex >= originalHistory.length) {
         continue;
       }
-
-      const head = originalHistory.slice(0, tailStartIndex);
-      const headDialogEntries = head.filter((entry) => entry.role !== "system");
+      const headDialogEntries = originalHistory
+        .slice(0, tailStartIndex)
+        .filter((entry) => entry.role !== "system");
       if (headDialogEntries.length === 0) {
         continue;
       }
-
       for (const summaryBudget of SUMMARY_BUDGETS) {
         const summary = buildExtractiveSummary(headDialogEntries, summaryBudget);
         if (!summary) {
           continue;
         }
-
-        const candidateHistory = buildHistoryCandidate({
-          originalHistory,
-          tailStartIndex,
-          summaryText: summary,
-        });
+        const candidateHistory = buildHistoryCandidate({ originalHistory, tailStartIndex, summaryText: summary });
         appendCandidate({
           historyOverride: candidateHistory,
           sourceMessages: originalHistory.length,
@@ -1249,18 +1297,13 @@ export function createContextGuardController({
       }
     }
 
-    // Агрессивный fallback: только хвост последних сообщений (без summary),
-    // чтобы максимально гарантировать снятие переполнения.
+    // ── Агрессивный fallback: только хвост ───────────────────────────────────
     for (const keepTail of [3, 2, 1]) {
       const tailStartIndex = resolveTailStartIndex(originalHistory, keepTail);
       if (tailStartIndex <= 0 || tailStartIndex >= originalHistory.length) {
         continue;
       }
-      const candidateHistory = buildHistoryCandidate({
-        originalHistory,
-        tailStartIndex,
-        summaryText: "",
-      });
+      const candidateHistory = buildHistoryCandidate({ originalHistory, tailStartIndex, summaryText: "" });
       appendCandidate({
         historyOverride: candidateHistory,
         sourceMessages: originalHistory.length,
@@ -1269,7 +1312,7 @@ export function createContextGuardController({
       });
     }
 
-    // Крайний fallback: только системная часть + последнее сообщение пользователя.
+    // ── Крайний случай: система + последнее сообщение пользователя ───────────
     const systemHead = originalHistory.filter((entry) => entry.role === "system");
     const lastUser = [...originalHistory].reverse().find((entry) => entry.role === "user");
     if (lastUser) {
@@ -1320,12 +1363,7 @@ export function createContextGuardController({
       const savedTokens = Math.max(0, Number(baseUsage.usedTokens || 0) - Number(usage.usedTokens || 0));
       const resolvedOverflow = Number(usage.usedTokens || 0) <= Number(usage.contextWindow || 0);
       if (!bestCandidate || Number(usage.usedTokens || 0) < Number(bestCandidate.usage?.usedTokens || Infinity)) {
-        bestCandidate = {
-          ...candidate,
-          usage,
-          savedTokens,
-          resolvedOverflow,
-        };
+        bestCandidate = { ...candidate, usage, savedTokens, resolvedOverflow };
       }
       if (resolvedOverflow) {
         break;

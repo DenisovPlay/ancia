@@ -21,6 +21,7 @@ LOCAL_CORS_DEFAULT_ORIGINS = [
   "http://127.0.0.1:5055",
   "http://localhost:5055",
 ]
+REMOTE_SERVER_CORS_DEFAULT_ORIGINS: list[str] = []
 
 
 def normalize_deployment_mode(value: Any, fallback: str = DEPLOYMENT_MODE_LOCAL) -> str:
@@ -70,8 +71,12 @@ def resolve_cors_origins_for_mode(mode: str) -> list[str]:
 
   safe_mode = normalize_deployment_mode(mode, DEPLOYMENT_MODE_LOCAL)
   if safe_mode == DEPLOYMENT_MODE_REMOTE_SERVER:
-    # Safe default for desktop/web clients; production can override via ANCIA_CORS_ALLOW_ORIGINS.
-    return list(LOCAL_CORS_DEFAULT_ORIGINS)
+    allow_loopback_fallback = str(
+      os.getenv("ANCIA_REMOTE_SERVER_CORS_ALLOW_LOOPBACK", "") or "",
+    ).strip() == "1"
+    if allow_loopback_fallback:
+      return list(LOCAL_CORS_DEFAULT_ORIGINS)
+    return list(REMOTE_SERVER_CORS_DEFAULT_ORIGINS)
 
   return list(LOCAL_CORS_DEFAULT_ORIGINS)
 

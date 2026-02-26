@@ -29,6 +29,27 @@ export default defineConfig(() => ({
         main: resolve(configDir, "index.html"),
         splash: resolve(configDir, "splash.html"),
       },
+      output: {
+        manualChunks(id) {
+          const safeId = String(id || "");
+          if (!safeId.includes("node_modules")) {
+            return undefined;
+          }
+          if (safeId.includes("/three/")) {
+            return "vendor-three";
+          }
+          if (safeId.includes("/katex/")) {
+            return "vendor-katex";
+          }
+          if (safeId.includes("/highlight.js/")) {
+            return "vendor-highlight";
+          }
+          if (safeId.includes("/@tauri-apps/")) {
+            return "vendor-tauri";
+          }
+          return "vendor";
+        },
+      },
     },
   },
 }));

@@ -60,6 +60,10 @@ class ChatRequest(BaseModel):
   message: str = Field(default="", max_length=100_000)
   attachments: list[AttachmentRef] = Field(default_factory=list, max_length=8)
   context: ChatContext = Field(default_factory=ChatContext)
+  # Поля для режима продолжения генерации
+  continue_from_message_id: str | None = None  # ID assistant-сообщения для продолжения
+  continue_mode: bool = False  # Флаг режима продолжения (аппенд к существующему сообщению)
+  skip_user_persist: bool = False  # Не сохранять user-сообщение в storage (используется для continue)
 
 
 class ToolEvent(BaseModel):
@@ -98,6 +102,16 @@ class ContextUsageRequest(BaseModel):
   history: list[HistoryMessage] = Field(default_factory=list)
   attachments: list[AttachmentRef] = Field(default_factory=list)
   history_variants: list[list[HistoryMessage]] = Field(default_factory=list)
+
+
+class HistorySummarizeMessage(BaseModel):
+  role: str = "user"
+  text: str = Field(default="", max_length=4000)
+
+
+class HistorySummarizeRequest(BaseModel):
+  messages: list[HistorySummarizeMessage] = Field(default_factory=list, max_length=60)
+  max_chars: int = Field(default=800, ge=100, le=2000)
 
 
 class ChatCreateRequest(BaseModel):
@@ -165,6 +179,7 @@ class RuntimeChatContext:
   mood: str
   user_name: str
   timezone: str
+  deployment_mode: str = ""
   plugin_permission_grants: set[str] = field(default_factory=set)
   tool_permission_grants: set[str] = field(default_factory=set)
   domain_permission_grants: set[str] = field(default_factory=set)

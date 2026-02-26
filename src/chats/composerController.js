@@ -33,6 +33,7 @@ export function createChatComposerController({
   sanitizeSessionTitle,
   persistChatMessage,
   ASSISTANT_PENDING_LABEL,
+  getCurrentRouteState,
 }) {
   let isBound = false;
 
@@ -104,6 +105,7 @@ export function createChatComposerController({
     persistChatMessage,
     ASSISTANT_PENDING_LABEL,
     composerAttachments,
+    getCurrentRouteState,
     contextGuard: createContextGuardController({
       elements,
       runtimeConfig,

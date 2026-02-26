@@ -137,15 +137,15 @@ const moodController = createChatMoodController({
   updateChatSessionTimestamp,
   persistCurrentChatStore,
 });
-const getCurrentRouteState = (...args) => moodController.getCurrentRouteState(...args);
-const normalizeBackgroundStateName = (...args) => moodController.normalizeBackgroundStateName(...args);
-const getRouteBackgroundMood = (...args) => moodController.getRouteBackgroundMood(...args);
-const applyTransientMood = (...args) => moodController.applyTransientMood(...args);
-const setChatSessionMood = (...args) => moodController.setChatSessionMood(...args);
-const clearChatSessionMood = (...args) => moodController.clearChatSessionMood(...args);
-const getChatSessionMood = (...args) => moodController.getChatSessionMood(...args);
-const resolveContextBackgroundMood = (...args) => moodController.resolveContextBackgroundMood(...args);
-const applyContextualBackground = (...args) => moodController.applyContextualBackground(...args);
+const getCurrentRouteState = () => moodController?.getCurrentRouteState?.() || { state: "neutral" };
+const normalizeBackgroundStateName = (...args) => moodController?.normalizeBackgroundStateName?.(...args) || "neutral";
+const getRouteBackgroundMood = (...args) => moodController?.getRouteBackgroundMood?.(...args) || "neutral";
+const applyTransientMood = (...args) => moodController?.applyTransientMood?.(...args);
+const setChatSessionMood = (...args) => moodController?.setChatSessionMood?.(...args);
+const clearChatSessionMood = (...args) => moodController?.clearChatSessionMood?.(...args);
+const getChatSessionMood = (...args) => moodController?.getChatSessionMood?.(...args);
+const resolveContextBackgroundMood = (...args) => moodController?.resolveContextBackgroundMood?.(...args);
+const applyContextualBackground = (...args) => moodController?.applyContextualBackground?.(...args);
 
 function renderChatSessionList() {
   sessionUiController?.renderChatSessionList();
@@ -728,6 +728,7 @@ const composerController = createChatComposerController({
   sanitizeSessionTitle,
   persistChatMessage,
   ASSISTANT_PENDING_LABEL,
+  getCurrentRouteState,
 });
 syncComposerState = (options = {}) => composerController.syncState(options);
 runGenerationAction = async (payload) => composerController.triggerGenerationAction(payload);

@@ -59,6 +59,22 @@ export function normalizeModelCardPayload(rawModel) {
   };
 }
 
+function sanitizeExternalUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return "";
+  }
+  try {
+    const parsed = new URL(raw);
+    if (!/^https?:$/i.test(parsed.protocol)) {
+      return "";
+    }
+    return parsed.toString();
+  } catch {
+    return "";
+  }
+}
+
 function humanSource(value) {
   const normalized = String(value || "").trim().toLowerCase();
   if (normalized === "huggingface") return "HuggingFace";
@@ -142,8 +158,9 @@ export function renderModelCard(model) {
     `;
   }
 
-  const homepageHtml = model.homepage
-    ? `<a href="${escapeHtml(model.homepage)}" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1 text-xs text-zinc-500 hover:text-zinc-300">${icon("globe", "ui-icon-sm")} источник</a>`
+  const safeHomepage = sanitizeExternalUrl(model.homepage);
+  const homepageHtml = safeHomepage
+    ? `<a href="${escapeHtml(safeHomepage)}" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1 text-xs text-zinc-500 hover:text-zinc-300">${icon("globe", "ui-icon-sm")} источник</a>`
     : "";
 
   return `

@@ -6,6 +6,8 @@ import re
 import socket
 from typing import Any
 from urllib import parse as url_parse
+from urllib import error as url_error
+from urllib import request as url_request
 
 HTTP_URL_PATTERN = re.compile(r"^[a-zA-Z][a-zA-Z0-9+\-.]*://")
 
@@ -66,6 +68,53 @@ def _is_blocked_ip(address: ipaddress._BaseAddress, *, allow_loopback: bool, all
   return False
 
 
+def _extract_response_peer_ip(response: Any) -> ipaddress._BaseAddress | None:
+  # urllib response internals differ between Python versions/platforms.
+  # Walk a small object graph and probe getpeername() where available.
+  queue: list[Any] = [response]
+  visited: set[int] = set()
+  while queue and len(visited) < 64:
+    current = queue.pop(0)
+    if current is None:
+      continue
+    identity = id(current)
+    if identity in visited:
+      continue
+    visited.add(identity)
+
+    getpeer = getattr(current, "getpeername", None)
+    if callable(getpeer):
+      try:
+        peer = getpeer()
+      except Exception:
+        peer = None
+      if isinstance(peer, tuple) and peer:
+        try:
+          return ipaddress.ip_address(str(peer[0] or "").strip())
+        except ValueError:
+          pass
+
+    for attr_name in (
+      "fp",
+      "_fp",
+      "raw",
+      "_raw",
+      "connection",
+      "_connection",
+      "sock",
+      "_sock",
+      "socket",
+    ):
+      try:
+        child = getattr(current, attr_name, None)
+      except Exception:
+        child = None
+      if child is not None:
+        queue.append(child)
+
+  return None
+
+
 def is_private_hostname(hostname: str) -> bool:
   safe = str(hostname or "").strip().lower()
   if not safe:
@@ -119,3 +168,69 @@ def ensure_safe_outbound_url(
         raise ValueError("Blocked private/loopback target")
 
   return safe_url
+
+
+def build_safe_url_opener(
+  *,
+  allow_http: bool = True,
+  allow_loopback: bool | None = None,
+  allow_private: bool | None = None,
+) -> Any:
+  class _SafeRedirectHandler(url_request.HTTPRedirectHandler):
+    def redirect_request(
+      self,
+      req,
+      fp,
+      code,
+      msg,
+      headers,
+      newurl,
+    ):
+      try:
+        safe_redirect_url = ensure_safe_outbound_url(
+          newurl,
+          allow_http=allow_http,
+          allow_loopback=allow_loopback,
+          allow_private=allow_private,
+        )
+      except ValueError as exc:
+        raise url_error.URLError(str(exc)) from exc
+      return super().redirect_request(req, fp, code, msg, headers, safe_redirect_url)
+
+  return url_request.build_opener(_SafeRedirectHandler())
+
+
+def open_safe_http_request(
+  request: Any,
+  *,
+  timeout: float,
+  allow_http: bool = True,
+  allow_loopback: bool | None = None,
+  allow_private: bool | None = None,
+) -> Any:
+  opener = build_safe_url_opener(
+    allow_http=allow_http,
+    allow_loopback=allow_loopback,
+    allow_private=allow_private,
+  )
+  response = opener.open(request, timeout=timeout)
+  try:
+    final_url = str(response.geturl() or request.full_url)
+    ensure_safe_outbound_url(
+      final_url,
+      allow_http=allow_http,
+      allow_loopback=allow_loopback,
+      allow_private=allow_private,
+    )
+    peer_ip = _extract_response_peer_ip(response)
+    if peer_ip is not None:
+      env_allow_loopback = _is_true(os.getenv("ANCIA_ALLOW_LOOPBACK_EGRESS", ""))
+      env_allow_private = _is_true(os.getenv("ANCIA_ALLOW_PRIVATE_EGRESS", ""))
+      safe_allow_loopback = env_allow_loopback if allow_loopback is None else bool(allow_loopback)
+      safe_allow_private = env_allow_private if allow_private is None else bool(allow_private)
+      if _is_blocked_ip(peer_ip, allow_loopback=safe_allow_loopback, allow_private=safe_allow_private):
+        raise ValueError("Blocked private/loopback peer address")
+  except Exception:
+    response.close()
+    raise
+  return response

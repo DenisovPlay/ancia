@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from typing import Any, Callable
 from urllib import error as url_error
@@ -9,9 +10,17 @@ from urllib import parse as url_parse
 from urllib import request as url_request
 
 try:
-  from backend.netguard import ensure_safe_outbound_url, normalize_http_url as normalize_http_url_base
+  from backend.netguard import (
+    ensure_safe_outbound_url,
+    normalize_http_url as normalize_http_url_base,
+    open_safe_http_request,
+  )
 except ModuleNotFoundError:
-  from netguard import ensure_safe_outbound_url, normalize_http_url as normalize_http_url_base  # type: ignore
+  from netguard import (  # type: ignore
+    ensure_safe_outbound_url,
+    normalize_http_url as normalize_http_url_base,
+    open_safe_http_request,
+  )
 
 SAFE_PLUGIN_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_.-]{1,63}$")
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
@@ -27,10 +36,11 @@ def sanitize_plugin_id(value: Any) -> str:
 
 
 def normalize_http_url(url_like: Any) -> str:
-  normalized = normalize_http_url_base(url_like, allow_http=True)
+  allow_http = str(os.getenv("ANCIA_PLUGIN_REGISTRY_ALLOW_HTTP", "") or "").strip() == "1"
+  normalized = normalize_http_url_base(url_like, allow_http=allow_http)
   return ensure_safe_outbound_url(
     normalized,
-    allow_http=True,
+    allow_http=allow_http,
     allow_loopback=False,
     allow_private=False,
   )
@@ -98,7 +108,13 @@ def fetch_remote_bytes(url: str, *, max_bytes: int, expected_sha256: str = "") -
   )
 
   try:
-    with url_request.urlopen(request, timeout=20) as response:
+    with open_safe_http_request(
+      request,
+      timeout=20,
+      allow_http=True,
+      allow_loopback=False,
+      allow_private=False,
+    ) as response:
       raw = response.read(max_bytes + 1)
   except url_error.HTTPError as exc:
     raise RuntimeError(f"HTTP {exc.code} while fetching registry") from exc

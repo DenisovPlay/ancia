@@ -1,12 +1,25 @@
 const DEFAULT_TIMEOUT_MS = 12000;
+const URL_SCHEME_RE = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//;
 
 function normalizeBaseUrl(value) {
   const raw = String(value || "").trim();
   if (!raw) {
     return "";
   }
-
-  return raw.endsWith("/") ? raw : `${raw}/`;
+  const candidate = URL_SCHEME_RE.test(raw) ? raw : `http://${raw}`;
+  let parsed;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    return "";
+  }
+  if (!/^https?:$/i.test(parsed.protocol) || !parsed.hostname) {
+    return "";
+  }
+  parsed.hash = "";
+  parsed.search = "";
+  const normalized = parsed.toString();
+  return normalized.endsWith("/") ? normalized : `${normalized}/`;
 }
 
 function buildEndpoint(baseUrl, path) {
@@ -262,6 +275,21 @@ export class BackendClient {
       method: "POST",
       body: payload || {},
       timeoutMs: Number(timeoutMs || 45000),
+    });
+  }
+
+  async getModelRuntimeDiagnostics({ timeoutMs = 12000 } = {}) {
+    return this.request("/models/runtime-diagnostics", {
+      method: "GET",
+      timeoutMs: Number(timeoutMs || 12000),
+    });
+  }
+
+  async summarizeHistory(messages = [], { maxChars = 800, timeoutMs = 30000 } = {}) {
+    return this.request("/context/summarize", {
+      method: "POST",
+      body: { messages: Array.isArray(messages) ? messages : [], max_chars: Number(maxChars || 800) },
+      timeoutMs: Number(timeoutMs || 30000),
     });
   }
 

@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import math
 import os
+import re
+import threading
+import time
 from pathlib import Path
 
 from fastapi import FastAPI, Request, Response
@@ -97,6 +101,32 @@ def load_system_prompt() -> str:
 
 LOGGER = logging.getLogger("ancia.backend.main")
 
+_SENSITIVE_LOG_PATTERN = re.compile(
+  r"(?i)(authorization\s*[:=]\s*['\"]?bearer\s+)[a-z0-9._~+/=-]+",
+)
+
+
+class _SensitiveLogFilter(logging.Filter):
+  def filter(self, record: logging.LogRecord) -> bool:
+    try:
+      message = str(record.getMessage() or "")
+      redacted = _SENSITIVE_LOG_PATTERN.sub(r"\1[REDACTED]", message)
+      if redacted != message:
+        record.msg = redacted
+        record.args = ()
+    except Exception:
+      return True
+    return True
+
+
+def _install_sensitive_log_filter() -> None:
+  filter_instance = _SensitiveLogFilter()
+  for logger_name in ("uvicorn.access", "uvicorn.error", "fastapi", "ancia.backend.main"):
+    target_logger = logging.getLogger(logger_name)
+    if any(isinstance(item, _SensitiveLogFilter) for item in target_logger.filters):
+      continue
+    target_logger.addFilter(filter_instance)
+
 PUBLIC_PATH_PREFIXES = (
   "/health",
   "/auth/config",
@@ -111,6 +141,130 @@ PUBLIC_PATH_EXACT = {
   "/openapi.json",
   "/redoc",
 }
+
+RATE_LIMIT_RULES: dict[tuple[str, str], tuple[str, int]] = {
+  ("POST", "/chat"): ("ANCIA_RATE_LIMIT_CHAT_PER_WINDOW", 20),
+  ("POST", "/chat/stream"): ("ANCIA_RATE_LIMIT_CHAT_STREAM_PER_WINDOW", 8),
+  ("POST", "/models/load"): ("ANCIA_RATE_LIMIT_MODELS_LOAD_PER_WINDOW", 4),
+  ("POST", "/plugins/install"): ("ANCIA_RATE_LIMIT_PLUGINS_INSTALL_PER_WINDOW", 6),
+}
+REQUEST_SIZE_LIMIT_RULES: dict[tuple[str, str], tuple[str, int]] = {
+  ("POST", "/chat"): ("ANCIA_MAX_BODY_CHAT_BYTES", 280_000),
+  ("POST", "/chat/stream"): ("ANCIA_MAX_BODY_CHAT_STREAM_BYTES", 280_000),
+  ("POST", "/chats/import"): ("ANCIA_MAX_BODY_CHATS_IMPORT_BYTES", 2_000_000),
+  ("POST", "/plugins/install"): ("ANCIA_MAX_BODY_PLUGINS_INSTALL_BYTES", 200_000),
+  ("POST", "/models/load"): ("ANCIA_MAX_BODY_MODELS_LOAD_BYTES", 80_000),
+  ("POST", "/models/select"): ("ANCIA_MAX_BODY_MODELS_SELECT_BYTES", 80_000),
+}
+_RATE_LIMIT_STATE_LOCK = threading.Lock()
+_RATE_LIMIT_STATE: dict[str, list[float]] = {}
+_RATE_LIMIT_LAST_SWEEP_TS = 0.0
+_RATE_LIMIT_SWEEP_INTERVAL_SECONDS = 90.0
+_RATE_LIMIT_SWEEP_MAX_KEYS = 20000
+
+
+def _resolve_rate_limit_window_seconds() -> float:
+  raw = str(os.getenv("ANCIA_RATE_LIMIT_WINDOW_SECONDS", "60") or "").strip()
+  try:
+    value = float(raw)
+  except ValueError:
+    value = 60.0
+  return max(5.0, min(3600.0, value))
+
+
+def _resolve_rate_limit_budget(method: str, path: str) -> int:
+  rule = RATE_LIMIT_RULES.get((method, path))
+  if rule is None:
+    return 0
+  env_key, fallback = rule
+  raw = str(os.getenv(env_key, str(fallback)) or "").strip()
+  try:
+    value = int(raw)
+  except ValueError:
+    value = fallback
+  return max(0, min(1000, value))
+
+
+def _is_rate_limited_request(method: str, path: str) -> bool:
+  return (method, path) in RATE_LIMIT_RULES
+
+
+def _resolve_request_size_limit_bytes(method: str, path: str) -> int:
+  rule = REQUEST_SIZE_LIMIT_RULES.get((method, path))
+  if rule is None:
+    return 0
+  env_key, fallback = rule
+  raw = str(os.getenv(env_key, str(fallback)) or "").strip()
+  try:
+    value = int(raw)
+  except ValueError:
+    value = fallback
+  return max(0, min(20_000_000, value))
+
+
+def _is_request_size_limited(method: str, path: str) -> bool:
+  return (method, path) in REQUEST_SIZE_LIMIT_RULES
+
+
+def _read_content_length_bytes(request: Request) -> int | None:
+  raw = str(request.headers.get("content-length") or "").strip()
+  if not raw:
+    return None
+  try:
+    value = int(raw)
+  except ValueError:
+    return None
+  if value < 0:
+    return None
+  return value
+
+
+def _resolve_rate_limit_subject(request: Request) -> str:
+  auth_payload = getattr(request.state, "auth", None)
+  user_payload = auth_payload.get("user") if isinstance(auth_payload, dict) and isinstance(auth_payload.get("user"), dict) else {}
+  user_id = str(user_payload.get("id") or "").strip()
+  if user_id:
+    return f"user:{user_id}"
+  host = str(getattr(getattr(request, "client", None), "host", "") or "").strip().lower()
+  if host:
+    return f"ip:{host}"
+  return "ip:unknown"
+
+
+def _consume_rate_limit(method: str, path: str, subject: str) -> tuple[bool, int]:
+  global _RATE_LIMIT_LAST_SWEEP_TS
+  budget = _resolve_rate_limit_budget(method, path)
+  if budget <= 0:
+    return False, 0
+  window_sec = _resolve_rate_limit_window_seconds()
+  now_ts = time.time()
+  key = f"{method}|{path}|{subject}"
+  with _RATE_LIMIT_STATE_LOCK:
+    should_sweep = (
+      (now_ts - _RATE_LIMIT_LAST_SWEEP_TS) >= _RATE_LIMIT_SWEEP_INTERVAL_SECONDS
+      or len(_RATE_LIMIT_STATE) >= _RATE_LIMIT_SWEEP_MAX_KEYS
+    )
+    if should_sweep:
+      stale_keys: list[str] = []
+      for state_key, state_events in _RATE_LIMIT_STATE.items():
+        if not state_events:
+          stale_keys.append(state_key)
+          continue
+        last_event_ts = float(state_events[-1])
+        if (now_ts - last_event_ts) > window_sec:
+          stale_keys.append(state_key)
+      for stale_key in stale_keys:
+        _RATE_LIMIT_STATE.pop(stale_key, None)
+      _RATE_LIMIT_LAST_SWEEP_TS = now_ts
+
+    events = [float(item) for item in _RATE_LIMIT_STATE.get(key, []) if (now_ts - float(item)) <= window_sec]
+    if len(events) >= budget:
+      retry_after = max(1, int(math.ceil(window_sec - (now_ts - events[0]))))
+      _RATE_LIMIT_STATE[key] = events
+      return True, retry_after
+    events.append(now_ts)
+    _RATE_LIMIT_STATE[key] = events
+  return False, 0
 
 
 def _extract_bearer_token(request: Request) -> str:
@@ -156,7 +310,8 @@ def _is_local_recovery_request(request: Request | None) -> bool:
 
 
 def make_app() -> FastAPI:
-  app = FastAPI(title="Ancia Local Agent Backend", version="0.1.0")
+  _install_sensitive_log_filter()
+  app = FastAPI(title="Ancia Agent Backend", version="0.1.0")
 
   data_dir = resolve_data_dir()
   data_dir.mkdir(parents=True, exist_ok=True)
@@ -189,6 +344,17 @@ def make_app() -> FastAPI:
   @app.middleware("http")
   async def security_middleware(request: Request, call_next):
     path = str(request.url.path or "/").strip() or "/"
+    method = str(request.method or "").strip().upper()
+
+    if _is_request_size_limited(method, path):
+      limit_bytes = _resolve_request_size_limit_bytes(method, path)
+      content_length = _read_content_length_bytes(request)
+      if limit_bytes > 0 and content_length is not None and content_length > limit_bytes:
+        return JSONResponse(
+          status_code=413,
+          content={"detail": f"Payload too large. Max {limit_bytes} bytes."},
+        )
+
     if request.method.upper() == "OPTIONS":
       return await call_next(request)
 
@@ -234,6 +400,16 @@ def make_app() -> FastAPI:
         status_code=403,
         content={"detail": "Admin access required."},
       )
+
+    if _is_rate_limited_request(method, path):
+      subject = _resolve_rate_limit_subject(request)
+      exceeded, retry_after = _consume_rate_limit(method, path, subject)
+      if exceeded:
+        return JSONResponse(
+          status_code=429,
+          content={"detail": "Too many requests. Please retry later."},
+          headers={"Retry-After": str(retry_after)},
+        )
 
     return await call_next(request)
 

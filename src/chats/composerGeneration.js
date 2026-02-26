@@ -32,6 +32,7 @@ export function createComposerGenerationController({
   persistChatMessage,
   ASSISTANT_PENDING_LABEL,
   composerAttachments,
+  getCurrentRouteState = () => ({ state: "neutral" }),
   contextGuard,
 }) {
   let activeGeneration = null;
@@ -633,21 +634,222 @@ export function createComposerGenerationController({
       return false;
     }
 
-    let promptText = sourceUserText;
     if (safeAction === "continue") {
-      promptText = `${sourceUserText}\n\nПродолжи предыдущий ответ с того места, где остановились, без повторения уже сказанного.`;
+      return await handleContinueAction(safeChatId, safeMessageId, sourceUserText, sourceUserMessageId);
     }
-    if (safeAction !== "retry" && safeAction !== "continue" && safeAction !== "regenerate") {
-      return false;
+    if (safeAction === "regenerate" || safeAction === "retry") {
+      // Перегенерация — создаём новое сообщение от пользователя
+      if (!(elements.composerInput instanceof HTMLTextAreaElement)) {
+        return false;
+      }
+      elements.composerInput.value = sourceUserText;
+      syncState();
+      await handleSubmit({ preventDefault() {} });
+      return true;
     }
 
-    if (!(elements.composerInput instanceof HTMLTextAreaElement)) {
-      return false;
-    }
-    elements.composerInput.value = promptText;
+    return false;
+  }
+
+  async function handleContinueAction(chatId, assistantMessageId, sourceUserText, sourceUserMessageId) {
+    const requestSessionId = String(chatId || getActiveChatSessionId() || "").trim();
+    if (!requestSessionId) return false;
+
+    // Находим существующую строку ассистента — именно её будем обновлять
+    const existingRow = elements.chatStream?.querySelector(
+      `.message-row[data-message-id="${assistantMessageId}"]`,
+    );
+    if (!(existingRow instanceof HTMLElement)) return false;
+
+    // Убираем кнопки действий и переводим строку в состояние ожидания
+    existingRow.querySelectorAll("[data-generation-actions]").forEach((el) => el.remove());
+
+    const savedMood = getChatSessionMood(requestSessionId) || "neutral";
+    applyTransientMood(requestSessionId, "waiting", 420);
+
+    const initialMetaSuffix = runtimeConfig.mode === "backend"
+      ? resolveModelMetaSuffix(runtimeConfig.modelId, "модель")
+      : "симуляция";
+
+    let streamMetaSuffix = initialMetaSuffix;
+    let assistantRow = existingRow;
+
+    updateMessageRowContent(assistantRow, {
+      text: "",
+      metaSuffix: initialMetaSuffix,
+      timestamp: new Date(),
+      pending: true,
+      pendingLabel: ASSISTANT_PENDING_LABEL,
+      streamMode: "",
+    });
+
+    const abortController = new AbortController();
+    const generationId = Date.now() + Math.random();
+    activeGeneration = {
+      id: generationId,
+      chatId: requestSessionId,
+      assistantRow,
+      abortController,
+      latestText: "",
+      latestMetaSuffix: streamMetaSuffix,
+      stoppedByUser: false,
+    };
     syncState();
-    await handleSubmit({ preventDefault() {} });
-    return true;
+
+    let latestPartial = "";
+    let latestStreamMode = "";
+
+    const resolveAssistantRow = () => {
+      if (isAssistantRowAttached(assistantRow)) return assistantRow;
+      return null;
+    };
+
+    try {
+      const reply = await requestAssistantReply("Продолжи ответ с того места, где остановился.", requestSessionId, {
+        signal: abortController.signal,
+        attachments: [],
+        extraPayloadFields: {
+          skip_user_persist: true,
+          continue_mode: true,
+          continue_from_message_id: assistantMessageId,
+        },
+        onStatusUpdate: (statusMsg) => {
+          if (activeGeneration?.id === generationId) {
+            activeGeneration.latestMetaSuffix = statusMsg;
+          }
+          const row = resolveAssistantRow();
+          if (row instanceof HTMLElement) {
+            updateMessageRowContent(row, {
+              text: "",
+              metaSuffix: statusMsg,
+              timestamp: new Date(),
+              pending: true,
+              pendingLabel: ASSISTANT_PENDING_LABEL,
+              streamMode: "",
+            });
+          }
+        },
+        onModel: (modelLabel) => {
+          streamMetaSuffix = resolveModelMetaSuffix(modelLabel, streamMetaSuffix);
+          if (activeGeneration?.id === generationId) {
+            activeGeneration.latestMetaSuffix = streamMetaSuffix;
+          }
+          const row = resolveAssistantRow();
+          if (row) {
+            const body = row.querySelector("[data-message-body]");
+            const hasPartial = body instanceof HTMLElement && Boolean(body.textContent?.trim());
+            updateMessageRowContent(row, {
+              text: hasPartial ? latestPartial : "",
+              metaSuffix: streamMetaSuffix,
+              timestamp: new Date(),
+              pending: !hasPartial,
+              pendingLabel: ASSISTANT_PENDING_LABEL,
+              streamMode: "",
+            });
+          }
+        },
+        onPartial: (partialText) => {
+          latestPartial = normalizeTextInput(partialText);
+          if (activeGeneration?.id === generationId) {
+            activeGeneration.latestText = latestPartial;
+            activeGeneration.latestMetaSuffix = streamMetaSuffix;
+          }
+          const row = resolveAssistantRow();
+          if (row) {
+            const hasPartialText = latestPartial.trim().length > 0;
+            updateMessageRowContent(row, {
+              text: hasPartialText ? latestPartial : "",
+              metaSuffix: streamMetaSuffix,
+              timestamp: new Date(),
+              pending: !hasPartialText,
+              pendingLabel: ASSISTANT_PENDING_LABEL,
+              streamMode: "",
+            });
+          }
+          elements.chatStream?.scrollTo({ top: elements.chatStream.scrollHeight, behavior: "auto" });
+        },
+      });
+
+      if (reply?.cancelled) {
+        applyTransientMood(requestSessionId, getChatSessionMood(requestSessionId) || savedMood, runtimeConfig.defaultTransitionMs);
+        syncState({ forceContextRefresh: true });
+        return false;
+      }
+
+      const finalText = normalizeTextInput(reply.text || latestPartial || "Бэкенд вернул пустой ответ.");
+      const finalMetaSuffix = String(reply.metaSuffix || streamMetaSuffix || initialMetaSuffix);
+      latestStreamMode = String(reply?.stream?.mode || "").trim().toLowerCase();
+      const generationActionsMeta = buildGenerationActionsMeta({
+        userText: sourceUserText,
+        userMessageId: sourceUserMessageId,
+        backendGenerationActions: reply?.generationActions,
+      });
+      if (activeGeneration?.id === generationId) {
+        activeGeneration.latestText = finalText;
+        activeGeneration.latestMetaSuffix = finalMetaSuffix;
+      }
+      const generatedChatTitle = sanitizeSessionTitle(String(reply.chatTitle || "").trim(), "");
+      if (requestSessionId && generatedChatTitle) {
+        renameChatSessionById(requestSessionId, generatedChatTitle);
+      }
+
+      const activeRow = resolveAssistantRow();
+      if (activeRow) {
+        updateMessageRowContent(activeRow, {
+          text: finalText,
+          metaSuffix: finalMetaSuffix,
+          timestamp: new Date(),
+          streamMode: latestStreamMode,
+        });
+        if (generationActionsMeta) {
+          setAssistantGenerationActions?.(activeRow, generationActionsMeta);
+        }
+      }
+
+      // Обновляем существующую запись в хранилище напрямую (не создаём новое сообщение)
+      const assistantPersistMeta = {};
+      if (latestStreamMode) assistantPersistMeta.stream = { mode: latestStreamMode };
+      if (generationActionsMeta) assistantPersistMeta.generation_actions = generationActionsMeta;
+
+      const existingRecord = getMessageRecord?.(requestSessionId, assistantMessageId);
+      if (existingRecord) {
+        existingRecord.session.messages[existingRecord.index] = {
+          ...existingRecord.message,
+          text: finalText,
+          metaSuffix: finalMetaSuffix,
+          meta: { ...existingRecord.message.meta, ...assistantPersistMeta },
+          timestamp: new Date().toISOString(),
+        };
+      }
+
+      const finalMood = String(reply.mood || "").trim();
+      if (requestSessionId) {
+        const currentSessionMood = getChatSessionMood(requestSessionId);
+        const toolChangedMood = currentSessionMood && currentSessionMood !== savedMood;
+        if (!toolChangedMood && finalMood && !["neutral", "waiting", "thinking"].includes(finalMood)) {
+          setChatSessionMood(requestSessionId, finalMood, runtimeConfig.defaultTransitionMs);
+        } else {
+          applyTransientMood(requestSessionId, currentSessionMood || savedMood, runtimeConfig.defaultTransitionMs);
+        }
+        if (isBackendRuntimeEnabled()) {
+          await syncChatStoreFromBackend({ preserveActive: true, preferredActiveId: requestSessionId, silent: true });
+        }
+        syncState({ forceContextRefresh: true });
+      } else {
+        background.setMood(finalMood || "neutral", runtimeConfig.defaultTransitionMs);
+        syncState({ forceContextRefresh: true });
+      }
+
+      return true;
+    } finally {
+      if (!activeGeneration || activeGeneration.id === generationId) {
+        activeGeneration = null;
+        if (requestSessionId) {
+          pruneTransientAssistantDuplicates(requestSessionId);
+        }
+        syncState({ forceContextRefresh: true });
+      }
+    }
   }
 
   async function handleSubmit(event) {
@@ -724,7 +926,7 @@ export function createComposerGenerationController({
         name: "context_guard.compress",
         display_name: "Context Guard",
         status: unresolvedOverflow ? "warning" : "ok",
-        meta_suffix: "system plugin • сжатие контекста",
+        meta_suffix: "сжатие контекста",
         badge: unresolvedOverflow
           ? {
             label: "переполнение не снято",
@@ -743,7 +945,7 @@ export function createComposerGenerationController({
       }
 
       if (runtimeConfig.contextGuardShowChatEvents) {
-        appendMessage("tool", "context_guard.compress", "system plugin • сжатие контекста", {
+        appendMessage("tool", "context_guard.compress", "сжатие контекста", {
           persist: true,
           chatId: requestSessionId,
           toolPayload: contextGuardEventPayload,
@@ -1037,7 +1239,7 @@ export function createComposerGenerationController({
           name: "generation.loop_guard",
           display_name: "Loop Guard",
           status: "warning",
-          meta_suffix: "system plugin • anti-loop",
+          meta_suffix: "anti-loop",
           args: { query: "авто-перезапуск генерации" },
           text: "Обнаружен повторяющийся паттерн. Перезапускаем ответ в anti-loop режиме.",
         }, "result");

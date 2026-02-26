@@ -11,3 +11,9 @@ backend/data/models/
 
 src-tauri/target
 src-tauri/.cargo
+
+# Local scratch/backup artifacts
+*.bak
+*.bak2
+*.orig
+*.rej

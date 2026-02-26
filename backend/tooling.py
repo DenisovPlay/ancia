@@ -14,9 +14,17 @@ from urllib import request as url_request
 from pydantic import BaseModel, Field
 
 try:
-  from backend.netguard import ensure_safe_outbound_url, normalize_http_url as normalize_http_url_base
+  from backend.netguard import (
+    ensure_safe_outbound_url,
+    normalize_http_url as normalize_http_url_base,
+    open_safe_http_request,
+  )
 except ModuleNotFoundError:
-  from netguard import ensure_safe_outbound_url, normalize_http_url as normalize_http_url_base  # type: ignore
+  from netguard import (  # type: ignore
+    ensure_safe_outbound_url,
+    normalize_http_url as normalize_http_url_base,
+    open_safe_http_request,
+  )
 
 
 ToolHandler = Callable[[dict[str, Any], Any], dict[str, Any]]
@@ -604,7 +612,13 @@ def fetch_web_url(url: str, *, timeout_sec: float = 12.0, max_bytes: int = 2_500
   )
 
   try:
-    with url_request.urlopen(request, timeout=safe_timeout) as response:
+    with open_safe_http_request(
+      request,
+      timeout=safe_timeout,
+      allow_http=True,
+      allow_loopback=False,
+      allow_private=False,
+    ) as response:
       status_code = int(response.getcode() or 200)
       final_url = str(response.geturl() or safe_url)
       content_type = str(response.headers.get("Content-Type") or "").strip()
