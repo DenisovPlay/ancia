@@ -1,0 +1,88 @@
+{
+  "id": "calculator",
+  "name": "Calculator",
+  "subtitle": "Безопасный математический калькулятор",
+  "description": "Вычисляет математические выражения: арифметика, тригонометрия, логарифмы и другие функции.",
+  "homepage": "",
+  "manifest_url": "https://raw.githubusercontent.com/DenisovPlay/ancia-plugins/main/plugins/calculator/manifest.json",
+  "repo_url": "https://github.com/DenisovPlay/ancia-plugins",
+  "package_url": "https://raw.githubusercontent.com/DenisovPlay/ancia-plugins/main/packages/calculator-1.0.0.zip",
+  "source": "preinstalled",
+  "preinstalled": true,
+  "enabled": true,
+  "tools": [
+    {
+      "name": "calculator.eval",
+      "description": "Вычисляет математическое выражение и возвращает результат. Поддерживает: +, -, *, /, //, %, **, sqrt, sin, cos, tan, log, log2, log10, abs, ceil, floor, round, pi, e.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "expression": {
+            "type": "string",
+            "description": "Математическое выражение для вычисления, например '2 + 2', 'sqrt(144)', 'sin(pi/6)'."
+          }
+        },
+        "required": [
+          "expression"
+        ],
+        "additionalProperties": false
+      },
+      "runtime_meta": {
+        "display_name": "Calculator",
+        "subtitle": "Вычисление математических выражений",
+        "category": "system",
+        "keywords": [
+          "calculator",
+          "math",
+          "calculate",
+          "калькулятор",
+          "математика",
+          "вычислить",
+          "формула"
+        ],
+        "requires_network": false,
+        "aliases": [
+          "math.eval",
+          "calc.eval",
+          "calculator.calculate"
+        ],
+        "prompt": "Используй для безопасного вычисления математических выражений вместо python.run когда нужна только математика."
+      },
+      "handler": {
+        "type": "python",
+        "module_file": "plugin.py",
+        "callable": "handle"
+      },
+      "llm_schema": {}
+    }
+  ],
+  "ui_extensions": [
+    {
+      "type": "style",
+      "path": "ui/tool-ui.css",
+      "url": "",
+      "load": "style"
+    },
+    {
+      "type": "script",
+      "path": "ui/tool-ui.js",
+      "url": "",
+      "load": "script"
+    }
+  ],
+  "version": "1.0.0",
+  "category": "system",
+  "keywords": [
+    "calculator",
+    "math",
+    "calculate",
+    "калькулятор",
+    "математика",
+    "вычислить",
+    "формула"
+  ],
+  "locked": false,
+  "allow_update": true,
+  "requires_network": false,
+  "installed_at": "2026-02-26T21:00:00.000000+00:00"
+}

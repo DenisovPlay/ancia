@@ -1,0 +1,8 @@
+[data-tool-plugin-id="calculator"] .tool-call-status-icon {
+  color: #86efac;
+}
+
+[data-tool-plugin-id="calculator"] .tool-call-card {
+  border-color: rgba(134, 239, 172, 0.3);
+  background: linear-gradient(120deg, rgba(10, 40, 20, 0.68), rgba(27, 27, 31, 0.72));
+}

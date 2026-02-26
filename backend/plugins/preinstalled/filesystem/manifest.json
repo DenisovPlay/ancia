@@ -1,0 +1,150 @@
+{
+  "id": "filesystem",
+  "name": "File System",
+  "subtitle": "Чтение локальных файлов",
+  "description": "Читает содержимое файлов и выводит список файлов в папках на локальном компьютере.",
+  "homepage": "",
+  "manifest_url": "https://raw.githubusercontent.com/DenisovPlay/ancia-plugins/main/plugins/filesystem/manifest.json",
+  "repo_url": "https://github.com/DenisovPlay/ancia-plugins",
+  "package_url": "https://raw.githubusercontent.com/DenisovPlay/ancia-plugins/main/packages/filesystem-1.0.0.zip",
+  "source": "preinstalled",
+  "preinstalled": true,
+  "enabled": true,
+  "tools": [
+    {
+      "name": "fs.read_file",
+      "description": "Читает текстовое содержимое локального файла по указанному пути.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Абсолютный или относительный путь к файлу."
+          },
+          "max_chars": {
+            "type": "integer",
+            "description": "Максимальное количество символов для возврата (по умолчанию 8000, максимум 32000).",
+            "default": 8000
+          },
+          "encoding": {
+            "type": "string",
+            "description": "Кодировка файла (по умолчанию utf-8).",
+            "default": "utf-8"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "runtime_meta": {
+        "display_name": "File System",
+        "subtitle": "Чтение файла",
+        "category": "system",
+        "keywords": [
+          "file",
+          "read",
+          "filesystem",
+          "файл",
+          "прочитать",
+          "содержимое"
+        ],
+        "requires_network": false,
+        "aliases": [
+          "file.read",
+          "fs.read",
+          "read_file"
+        ],
+        "prompt": "Используй для чтения содержимого локального файла по пути."
+      },
+      "handler": {
+        "type": "python",
+        "module_file": "plugin.py",
+        "callable": "read_file"
+      },
+      "llm_schema": {}
+    },
+    {
+      "name": "fs.list_dir",
+      "description": "Выводит список файлов и папок в указанной директории.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Абсолютный или относительный путь к директории. По умолчанию — домашняя директория пользователя."
+          },
+          "show_hidden": {
+            "type": "boolean",
+            "description": "Включить скрытые файлы и папки (начинающиеся с точки).",
+            "default": false
+          },
+          "max_entries": {
+            "type": "integer",
+            "description": "Максимальное количество записей (по умолчанию 100, максимум 500).",
+            "default": 100
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "runtime_meta": {
+        "display_name": "File System",
+        "subtitle": "Список файлов в папке",
+        "category": "system",
+        "keywords": [
+          "directory",
+          "list",
+          "folder",
+          "filesystem",
+          "папка",
+          "список",
+          "директория"
+        ],
+        "requires_network": false,
+        "aliases": [
+          "dir.list",
+          "fs.ls",
+          "list_dir",
+          "fs.list"
+        ],
+        "prompt": "Используй для просмотра содержимого директории на локальном компьютере."
+      },
+      "handler": {
+        "type": "python",
+        "module_file": "plugin.py",
+        "callable": "list_dir"
+      },
+      "llm_schema": {}
+    }
+  ],
+  "ui_extensions": [
+    {
+      "type": "style",
+      "path": "ui/tool-ui.css",
+      "url": "",
+      "load": "style"
+    },
+    {
+      "type": "script",
+      "path": "ui/tool-ui.js",
+      "url": "",
+      "load": "script"
+    }
+  ],
+  "version": "1.0.0",
+  "category": "system",
+  "keywords": [
+    "file",
+    "filesystem",
+    "read",
+    "directory",
+    "файл",
+    "папка",
+    "директория"
+  ],
+  "locked": false,
+  "allow_update": true,
+  "requires_network": false,
+  "installed_at": "2026-02-26T21:00:00.000000+00:00"
+}
