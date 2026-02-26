@@ -3,10 +3,12 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import hmac
+import logging
 import os
 import re
 import secrets
 import threading
+import time
 from typing import Any
 
 try:
@@ -34,6 +36,8 @@ PASSWORD_HASH_ITERATIONS = 240_000
 DEFAULT_LOGIN_RATE_WINDOW_SECONDS = 5 * 60
 DEFAULT_LOGIN_RATE_MAX_ATTEMPTS = 8
 DEFAULT_LOGIN_RATE_BLOCK_SECONDS = 10 * 60
+LOGIN_RATE_SCOPE_PREFIX = "auth.login"
+LOGIN_RATE_STORAGE_LOG_COOLDOWN_SECONDS = 60.0
 
 
 class AuthError(RuntimeError):
@@ -87,6 +91,9 @@ class AuthService:
     self._login_rate_enabled = bool(self._login_rate_max_attempts > 0)
     self._login_rate_lock = threading.Lock()
     self._login_rate_state: dict[str, dict[str, Any]] = {}
+    self._login_rate_storage_last_warn_ts = 0.0
+
+  _logger = logging.getLogger("ancia.backend.auth")
 
   @staticmethod
   def _utc_now() -> dt.datetime:
@@ -180,6 +187,78 @@ class AuthService:
       scopes.append(f"user:{safe_username}|ip:{safe_remote}")
     return scopes
 
+  @staticmethod
+  def _to_storage_login_scope(scope: str) -> str:
+    safe_scope = str(scope or "").strip().lower()
+    return f"{LOGIN_RATE_SCOPE_PREFIX}|{safe_scope}" if safe_scope else ""
+
+  def _log_login_rate_storage_fallback(self, exc: Exception) -> None:
+    now_ts = time.time()
+    if (now_ts - self._login_rate_storage_last_warn_ts) < LOGIN_RATE_STORAGE_LOG_COOLDOWN_SECONDS:
+      return
+    self._login_rate_storage_last_warn_ts = now_ts
+    self._logger.warning(
+      "Persistent auth rate limiter failed, using in-memory fallback: %s",
+      exc,
+    )
+
+  def _check_login_rate_limit_storage(self, scopes: list[str], now: dt.datetime) -> bool:
+    if not self._login_rate_enabled:
+      return True
+    if not hasattr(self._storage, "consume_api_rate_limit"):
+      return False
+    retry_after = 0
+    now_ts = now.timestamp()
+    for scope in scopes:
+      storage_scope = self._to_storage_login_scope(scope)
+      if not storage_scope:
+        continue
+      exceeded, scope_retry_after = self._storage.consume_api_rate_limit(
+        scope=storage_scope,
+        budget=self._login_rate_max_attempts,
+        window_seconds=self._login_rate_window_seconds,
+        now_ts=now_ts,
+        consume=False,
+        block_seconds=self._login_rate_block_seconds,
+      )
+      if exceeded:
+        retry_after = max(retry_after, int(scope_retry_after or 0))
+    if retry_after > 0:
+      raise AuthRateLimitError(retry_after)
+    return True
+
+  def _register_failed_login_storage(self, scopes: list[str], now: dt.datetime) -> bool:
+    if not self._login_rate_enabled:
+      return True
+    if not hasattr(self._storage, "consume_api_rate_limit"):
+      return False
+    now_ts = now.timestamp()
+    for scope in scopes:
+      storage_scope = self._to_storage_login_scope(scope)
+      if not storage_scope:
+        continue
+      self._storage.consume_api_rate_limit(
+        scope=storage_scope,
+        budget=self._login_rate_max_attempts,
+        window_seconds=self._login_rate_window_seconds,
+        now_ts=now_ts,
+        consume=True,
+        block_seconds=self._login_rate_block_seconds,
+      )
+    return True
+
+  def _reset_login_rate_limit_storage(self, scopes: list[str]) -> bool:
+    if not self._login_rate_enabled:
+      return True
+    if not hasattr(self._storage, "clear_api_rate_limit_scope"):
+      return False
+    for scope in scopes:
+      storage_scope = self._to_storage_login_scope(scope)
+      if not storage_scope:
+        continue
+      self._storage.clear_api_rate_limit_scope(storage_scope)
+    return True
+
   def _prune_login_rate_state_locked(self, now_ts: float) -> None:
     if not self._login_rate_state:
       return
@@ -208,6 +287,14 @@ class AuthService:
   def _check_login_rate_limit(self, scopes: list[str], now: dt.datetime) -> None:
     if not self._login_rate_enabled:
       return
+    try:
+      if self._check_login_rate_limit_storage(scopes, now):
+        return
+    except AuthRateLimitError:
+      raise
+    except Exception as exc:
+      self._log_login_rate_storage_fallback(exc)
+
     now_ts = now.timestamp()
     retry_after = 0
     with self._login_rate_lock:
@@ -234,6 +321,12 @@ class AuthService:
   def _register_failed_login(self, scopes: list[str], now: dt.datetime) -> None:
     if not self._login_rate_enabled:
       return
+    try:
+      if self._register_failed_login_storage(scopes, now):
+        return
+    except Exception as exc:
+      self._log_login_rate_storage_fallback(exc)
+
     now_ts = now.timestamp()
     with self._login_rate_lock:
       self._prune_login_rate_state_locked(now_ts)
@@ -262,6 +355,12 @@ class AuthService:
   def _reset_login_rate_limit(self, scopes: list[str]) -> None:
     if not self._login_rate_enabled:
       return
+    try:
+      if self._reset_login_rate_limit_storage(scopes):
+        return
+    except Exception as exc:
+      self._log_login_rate_storage_fallback(exc)
+
     with self._login_rate_lock:
       for scope in scopes:
         self._login_rate_state.pop(scope, None)

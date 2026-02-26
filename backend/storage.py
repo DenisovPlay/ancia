@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import sqlite3
 import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -16,7 +18,11 @@ except ModuleNotFoundError:
 
 class AppStorage:
   BASE_SCHEMA_VERSION = 1
-  LATEST_SCHEMA_VERSION = 5
+  LATEST_SCHEMA_VERSION = 7
+  RATE_LIMIT_SCOPE_MAX_CHARS = 220
+  RATE_LIMIT_CLEANUP_INTERVAL_SECONDS = 120.0
+  RATE_LIMIT_CLEANUP_RETENTION_SECONDS = 3600.0
+  RATE_LIMIT_BLOCK_RETENTION_SECONDS = 86400.0
 
   def __init__(self, db_path: Path) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -26,6 +32,7 @@ class AppStorage:
     except OSError:
       pass
     self._lock = threading.RLock()
+    self._rate_limit_last_cleanup_ts = 0.0
     self._conn = sqlite3.connect(db_path, check_same_thread=False)
     self._conn.row_factory = sqlite3.Row
     with self._conn:
@@ -234,6 +241,37 @@ class AppStorage:
       "CREATE INDEX IF NOT EXISTS idx_audit_events_action ON audit_events(action, created_at DESC)"
     )
 
+  def _migrate_v5_to_v6_locked(self) -> None:
+    self._conn.execute(
+      """
+      CREATE TABLE IF NOT EXISTS api_rate_limit_hits (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        scope TEXT NOT NULL,
+        ts REAL NOT NULL
+      )
+      """
+    )
+    self._conn.execute(
+      "CREATE INDEX IF NOT EXISTS idx_api_rate_limit_hits_scope_ts ON api_rate_limit_hits(scope, ts)"
+    )
+    self._conn.execute(
+      "CREATE INDEX IF NOT EXISTS idx_api_rate_limit_hits_ts ON api_rate_limit_hits(ts)"
+    )
+
+  def _migrate_v6_to_v7_locked(self) -> None:
+    self._conn.execute(
+      """
+      CREATE TABLE IF NOT EXISTS api_rate_limit_blocks (
+        scope TEXT PRIMARY KEY,
+        blocked_until REAL NOT NULL,
+        updated_at REAL NOT NULL
+      )
+      """
+    )
+    self._conn.execute(
+      "CREATE INDEX IF NOT EXISTS idx_api_rate_limit_blocks_until ON api_rate_limit_blocks(blocked_until)"
+    )
+
   def _migrate_schema(self) -> None:
     with self._lock, self._conn:
       current_version = self._get_schema_version_locked()
@@ -258,6 +296,10 @@ class AppStorage:
           self._migrate_v3_to_v4_locked()
         elif next_version == 5:
           self._migrate_v4_to_v5_locked()
+        elif next_version == 6:
+          self._migrate_v5_to_v6_locked()
+        elif next_version == 7:
+          self._migrate_v6_to_v7_locked()
         else:
           raise RuntimeError(f"Unknown schema migration step: {current_version} -> {next_version}")
         self._set_schema_version_locked(next_version)
@@ -1254,6 +1296,147 @@ class AppStorage:
       ).fetchall()
     return [self._serialize_audit_event_row(row) for row in rows]
 
+  @classmethod
+  def _normalize_rate_limit_scope(cls, scope: str) -> str:
+    return str(scope or "").strip()[:cls.RATE_LIMIT_SCOPE_MAX_CHARS]
+
+  def consume_api_rate_limit(
+    self,
+    *,
+    scope: str,
+    budget: int,
+    window_seconds: float,
+    now_ts: float | None = None,
+    consume: bool = True,
+    block_seconds: float = 0.0,
+  ) -> tuple[bool, int]:
+    safe_scope = self._normalize_rate_limit_scope(scope)
+    if not safe_scope:
+      return False, 0
+    safe_budget = max(1, min(1000, int(budget or 1)))
+    safe_window_seconds = max(1.0, min(3600.0, float(window_seconds or 1.0)))
+    safe_block_seconds = max(0.0, min(86400.0, float(block_seconds or 0.0)))
+    try:
+      safe_now_ts = float(now_ts) if now_ts is not None else time.time()
+    except (TypeError, ValueError):
+      safe_now_ts = time.time()
+    if safe_now_ts <= 0:
+      safe_now_ts = time.time()
+    stale_scope_before = safe_now_ts - safe_window_seconds
+
+    with self._lock, self._conn:
+      self._conn.execute(
+        "DELETE FROM api_rate_limit_hits WHERE scope=? AND ts < ?",
+        (safe_scope, stale_scope_before),
+      )
+      if (safe_now_ts - self._rate_limit_last_cleanup_ts) >= self.RATE_LIMIT_CLEANUP_INTERVAL_SECONDS:
+        stale_global_before = safe_now_ts - max(
+          safe_window_seconds,
+          self.RATE_LIMIT_CLEANUP_RETENTION_SECONDS,
+        )
+        self._conn.execute(
+          "DELETE FROM api_rate_limit_hits WHERE ts < ?",
+          (stale_global_before,),
+        )
+        self._conn.execute(
+          "DELETE FROM api_rate_limit_blocks WHERE blocked_until < ?",
+          (safe_now_ts - self.RATE_LIMIT_BLOCK_RETENTION_SECONDS,),
+        )
+        self._rate_limit_last_cleanup_ts = safe_now_ts
+
+      if safe_block_seconds > 0:
+        block_row = self._conn.execute(
+          "SELECT blocked_until FROM api_rate_limit_blocks WHERE scope=?",
+          (safe_scope,),
+        ).fetchone()
+        if block_row is not None:
+          try:
+            blocked_until = float(block_row["blocked_until"] or 0.0)
+          except (TypeError, ValueError, KeyError):
+            blocked_until = 0.0
+          if blocked_until > safe_now_ts:
+            retry_after = max(1, int(math.ceil(blocked_until - safe_now_ts)))
+            return True, retry_after
+          self._conn.execute(
+            "DELETE FROM api_rate_limit_blocks WHERE scope=?",
+            (safe_scope,),
+          )
+
+      row = self._conn.execute(
+        "SELECT COUNT(1) AS total, MIN(ts) AS oldest_ts FROM api_rate_limit_hits WHERE scope=?",
+        (safe_scope,),
+      ).fetchone()
+      if row is None:
+        total_hits = 0
+        oldest_ts = safe_now_ts
+      else:
+        try:
+          total_hits = max(0, int(row["total"] or 0))
+        except (TypeError, ValueError, KeyError):
+          total_hits = 0
+        try:
+          oldest_ts = float(row["oldest_ts"] or safe_now_ts)
+        except (TypeError, ValueError, KeyError):
+          oldest_ts = safe_now_ts
+
+      if total_hits >= safe_budget:
+        elapsed = max(0.0, safe_now_ts - oldest_ts)
+        retry_after = max(1, int(math.ceil(safe_window_seconds - elapsed)))
+        if safe_block_seconds > 0:
+          blocked_until = safe_now_ts + safe_block_seconds
+          self._conn.execute(
+            "DELETE FROM api_rate_limit_hits WHERE scope=?",
+            (safe_scope,),
+          )
+          self._conn.execute(
+            """
+            INSERT INTO api_rate_limit_blocks(scope, blocked_until, updated_at)
+            VALUES(?, ?, ?)
+            ON CONFLICT(scope)
+            DO UPDATE SET blocked_until=excluded.blocked_until, updated_at=excluded.updated_at
+            """,
+            (safe_scope, blocked_until, safe_now_ts),
+          )
+          retry_after = max(retry_after, max(1, int(math.ceil(blocked_until - safe_now_ts))))
+        return True, retry_after
+
+      if consume:
+        self._conn.execute(
+          "INSERT INTO api_rate_limit_hits(scope, ts) VALUES(?, ?)",
+          (safe_scope, safe_now_ts),
+        )
+        if safe_block_seconds > 0 and (total_hits + 1) >= safe_budget:
+          blocked_until = safe_now_ts + safe_block_seconds
+          self._conn.execute(
+            "DELETE FROM api_rate_limit_hits WHERE scope=?",
+            (safe_scope,),
+          )
+          self._conn.execute(
+            """
+            INSERT INTO api_rate_limit_blocks(scope, blocked_until, updated_at)
+            VALUES(?, ?, ?)
+            ON CONFLICT(scope)
+            DO UPDATE SET blocked_until=excluded.blocked_until, updated_at=excluded.updated_at
+            """,
+            (safe_scope, blocked_until, safe_now_ts),
+          )
+
+    return False, 0
+
+  def clear_api_rate_limit_scope(self, scope: str) -> None:
+    safe_scope = self._normalize_rate_limit_scope(scope)
+    if not safe_scope:
+      return
+    with self._lock, self._conn:
+      self._conn.execute(
+        "DELETE FROM api_rate_limit_hits WHERE scope=?",
+        (safe_scope,),
+      )
+      self._conn.execute(
+        "DELETE FROM api_rate_limit_blocks WHERE scope=?",
+        (safe_scope,),
+      )
+
   def get_setting(self, key: str) -> str | None:
     with self._lock:
       row = self._conn.execute(
@@ -1309,6 +1492,8 @@ class AppStorage:
       self._conn.execute("DELETE FROM chats")
       self._conn.execute("DELETE FROM settings")
       self._conn.execute("DELETE FROM plugin_state")
+      self._conn.execute("DELETE FROM api_rate_limit_hits")
+      self._conn.execute("DELETE FROM api_rate_limit_blocks")
     with self._lock:
       self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
@@ -1321,6 +1506,8 @@ class AppStorage:
       self._conn.execute("DELETE FROM auth_sessions")
       self._conn.execute("DELETE FROM users")
       self._conn.execute("DELETE FROM audit_events")
+      self._conn.execute("DELETE FROM api_rate_limit_hits")
+      self._conn.execute("DELETE FROM api_rate_limit_blocks")
     with self._lock:
       self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 

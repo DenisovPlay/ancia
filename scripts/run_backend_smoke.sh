@@ -17,4 +17,6 @@ else
 fi
 
 "$PYTHON_BIN" scripts/backend_smoke.py
+"$PYTHON_BIN" scripts/backend_rate_limit_smoke.py
+"$PYTHON_BIN" scripts/backend_auth_rate_limit_smoke.py
 "$PYTHON_BIN" scripts/backend_acl_smoke.py

@@ -161,6 +161,7 @@ _RATE_LIMIT_STATE: dict[str, list[float]] = {}
 _RATE_LIMIT_LAST_SWEEP_TS = 0.0
 _RATE_LIMIT_SWEEP_INTERVAL_SECONDS = 90.0
 _RATE_LIMIT_SWEEP_MAX_KEYS = 20000
+_RATE_LIMIT_STORAGE_FALLBACK_LAST_LOG_TS = 0.0
 
 
 def _resolve_rate_limit_window_seconds() -> float:
@@ -231,12 +232,15 @@ def _resolve_rate_limit_subject(request: Request) -> str:
   return "ip:unknown"
 
 
-def _consume_rate_limit(method: str, path: str, subject: str) -> tuple[bool, int]:
+def _consume_rate_limit_memory(
+  method: str,
+  path: str,
+  subject: str,
+  *,
+  budget: int,
+  window_sec: float,
+) -> tuple[bool, int]:
   global _RATE_LIMIT_LAST_SWEEP_TS
-  budget = _resolve_rate_limit_budget(method, path)
-  if budget <= 0:
-    return False, 0
-  window_sec = _resolve_rate_limit_window_seconds()
   now_ts = time.time()
   key = f"{method}|{path}|{subject}"
   with _RATE_LIMIT_STATE_LOCK:
@@ -265,6 +269,43 @@ def _consume_rate_limit(method: str, path: str, subject: str) -> tuple[bool, int
     events.append(now_ts)
     _RATE_LIMIT_STATE[key] = events
   return False, 0
+
+
+def _log_rate_limit_storage_fallback(exc: Exception) -> None:
+  global _RATE_LIMIT_STORAGE_FALLBACK_LAST_LOG_TS
+  now_ts = time.time()
+  if (now_ts - _RATE_LIMIT_STORAGE_FALLBACK_LAST_LOG_TS) < 60.0:
+    return
+  _RATE_LIMIT_STORAGE_FALLBACK_LAST_LOG_TS = now_ts
+  LOGGER.warning("Storage-backed rate limiter failed; using in-memory fallback: %s", exc)
+
+
+def _consume_rate_limit(
+  storage: AppStorage,
+  method: str,
+  path: str,
+  subject: str,
+) -> tuple[bool, int]:
+  budget = _resolve_rate_limit_budget(method, path)
+  if budget <= 0:
+    return False, 0
+  window_sec = _resolve_rate_limit_window_seconds()
+  scope = f"{method}|{path}|{subject}"
+  try:
+    return storage.consume_api_rate_limit(
+      scope=scope,
+      budget=budget,
+      window_seconds=window_sec,
+    )
+  except Exception as exc:
+    _log_rate_limit_storage_fallback(exc)
+    return _consume_rate_limit_memory(
+      method,
+      path,
+      subject,
+      budget=budget,
+      window_sec=window_sec,
+    )
 
 
 def _extract_bearer_token(request: Request) -> str:
@@ -403,7 +444,7 @@ def make_app() -> FastAPI:
 
     if _is_rate_limited_request(method, path):
       subject = _resolve_rate_limit_subject(request)
-      exceeded, retry_after = _consume_rate_limit(method, path, subject)
+      exceeded, retry_after = _consume_rate_limit(storage, method, path, subject)
       if exceeded:
         return JSONResponse(
           status_code=429,

@@ -1,0 +1,3 @@
+[submodule "ancia-plugins"]
+	path = ancia-plugins
+	url = https://github.com/DenisovPlay/ancia-plugins.git

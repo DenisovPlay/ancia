@@ -19,6 +19,8 @@ MAX_OUTPUT_CHARS = 24_000
 MIN_MAX_MEMORY_MB = 64
 MAX_MAX_MEMORY_MB = 2048
 MAX_CODE_CHARS = 32_000
+MAX_CODE_LINES = 1200
+MAX_AST_NODES = 9000
 MAX_CODE_RETURN_CHARS = 16_000
 MAX_CODE_PREVIEW_LINES = 18
 DEPLOYMENT_MODE_REMOTE_SERVER = "remote_server"
@@ -414,6 +416,12 @@ def _validate_code(code: str) -> ast.Module:
   except SyntaxError as exc:
     raise ValueError(_syntax_error_message(exc)) from exc
 
+  node_count = sum(1 for _ in ast.walk(tree))
+  if node_count > MAX_AST_NODES:
+    raise ValueError(
+      f"Код слишком сложный для безопасного выполнения (AST nodes: {node_count}, max: {MAX_AST_NODES})."
+    )
+
   for node in ast.walk(tree):
     if isinstance(node, ast.Name):
       identifier = str(node.id or "").strip()
@@ -486,6 +494,8 @@ def _build_subprocess_env() -> dict[str, str]:
   env = {
     "PYTHONIOENCODING": "utf-8",
     "PYTHONUTF8": "1",
+    "PYTHONNOUSERSITE": "1",
+    "PYTHONSAFEPATH": "1",
     "PYTHONDONTWRITEBYTECODE": "1",
   }
   tz = str(os.environ.get("TZ") or "").strip()
@@ -515,6 +525,8 @@ def _build_subprocess_preexec_fn(timeout_sec: int, max_memory_mb: int):
   cpu_soft = max(1, int(timeout_sec) + 1)
   cpu_hard = max(cpu_soft, int(timeout_sec) + 2)
   memory_limit_bytes = max(64 * 1024 * 1024, int(max_memory_mb) * 1024 * 1024)
+  max_open_files = 48
+  max_subprocesses = 1
 
   def _apply_limits() -> None:
     try:
@@ -533,6 +545,24 @@ def _build_subprocess_preexec_fn(timeout_sec: int, max_memory_mb: int):
     if limit_key is not None:
       try:
         resource.setrlimit(limit_key, (1_048_576, 1_048_576))
+      except Exception:
+        pass
+    limit_key = getattr(resource, "RLIMIT_NOFILE", None)
+    if limit_key is not None:
+      try:
+        resource.setrlimit(limit_key, (max_open_files, max_open_files))
+      except Exception:
+        pass
+    limit_key = getattr(resource, "RLIMIT_NPROC", None)
+    if limit_key is not None:
+      try:
+        resource.setrlimit(limit_key, (max_subprocesses, max_subprocesses))
+      except Exception:
+        pass
+    limit_key = getattr(resource, "RLIMIT_CORE", None)
+    if limit_key is not None:
+      try:
+        resource.setrlimit(limit_key, (0, 0))
       except Exception:
         pass
 
@@ -616,6 +646,8 @@ def handle(args: dict[str, Any], runtime: Any, host: Any) -> dict[str, Any]:
     raise ValueError("code is required")
   if len(code) > MAX_CODE_CHARS:
     raise ValueError(f"code is too long (max {MAX_CODE_CHARS} chars)")
+  if code.count("\n") + 1 > MAX_CODE_LINES:
+    raise ValueError(f"code has too many lines (max {MAX_CODE_LINES})")
 
   _validate_code(code)
 
@@ -652,13 +684,16 @@ def handle(args: dict[str, Any], runtime: Any, host: Any) -> dict[str, Any]:
       "timeout": float(timeout_sec) + 0.25,
       "check": False,
       "env": _build_subprocess_env(),
+      "start_new_session": True,
     }
     if preexec_fn is not None:
       run_kwargs["preexec_fn"] = preexec_fn
+    if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW"):
+      run_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW")
     with tempfile.TemporaryDirectory(prefix="ancia-python-run-") as sandbox_cwd:
       run_kwargs["cwd"] = sandbox_cwd
       completed = subprocess.run(
-        [sys.executable, "-I", "-c", wrapper_script],
+        [sys.executable, "-I", "-S", "-c", wrapper_script],
         **run_kwargs,
       )
   except subprocess.TimeoutExpired:
